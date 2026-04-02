@@ -77,7 +77,6 @@ struct StoryboardContentView: View {
                 }
                 Spacer()
                 Button {
-                    workspaceVM.selectedItem = nil
                     Task { await workspaceVM.generatePlan() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -292,10 +291,10 @@ struct StoryboardContentView: View {
             VStack(spacing: 3) {
                 Image(systemName: trans.icon)
                     .font(.system(size: 12))
-                    .foregroundStyle(isSelected ? .accentColor : .secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 Text(trans.rawValue)
                     .font(.system(size: 9))
-                    .foregroundStyle(isSelected ? .accentColor : .secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             }
             .padding(6)
             .background(
@@ -472,7 +471,7 @@ struct SoundtrackPanel: View {
                         .overlay(
                             Image(systemName: "music.note")
                                 .font(.system(size: 14))
-                                .foregroundStyle(.accentColor)
+                                .foregroundStyle(Color.accentColor)
                         )
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -529,7 +528,7 @@ struct ExportPlanSheet: View {
         HStack(spacing: MS.Spacing.md) {
             Image(systemName: icon)
                 .font(.system(size: 20))
-                .foregroundStyle(available ? .accentColor : .tertiary)
+                .foregroundStyle(available ? Color.accentColor : Color.secondary)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(MS.Font.caption).fontWeight(.semibold)

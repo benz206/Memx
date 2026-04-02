@@ -6,6 +6,7 @@ struct ImportView: View {
     @State private var importVM = ImportViewModel()
     @State private var showPhotoPicker = false
     @State private var selectedAlbum: MSAlbum? = nil
+    @State private var photosPickerItems: [PhotosPickerItem] = []
 
     var body: some View {
         HStack(spacing: 0) {
@@ -27,12 +28,13 @@ struct ImportView: View {
             await importVM.loadRecents()
             await importVM.loadAlbums()
         }
-        .onChange(of: importVM.photosPickerItems) { _, items in
-            Task { await importVM.handlePickerSelection(items) }
+        .onChange(of: photosPickerItems) { _, items in
+            let ids = items.compactMap { $0.itemIdentifier }
+            Task { await importVM.handlePickerSelection(ids) }
         }
         .photosPicker(
             isPresented: $showPhotoPicker,
-            selection: $importVM.photosPickerItems,
+            selection: $photosPickerItems,
             maxSelectionCount: 500,
             matching: .any(of: [.images, .videos])
         )
@@ -117,7 +119,7 @@ struct ImportView: View {
                 } label: {
                     Image(systemName: filter.icon)
                         .font(.system(size: 13))
-                        .foregroundStyle(importVM.filterType == filter ? .accentColor : .secondary)
+                        .foregroundStyle(importVM.filterType == filter ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help(filter.rawValue)
@@ -150,7 +152,7 @@ struct ImportView: View {
                 Button("Select All") { importVM.selectAll() }
                     .buttonStyle(.plain)
                     .font(MS.Font.caption)
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
 
                 Button("Deselect All") { importVM.deselectAll() }
                     .buttonStyle(.plain)

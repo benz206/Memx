@@ -150,7 +150,7 @@ struct AnalysisPromptCard: View {
                 Circle().fill(Color.accentColor.opacity(0.1)).frame(width: 72, height: 72)
                 Image(systemName: "cpu.fill")
                     .font(.system(size: 30))
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
             }
 
             VStack(spacing: 6) {
@@ -170,7 +170,7 @@ struct AnalysisPromptCard: View {
                     VStack(spacing: 4) {
                         Image(systemName: step.1)
                             .font(.system(size: 16))
-                            .foregroundStyle(.accentColor)
+                            .foregroundStyle(Color.accentColor)
                         Text(step.0)
                             .font(MS.Font.micro)
                             .foregroundStyle(.secondary)

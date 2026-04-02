@@ -1,6 +1,6 @@
+import AppKit
 import Foundation
 import Photos
-import PhotosUI
 import Observation
 
 @Observable
@@ -23,7 +23,6 @@ final class ImportViewModel {
     var importProgress: Double = 0
 
     // MARK: PhotosPicker
-    var photosPickerItems: [PhotosPickerItem] = []
     var importedPickerAssets: [MediaAsset] = []
     var isImportingFromPicker: Bool = false
 
@@ -121,15 +120,12 @@ final class ImportViewModel {
 
     // MARK: - PhotosPicker Import
 
-    func handlePickerSelection(_ items: [PhotosPickerItem]) async {
+    func handlePickerSelection(_ assetIDs: [String]) async {
         isImportingFromPicker = true
         importProgress = 0
 
-        for (i, item) in items.enumerated() {
-            defer { importProgress = Double(i + 1) / Double(items.count) }
-
-            // Load the PHAsset identifier from the picker item
-            guard let assetID = item.itemIdentifier else { continue }
+        for (i, assetID) in assetIDs.enumerated() {
+            defer { importProgress = Double(i + 1) / Double(assetIDs.count) }
             let asset = MediaAsset(id: assetID, filename: "Imported \(i+1)")
             importedPickerAssets.append(asset)
             selectedAssetIDs.insert(assetID)

@@ -211,7 +211,7 @@ struct MontageSetupView: View {
                 if let icon {
                     Image(systemName: icon)
                         .font(.system(size: 13))
-                        .foregroundStyle(isSelected ? .accentColor : .secondary)
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                         .frame(width: 20)
                 }
                 VStack(alignment: .leading, spacing: 2) {
@@ -228,7 +228,7 @@ struct MontageSetupView: View {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.accentColor)
+                        .foregroundStyle(Color.accentColor)
                 }
             }
             .padding(MS.Spacing.sm)
@@ -251,10 +251,10 @@ struct MontageSetupView: View {
             VStack(spacing: 4) {
                 Image(systemName: vibe.icon)
                     .font(.system(size: 16))
-                    .foregroundStyle(isSelected ? .accentColor : .secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 Text(vibe.rawValue)
                     .font(MS.Font.micro)
-                    .foregroundStyle(isSelected ? .accentColor : .secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, MS.Spacing.sm)
@@ -288,7 +288,7 @@ struct MontageSetupView: View {
                     )
                 Text(ratio.rawValue)
                     .font(MS.Font.micro)
-                    .foregroundStyle(isSelected ? .accentColor : .secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, MS.Spacing.sm)

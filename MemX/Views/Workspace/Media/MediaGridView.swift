@@ -94,7 +94,7 @@ struct MediaGridView: View {
                 } label: {
                     Label(filter.rawValue, systemImage: filter.icon)
                         .font(.system(size: 12))
-                        .foregroundStyle(filterType == filter ? .accentColor : .secondary)
+                        .foregroundStyle(filterType == filter ? Color.accentColor : Color.secondary)
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.plain)
