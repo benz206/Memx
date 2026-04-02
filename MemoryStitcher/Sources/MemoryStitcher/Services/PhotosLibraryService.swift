@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import AppKit
+import AVFoundation
 
 // MARK: - PhotosLibraryServiceProtocol
 

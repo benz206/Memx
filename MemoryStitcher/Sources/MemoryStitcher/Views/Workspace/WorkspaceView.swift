@@ -60,7 +60,7 @@ struct WorkspaceView: View {
     // MARK: - Sidebar
 
     private var sidebarContent: some View {
-        List(WorkspaceTab.allCases, id: \.self, selection: Bindable(workspaceVM).selectedTab) { tab in
+        List(WorkspaceTab.allCases, id: \.self, selection: $workspaceVM.selectedTab) { tab in
             Label(tab.rawValue, systemImage: tab.icon)
                 .font(MS.Font.body)
                 .tag(tab)
@@ -111,7 +111,7 @@ struct WorkspaceView: View {
     private var titleField: some View {
         Group {
             if workspaceVM.isEditingTitle {
-                TextField("Project Title", text: Bindable(workspaceVM).project.title)
+                TextField("Project Title", text: $workspaceVM.project.title)
                     .textFieldStyle(.plain)
                     .font(MS.Font.heading)
                     .multilineTextAlignment(.center)

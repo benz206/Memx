@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Memory Stitcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>Memory Stitcher</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.yourcompany.memorystitcher</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- Privacy strings — required for Photos access -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Memory Stitcher accesses your Photos library to import photos and videos for your montage project. All processing happens locally on your device.</string>
+
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Memory Stitcher may save rendered montages back to your Photos library.</string>
+
+    <!-- macOS appearance -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.photography</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2025 Memory Stitcher. All rights reserved.</string>
+</dict>
+</plist>
