@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:Memx}",
+      "name": "Debug MemX",
+      "target": "MemX",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug MemX"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:Memx}",
+      "name": "Release MemX",
+      "target": "MemX",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release MemX"
+    }
+  ]
+}
