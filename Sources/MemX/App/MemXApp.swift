@@ -2,7 +2,7 @@ import SwiftUI
 import Photos
 
 @main
-struct MemoryStitcherApp: App {
+struct MemXApp: App {
     @State private var appViewModel = AppViewModel()
 
     var body: some Scene {

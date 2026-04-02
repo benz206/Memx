@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 swift build                    # Build the package
-swift run MemoryStitcher       # Run the app
+swift run MemX                 # Run the app
 swift test                     # Run tests (none yet)
 ```
 
@@ -14,14 +14,14 @@ The app is opened in Xcode via the `.swiftpm` wrapper. No external dependencies 
 
 ## What This Is
 
-**MemoryStitcher** is a macOS 14+ SwiftUI app that turns a user's Photos library into a cinematic memory montage using on-device AI. It imports photos/videos, analyzes them, clusters moments into narrative events, scores content, and assembles a storyboard with transitions and soundtrack suggestions. All processing is local.
+**MemX** is a macOS 14+ SwiftUI app that turns a user's Photos library into a cinematic memory montage using on-device AI. It imports photos/videos, analyzes them, clusters moments into narrative events, scores content, and assembles a storyboard with transitions and soundtrack suggestions. All processing is local.
 
 ## Architecture
 
 ### Layer Overview
 
 ```
-App (MemoryStitcherApp + ContentView)
+App (MemXApp + ContentView)
   └── ViewModels (Observable) ── Services (Protocol + Singleton)
         └── Views                    └── Models (Structs/Enums)
 ```
