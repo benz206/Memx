@@ -32,7 +32,7 @@ struct ImportView: View {
         }
         .photosPicker(
             isPresented: $showPhotoPicker,
-            selection: Bindable(importVM).photosPickerItems,
+            selection: $importVM.photosPickerItems,
             maxSelectionCount: 500,
             matching: .any(of: [.images, .videos])
         )
@@ -99,7 +99,7 @@ struct ImportView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                TextField("Search...", text: Bindable(importVM).searchText)
+                TextField("Search...", text: $importVM.searchText)
                     .textFieldStyle(.plain)
                     .font(MS.Font.body)
                     .frame(width: 160)
@@ -126,7 +126,7 @@ struct ImportView: View {
             Divider().frame(height: 18)
 
             // Sort
-            Picker("Sort", selection: Bindable(importVM).sortOrder) {
+            Picker("Sort", selection: $importVM.sortOrder) {
                 ForEach(AssetSortOrder.allCases, id: \.self) { order in
                     Text(order.rawValue).tag(order)
                 }
