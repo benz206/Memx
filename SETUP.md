@@ -7,19 +7,6 @@
 
 ---
 
-## Option A: Open as Swift Package (Quick Start)
-
-1. Open Xcode
-2. File → Open → select `MemoryStitcher/` folder
-3. Xcode will recognize Package.swift and open the project
-
-**Note:** SPM apps don't automatically get entitlements or Info.plist wiring.
-To run with real Photos access, use Option B.
-
----
-
-## Option B: Create Xcode Project (Recommended)
-
 ### Step 1 — Create the project
 
 1. Xcode → File → New → Project
