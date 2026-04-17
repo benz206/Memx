@@ -110,12 +110,16 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         options.resizeMode = .fast
 
         return await withCheckedContinuation { continuation in
+            var resumed = false
             imageManager.requestImage(
                 for: asset,
                 targetSize: size,
                 contentMode: .aspectFill,
                 options: options
-            ) { image, _ in
+            ) { image, info in
+                let isFinal = (info?[PHImageResultIsDegradedKey] as? Bool) != true
+                guard isFinal, !resumed else { return }
+                resumed = true
                 let result = image
                 Task { @MainActor in
                     if let img = result {
@@ -129,8 +133,7 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
 
     // MARK: - Export for Processing
 
-    /// Exports an asset to a temporary local file URL suitable for downstream analysis.
-    /// TODO: Connect this output to the on-device ML embedding pipeline.
+    /// Exports an asset to a temporary local file URL used by PhotoScoringService (Vision) and VideoRenderService.
     func exportAssetForProcessing(_ assetID: String) async throws -> URL {
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
         guard let asset = assets.firstObject else {
@@ -185,6 +188,50 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
                     continuation.resume(returning: tempURL)
                 } catch {
                     continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Exports a trimmed video clip starting at `startTime` for `duration` seconds.
+    func exportVideoClip(assetID: String, startTime: TimeInterval, duration: TimeInterval) async throws -> URL {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard let asset = assets.firstObject else { throw PhotosServiceError.assetNotFound(assetID) }
+
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        options.version = .current
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mov")
+
+        let timescale: CMTimeScale = 600
+        let timeRange = CMTimeRange(
+            start:    CMTime(seconds: startTime, preferredTimescale: timescale),
+            duration: CMTime(seconds: duration,  preferredTimescale: timescale)
+        )
+
+        return try await withCheckedThrowingContinuation { continuation in
+            imageManager.requestExportSession(
+                forVideo: asset,
+                options: options,
+                exportPreset: AVAssetExportPreset1920x1080
+            ) { session, _ in
+                guard let session else {
+                    continuation.resume(throwing: PhotosServiceError.exportFailed)
+                    return
+                }
+                session.outputURL = tempURL
+                session.outputFileType = .mov
+                session.timeRange = timeRange
+                session.exportAsynchronously {
+                    if session.status == .completed {
+                        continuation.resume(returning: tempURL)
+                    } else {
+                        continuation.resume(throwing: session.error ?? PhotosServiceError.exportFailed)
+                    }
                 }
             }
         }

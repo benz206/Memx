@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct StoryboardView: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
@@ -259,7 +261,7 @@ struct StoryboardContentView: View {
                 }
 
                 // Render pipeline
-                renderPipelinePlaceholder
+                renderPipelineSection
             }
             .padding(MS.Spacing.md)
         }
@@ -298,24 +300,69 @@ struct StoryboardContentView: View {
         .msCard()
     }
 
-    private var renderPipelinePlaceholder: some View {
+    @ViewBuilder
+    private var renderPipelineSection: some View {
         VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            MSSectionHeader(title: "Render Pipeline", subtitle: "AVFoundation composition + on-device motion")
-            VStack(spacing: MS.Spacing.sm) {
-                ForEach(renderSteps, id: \.0) { step in
-                    HStack(spacing: MS.Spacing.sm) {
-                        Image(systemName: step.1).font(.system(size: 14)).foregroundStyle(.tertiary).frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(step.0).font(MS.Font.caption).foregroundStyle(.secondary)
-                            Text(step.2).font(MS.Font.micro).foregroundStyle(.tertiary)
-                        }
+            MSSectionHeader(title: "Render Pipeline", subtitle: "AVFoundation composition + audio mix")
+
+            if workspaceVM.isRendering {
+                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                    ProgressView(value: workspaceVM.renderProgress)
+                        .tint(.accentColor)
+                    HStack {
+                        Text(workspaceVM.renderProgressMessage)
+                            .font(MS.Font.caption).foregroundStyle(.secondary)
                         Spacer()
-                        MSBadge(text: "TODO", color: .orange, size: .small)
+                        Text("\(Int(workspaceVM.renderProgress * 100))%")
+                            .font(MS.Font.micro).foregroundStyle(.tertiary)
+                    }
+                }
+            } else if let videoURL = workspaceVM.renderedVideoURL {
+                HStack(spacing: MS.Spacing.sm) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Render complete").font(MS.Font.caption).fontWeight(.semibold)
+                        Text(videoURL.lastPathComponent).font(MS.Font.micro).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    MSSecondaryButton("Show in Finder", icon: "folder") {
+                        NSWorkspace.shared.selectFile(videoURL.path, inFileViewerRootedAtPath: "")
+                    }
+                }
+                .padding(MS.Spacing.sm)
+                .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+            } else if let error = workspaceVM.renderError {
+                HStack(spacing: MS.Spacing.sm) {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                    Text(error).font(MS.Font.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(MS.Spacing.sm)
+                .background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+            } else {
+                VStack(spacing: MS.Spacing.xs) {
+                    ForEach(renderSteps, id: \.0) { step in
+                        HStack(spacing: MS.Spacing.sm) {
+                            Image(systemName: step.1).font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 22)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(step.0).font(MS.Font.caption).foregroundStyle(.secondary)
+                                Text(step.2).font(MS.Font.micro).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
                     }
                 }
             }
-            MSSecondaryButton("Export as JSON Storyboard", icon: "doc.text") {}
-                .disabled(true).opacity(0.5)
+
+            MSPrimaryButton(
+                workspaceVM.renderedVideoURL != nil ? "Re-render" : "Render Video",
+                icon: "film.fill",
+                isLoading: workspaceVM.isRendering
+            ) {
+                Task { await workspaceVM.renderVideo() }
+            }
+            .disabled(workspaceVM.isRendering || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
         }
         .msCard()
     }
@@ -503,6 +550,7 @@ struct MoodArcChart: View {
 struct ExportPlanSheet: View {
     let plan: MontagePlan
     @Environment(\.dismiss) private var dismiss
+    @State private var exportError: String? = nil
 
     var body: some View {
         VStack(spacing: MS.Spacing.lg) {
@@ -510,10 +558,17 @@ struct ExportPlanSheet: View {
                 .font(MS.Font.title)
 
             VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                exportOption(icon: "doc.text", title: "Edit Decision List (.edl)", subtitle: "Import into Premiere, DaVinci, or Final Cut", available: false)
-                exportOption(icon: "doc.badge.arrow.up", title: "JSON Storyboard", subtitle: "Machine-readable plan for custom pipelines", available: true)
-                exportOption(icon: "doc.richtext", title: "PDF Shot List", subtitle: "Printable shot-by-shot breakdown", available: false)
-                exportOption(icon: "film.fill", title: "Rendered Video (AVFoundation)", subtitle: "On-device render pipeline — coming soon", available: false)
+                exportOption(icon: "doc.text", title: "Edit Decision List (.edl)", subtitle: "Import into Premiere, DaVinci, or Final Cut", available: false, action: nil)
+                exportOption(icon: "doc.badge.arrow.up", title: "JSON Storyboard", subtitle: "Machine-readable plan for custom pipelines", available: true, action: exportJSON)
+                exportOption(icon: "doc.richtext", title: "PDF Shot List", subtitle: "Printable shot-by-shot breakdown", available: false, action: nil)
+                exportOption(icon: "film.fill", title: "Rendered Video (AVFoundation)", subtitle: "On-device render pipeline — coming soon", available: false, action: nil)
+            }
+
+            if let error = exportError {
+                HStack(spacing: MS.Spacing.xs) {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                    Text(error).font(MS.Font.caption).foregroundStyle(.red)
+                }
             }
 
             MSSecondaryButton("Close") { dismiss() }
@@ -522,7 +577,29 @@ struct ExportPlanSheet: View {
         .frame(width: 420)
     }
 
-    private func exportOption(icon: String, title: String, subtitle: String, available: Bool) -> some View {
+    private func exportJSON() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(plan) else {
+            exportError = "Failed to encode storyboard."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.json]
+        panel.nameFieldStringValue = "\(plan.title.isEmpty ? "storyboard" : plan.title).json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                DispatchQueue.main.async { self.exportError = error.localizedDescription }
+            }
+        }
+    }
+
+    private func exportOption(icon: String, title: String, subtitle: String, available: Bool, action: (() -> Void)?) -> some View {
         HStack(spacing: MS.Spacing.md) {
             Image(systemName: icon).font(.system(size: 20))
                 .foregroundStyle(available ? Color.accentColor : Color.secondary).frame(width: 32)
@@ -532,8 +609,8 @@ struct ExportPlanSheet: View {
                 Text(subtitle).font(MS.Font.micro).foregroundStyle(.secondary)
             }
             Spacer()
-            if available {
-                MSSecondaryButton("Export", icon: "square.and.arrow.up") {}
+            if available, let action {
+                MSSecondaryButton("Export", icon: "square.and.arrow.up", action: action)
             } else {
                 MSBadge(text: "Soon", color: .orange, size: .small)
             }

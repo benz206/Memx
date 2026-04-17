@@ -47,6 +47,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
     var confidenceScore: Float
     var sectionType: SectionType?       // which song section this clip lands in
     var selectionReason: String
+    var clipOffset: TimeInterval        // start offset within source video (0 for photos)
 
     var duration: TimeInterval { endTime - startTime }
 
@@ -63,7 +64,8 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         beatAligned: Bool = false,
         confidenceScore: Float = 0.8,
         sectionType: SectionType? = nil,
-        selectionReason: String = ""
+        selectionReason: String = "",
+        clipOffset: TimeInterval = 0
     ) {
         self.id = id
         self.position = position
@@ -78,6 +80,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         self.confidenceScore = confidenceScore
         self.sectionType = sectionType
         self.selectionReason = selectionReason
+        self.clipOffset = clipOffset
     }
 }
 

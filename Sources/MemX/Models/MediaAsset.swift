@@ -62,6 +62,7 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var qualityScore: Float?
     var emotionScore: Float?
     var noveltyScore: Float?
+    var clipStartTime: TimeInterval?    // best segment start offset within video (nil for photos)
     var isSelected: Bool = false
 
     // Derived

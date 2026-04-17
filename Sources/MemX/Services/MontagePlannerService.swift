@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let logger = Logger(subsystem: "com.memx.app", category: "sequencer")
 
 // MARK: - SequencerServiceProtocol
 
@@ -8,7 +11,8 @@ protocol SequencerServiceProtocol {
         settings: MontageSettings,
         assets: [MediaAsset],
         motionPrompts: [MotionPrompt],
-        beatmap: Beatmap
+        beatmap: Beatmap,
+        onProgress: @escaping (Double, String) -> Void
     ) async -> MontagePlan
 }
 
@@ -26,13 +30,17 @@ final class SequencerService: SequencerServiceProtocol {
         settings: MontageSettings,
         assets: [MediaAsset],
         motionPrompts: [MotionPrompt],
-        beatmap: Beatmap
+        beatmap: Beatmap,
+        onProgress: @escaping (Double, String) -> Void
     ) async -> MontagePlan {
 
         let promptMap = Dictionary(uniqueKeysWithValues: motionPrompts.map { ($0.assetID, $0) })
         let candidates = assets
             .filter { ($0.analysisScore ?? 0) > 0.3 }
             .sorted { ($0.analysisScore ?? 0) > ($1.analysisScore ?? 0) }
+
+        onProgress(0.05, "Filtering \(candidates.count) candidates...")
+        logger.info("Sequencer: \(candidates.count) candidates from \(assets.count) assets")
 
         var sequence: [MontageSequenceItem] = []
         var excludedIDs: [String] = []
@@ -42,6 +50,8 @@ final class SequencerService: SequencerServiceProtocol {
 
         // Build time slots from beatmap sections
         let timeSlots = buildTimeSlots(from: beatmap)
+        onProgress(0.20, "Built \(timeSlots.count) time slots from \(beatmap.sections.count) sections...")
+        logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections")
 
         // Assign candidates to time slots
         var candidatePool = candidates
@@ -50,9 +60,15 @@ final class SequencerService: SequencerServiceProtocol {
         candidatePool = remainingCandidates + highScoreCandidates // high score goes last → reserved for hero slots
 
         var usedAssetIDs: [String] = []
+        let totalSlots = timeSlots.count
 
-        for slot in timeSlots {
+        for (slotIndex, slot) in timeSlots.enumerated() {
             guard currentTime < totalDuration else { break }
+
+            if slotIndex % max(1, totalSlots / 10) == 0 {
+                let slotProgress = Double(slotIndex + 1) / Double(max(totalSlots, 1))
+                onProgress(0.20 + slotProgress * 0.70, "Placing clip \(position + 1) of ~\(totalSlots)...")
+            }
 
             // Pick best available asset for this slot's energy level
             let isHeroSlot = slot.section.type == .drop || slot.section.type == .chorus
@@ -85,12 +101,16 @@ final class SequencerService: SequencerServiceProtocol {
                 beatAligned: slot.beatAligned,
                 confidenceScore: selectedAsset.analysisScore ?? 0.7,
                 sectionType: slot.section.type,
-                selectionReason: selectionReason(for: selectedAsset, slot: slot)
+                selectionReason: selectionReason(for: selectedAsset, slot: slot),
+                clipOffset: selectedAsset.clipStartTime ?? 0
             )
             sequence.append(item)
             currentTime = slot.endTime
             position += 1
         }
+
+        onProgress(0.95, "Finalizing \(sequence.count) clips...")
+        logger.info("Sequencer: assigned \(sequence.count) clips")
 
         // Track excluded assets
         let usedSet = Set(usedAssetIDs)

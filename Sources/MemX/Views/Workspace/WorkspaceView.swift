@@ -4,9 +4,11 @@ struct WorkspaceView: View {
     let project: Project
     @Environment(AppViewModel.self) private var appVM
     @State private var workspaceVM: WorkspaceViewModel
+    @State private var isInitialized = false
 
     init(project: Project) {
         self.project = project
+        // Placeholder VM — replaced with the real one (using the environment appVM) in onAppear
         _workspaceVM = State(initialValue: WorkspaceViewModel(
             project: project,
             appVM: AppViewModel()
@@ -46,6 +48,8 @@ struct WorkspaceView: View {
         }
         .environment(workspaceVM)
         .onAppear {
+            guard !isInitialized else { return }
+            isInitialized = true
             workspaceVM = WorkspaceViewModel(project: project, appVM: appVM)
             if workspaceVM.assets.isEmpty && !project.assetIDs.isEmpty {
                 let allMock = MockDataProvider.mockAssets()

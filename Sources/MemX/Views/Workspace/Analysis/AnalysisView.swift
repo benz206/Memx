@@ -84,6 +84,21 @@ struct MotionPromptsView: View {
             }
             .padding(MS.Spacing.md)
 
+            // Error banner
+            if let error = workspaceVM.processingStatus.error {
+                HStack(spacing: MS.Spacing.xs) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                    Text(error)
+                        .font(MS.Font.micro)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                }
+                .padding(.horizontal, MS.Spacing.md)
+                .padding(.bottom, MS.Spacing.xs)
+            }
+
             // Generate all button
             MSPrimaryButton(
                 workspaceVM.isProcessing ? "Generating..." : "Generate All Prompts",

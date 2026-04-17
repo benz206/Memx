@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+import OSLog
+
+private let logger = Logger(subsystem: "com.memx.app", category: "workspace")
 
 // MARK: - WorkspaceTab
 
@@ -61,11 +64,19 @@ final class WorkspaceViewModel {
     // MARK: Title editing
     var isEditingTitle: Bool = false
 
+    // MARK: Render
+    var isRendering: Bool = false
+    var renderProgress: Double = 0
+    var renderProgressMessage: String = ""
+    var renderedVideoURL: URL? = nil
+    var renderError: String? = nil
+
     // MARK: Services
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol
     private let promptService: MotionPromptServiceProtocol
     private let sequencerService: SequencerServiceProtocol
+    private let renderService: VideoRenderServiceProtocol
     private let appVM: AppViewModel
 
     init(
@@ -74,7 +85,8 @@ final class WorkspaceViewModel {
         beatmapService: BeatmapServiceProtocol = BeatmapService.shared,
         scoringService: PhotoScoringServiceProtocol = PhotoScoringService.shared,
         promptService: MotionPromptServiceProtocol = MotionPromptService.shared,
-        sequencerService: SequencerServiceProtocol = SequencerService.shared
+        sequencerService: SequencerServiceProtocol = SequencerService.shared,
+        renderService: VideoRenderServiceProtocol = VideoRenderService.shared
     ) {
         self.project = project
         self.appVM = appVM
@@ -82,6 +94,7 @@ final class WorkspaceViewModel {
         self.scoringService = scoringService
         self.promptService = promptService
         self.sequencerService = sequencerService
+        self.renderService = renderService
         self.processingStatus = ProcessingStatus(projectID: project.id)
         self.songTrack = project.songTrack
 
@@ -124,8 +137,10 @@ final class WorkspaceViewModel {
         processingStatus.phase = .analyzingAudio
         processingStatus.progress = 0
         processingStatus.message = "Analyzing \(track.title)..."
+        processingStatus.error = nil
         project.status = .analyzing
         appVM.updateProject(project)
+        logger.info("Audio analysis started: \(track.fileURL.lastPathComponent)")
 
         do {
             let result = try await beatmapService.analyzeSong(at: track.fileURL) { [weak self] prog, msg in
@@ -136,6 +151,7 @@ final class WorkspaceViewModel {
                 }
             }
             beatmap = result
+            logger.info("Audio analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), duration=\(result.durationSeconds, format: .fixed(precision: 1))s, sections=\(result.sections.count)")
 
             // Update song track with BPM
             if var t = songTrack {
@@ -147,6 +163,7 @@ final class WorkspaceViewModel {
             }
 
         } catch {
+            logger.error("Audio analysis failed: \(error.localizedDescription)")
             processingStatus.error = error.localizedDescription
             project.status = .draft
             appVM.updateProject(project)
@@ -161,6 +178,8 @@ final class WorkspaceViewModel {
         processingStatus.phase = .scoringPhotos
         processingStatus.progress = 0.33
         processingStatus.message = "Scoring \(assets.count) photos..."
+        processingStatus.error = nil
+        logger.info("Photo scoring started: \(self.assets.count) assets")
 
         do {
             let result = try await scoringService.scorePhotos(
@@ -176,8 +195,11 @@ final class WorkspaceViewModel {
 
             let scoreMap = Dictionary(uniqueKeysWithValues: result.scoredAssets.map { ($0.id, $0) })
             assets = assets.map { scoreMap[$0.id] ?? $0 }
+            let included = result.candidates.filter(\.isIncluded).count
+            logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
 
         } catch {
+            logger.error("Photo scoring failed: \(error.localizedDescription)")
             processingStatus.error = error.localizedDescription
         }
 
@@ -190,6 +212,7 @@ final class WorkspaceViewModel {
         processingStatus.phase = .generatingPrompts
         processingStatus.progress = 0.55
         processingStatus.message = "Generating motion prompts..."
+        processingStatus.error = nil
 
         // Initialize pending prompts for any assets not yet prompted
         let existingIDs = Set(motionPrompts.map(\.assetID))
@@ -198,6 +221,9 @@ final class WorkspaceViewModel {
             motionPrompts.append(MotionPrompt(assetID: asset.id, status: .pending))
         }
 
+        let total = motionPrompts.count
+        logger.info("Motion prompt generation started: \(total) prompts")
+
         for i in motionPrompts.indices {
             guard let asset = assets.first(where: { $0.id == motionPrompts[i].assetID }) else { continue }
             guard motionPrompts[i].status != .edited else { continue }  // don't overwrite user edits
@@ -205,6 +231,10 @@ final class WorkspaceViewModel {
             motionPrompts[i].status = .generating
             let energy = Float(beatmap?.energy(at: Double(i) / Double(max(assets.count, 1)) * (beatmap?.durationSeconds ?? 60)) ?? 0.5)
             let section = beatmap?.sections.first(where: { $0.energyAvg > Double(energy) - 0.1 })
+            let name = asset.filename ?? "photo \(i + 1)"
+
+            processingStatus.message = "Prompt \(i + 1)/\(total): \(name)"
+            logger.debug("Generating prompt \(i + 1)/\(total): \(name)")
 
             do {
                 let prompt = try await promptService.generatePrompt(
@@ -216,23 +246,28 @@ final class WorkspaceViewModel {
                 motionPrompts[i].motionIntensity = energy
                 motionPrompts[i].status = .ready
             } catch {
+                logger.warning("Prompt failed for \(name): \(error.localizedDescription)")
                 motionPrompts[i].status = .pending
             }
 
-            let progress = Double(i + 1) / Double(motionPrompts.count)
+            let progress = Double(i + 1) / Double(total)
             processingStatus.progress = 0.55 + progress * 0.22
         }
 
+        logger.info("Motion prompts complete: \(self.readyPromptCount)/\(total) ready")
         isProcessing = false
     }
 
     func buildSequence() async {
         guard !assets.isEmpty, !isProcessing else { return }
         guard let bm = beatmap else { return }
+        isProcessing = true
         isGeneratingPlan = true
         processingStatus.phase = .sequencing
         processingStatus.progress = 0.77
         processingStatus.message = "Building sequence..."
+        processingStatus.error = nil
+        logger.info("Sequence building started: \(self.assets.count) assets, \(bm.sections.count) sections, \(self.motionPrompts.count) prompts")
 
         let plan = await sequencerService.buildSequence(
             title: project.title,
@@ -240,8 +275,14 @@ final class WorkspaceViewModel {
             assets: assets,
             motionPrompts: motionPrompts,
             beatmap: bm
-        )
+        ) { [weak self] prog, msg in
+            Task { @MainActor in
+                self?.processingStatus.progress = 0.77 + prog * 0.23
+                self?.processingStatus.message = msg
+            }
+        }
 
+        logger.info("Sequence built: \(plan.sequence.count) clips, duration=\(plan.totalDuration, format: .fixed(precision: 1))s")
         montagePlan = plan
         project.montagePlan = plan
         project.status = .ready
@@ -251,15 +292,58 @@ final class WorkspaceViewModel {
         processingStatus.completedAt = Date()
         appVM.updateProject(project)
         selectedTab = .storyboard
+        isProcessing = false
         isGeneratingPlan = false
     }
 
     /// Run the full pipeline: score photos → generate motion prompts → build sequence
     func runPipeline() async {
         guard !isProcessing else { return }
+        logger.info("Full pipeline started: \(self.assets.count) assets")
         await scorePhotos()
         await generateAllMotionPrompts()
         await buildSequence()
+        logger.info("Full pipeline finished")
+    }
+
+    // MARK: - Video Render
+
+    func renderVideo() async {
+        guard let plan = montagePlan, !assets.isEmpty, !isRendering else { return }
+        guard let song = songTrack else { return }
+        guard FileManager.default.fileExists(atPath: song.fileURL.path) else {
+            renderError = "Song file not found. Please re-import the audio file."
+            return
+        }
+
+        isRendering = true
+        renderProgress = 0
+        renderProgressMessage = "Starting render…"
+        renderedVideoURL = nil
+        renderError = nil
+        logger.info("Render started: \(plan.sequence.count) clips, song=\(song.fileURL.lastPathComponent)")
+
+        do {
+            let url = try await renderService.render(
+                plan: plan,
+                songURL: song.fileURL,
+                assets: assets
+            ) { [weak self] (prog: Double, msg: String) in
+                Task { @MainActor in
+                    self?.renderProgress = prog
+                    self?.renderProgressMessage = msg
+                }
+            }
+            renderedVideoURL = url
+            project.status = .exported
+            appVM.updateProject(project)
+            logger.info("Render complete: \(url.lastPathComponent)")
+        } catch {
+            logger.error("Render failed: \(error.localizedDescription)")
+            renderError = error.localizedDescription
+        }
+
+        isRendering = false
     }
 
     // MARK: - Asset Management
