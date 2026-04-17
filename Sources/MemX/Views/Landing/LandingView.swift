@@ -17,25 +17,30 @@ struct LandingView: View {
                     appIcon
 
                     VStack(spacing: MS.Spacing.sm) {
-                        Text("Memory Stitcher")
+                        Text("MemX")
                             .font(MS.Font.displayLarge)
                             .foregroundStyle(.primary)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 16)
 
-                        Text("Turn your Apple Photos into a cinematic memory montage — automatically, privately, on-device.")
-                            .font(.system(size: 17, weight: .regular))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 480)
-                            .opacity(appeared ? 1 : 0)
-                            .offset(y: appeared ? 0 : 12)
+                        VStack(spacing: 8) {
+                            Text("Pick a song. Pick some photos.")
+                                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.primary)
+                            Text("We'll turn your still moments into a cinematic montage — animated to every beat drop, buildup, and chorus. Entirely on your Mac.")
+                                .font(.system(size: 15, weight: .regular))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 460)
+                        }
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : 12)
                     }
                 }
 
                 Spacer().frame(height: MS.Spacing.xxl)
 
-                // Features row
+                // Feature cards
                 HStack(spacing: MS.Spacing.lg) {
                     ForEach(features, id: \.title) { feature in
                         featureCard(feature)
@@ -64,8 +69,7 @@ struct LandingView: View {
 
                 Spacer()
 
-                // Footer
-                Text("All processing happens on your Mac. Your photos never leave your device.")
+                Text("All processing happens on your Mac. Your photos and music never leave your device.")
                     .font(MS.Font.micro)
                     .foregroundStyle(.tertiary)
                     .padding(.bottom, MS.Spacing.lg)
@@ -85,7 +89,7 @@ struct LandingView: View {
             Button("Continue Anyway") { appVM.createProject() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Memory Stitcher needs access to your Photos library to import and analyze your memories.")
+            Text("MemX needs access to your Photos library to browse and import memories.")
         }
     }
 
@@ -103,9 +107,8 @@ struct LandingView: View {
                 )
                 .frame(width: 88, height: 88)
                 .msShadow(.strong)
-
-            Image(systemName: "film.stack.fill")
-                .font(.system(size: 40))
+            Image(systemName: "music.note.list")
+                .font(.system(size: 38))
                 .foregroundStyle(.white)
         }
         .opacity(appeared ? 1 : 0)
@@ -170,8 +173,8 @@ struct LandingView: View {
     }
 
     private var features: [Feature] {[
-        Feature(icon: "photo.stack.fill", title: "Smart Import", description: "Browse albums, pick photos & videos — all from your Apple Photos library.", color: .blue),
-        Feature(icon: "cpu.fill", title: "On-Device AI", description: "Scene detection, emotion scoring, and event clustering run locally.", color: .purple),
-        Feature(icon: "film.stack.fill", title: "Storyboard", description: "A curated, ordered sequence with transitions, beats, and soundtrack.", color: .orange),
+        Feature(icon: "music.note.list", title: "Song First", description: "Pick a track. The beatmap drives every cut, hold, and transition.", color: .purple),
+        Feature(icon: "sparkles.rectangle.stack", title: "Motion Prompts", description: "Every photo gets a cinematographer's direction — it breathes, not hallucinate.", color: .orange),
+        Feature(icon: "waveform.badge.mic", title: "Beat-Synced Cuts", description: "Drops hit hard. Verses breathe. Breakdowns hold. Fully automatic.", color: .blue),
     ]}
 }

@@ -137,53 +137,6 @@ struct BeatAlignedBadge: View {
     }
 }
 
-// MARK: - PhaseProgressBadge
-
-struct PhaseProgressBadge: View {
-    let phase: AnalysisPhase
-    let isActive: Bool
-    let isComplete: Bool
-
-    var body: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            ZStack {
-                Circle()
-                    .fill(circleColor)
-                    .frame(width: 28, height: 28)
-                if isActive {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                } else {
-                    Image(systemName: isComplete ? "checkmark" : phase.icon)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(isComplete || isActive ? .white : .secondary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(phase.rawValue)
-                    .font(MS.Font.caption)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .foregroundStyle(isActive ? .primary : isComplete ? .secondary : .tertiary)
-                if isActive {
-                    Text(phase.description)
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.secondary)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: isActive)
-    }
-
-    private var circleColor: Color {
-        if isActive   { return .accentColor }
-        if isComplete { return .green }
-        return Color.secondary.opacity(0.2)
-    }
-}
-
 // MARK: - EmptyStateView
 
 struct EmptyStateView: View {

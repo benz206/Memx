@@ -7,11 +7,11 @@ struct Project: Identifiable, Codable, Hashable {
     var title: String
     var createdAt: Date
     var updatedAt: Date
-    var assetIDs: [String]           // PHAsset localIdentifiers
+    var assetIDs: [String]          // PHAsset localIdentifiers
     var settings: MontageSettings
     var status: ProjectStatus
+    var songTrack: SongTrack?
     var montagePlan: MontagePlan?
-    var analysisJobID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -32,11 +32,11 @@ struct Project: Identifiable, Codable, Hashable {
 // MARK: - ProjectStatus
 
 enum ProjectStatus: String, Codable, CaseIterable {
-    case draft       = "Draft"
-    case importing   = "Importing"
-    case analyzing   = "Analyzing"
-    case ready       = "Ready"
-    case exported    = "Exported"
+    case draft     = "Draft"
+    case importing = "Importing"
+    case analyzing = "Analyzing"
+    case ready     = "Ready"
+    case exported  = "Exported"
 
     var icon: String {
         switch self {
@@ -47,66 +47,30 @@ enum ProjectStatus: String, Codable, CaseIterable {
         case .exported:  return "film.stack"
         }
     }
-
-    var color: String {
-        switch self {
-        case .draft:     return "secondary"
-        case .importing: return "blue"
-        case .analyzing: return "orange"
-        case .ready:     return "green"
-        case .exported:  return "purple"
-        }
-    }
 }
 
 // MARK: - MontageSettings
 
 struct MontageSettings: Codable, Hashable {
-    var targetDuration: TargetDuration
     var vibe: MontageVibe
     var focus: MontageFocus
-    var pacing: MontagePacing
     var aspectRatio: AspectRatio
-    var musicPreference: MusicGenre
+    var renderQuality: RenderQuality
 
     init(
-        targetDuration: TargetDuration = .sixty,
         vibe: MontageVibe = .cinematic,
         focus: MontageFocus = .everything,
-        pacing: MontagePacing = .balanced,
         aspectRatio: AspectRatio = .widescreen,
-        musicPreference: MusicGenre = .ambient
+        renderQuality: RenderQuality = .parallax2D
     ) {
-        self.targetDuration = targetDuration
         self.vibe = vibe
         self.focus = focus
-        self.pacing = pacing
         self.aspectRatio = aspectRatio
-        self.musicPreference = musicPreference
+        self.renderQuality = renderQuality
     }
 }
 
 // MARK: - Enums
-
-enum TargetDuration: String, Codable, CaseIterable, Hashable {
-    case thirty    = "30s"
-    case sixty     = "60s"
-    case ninety    = "90s"
-    case twoMinutes = "2min"
-    case custom    = "Custom"
-
-    var seconds: Double {
-        switch self {
-        case .thirty:     return 30
-        case .sixty:      return 60
-        case .ninety:     return 90
-        case .twoMinutes: return 120
-        case .custom:     return 60
-        }
-    }
-
-    var label: String { rawValue }
-}
 
 enum MontageVibe: String, Codable, CaseIterable, Hashable {
     case nostalgic  = "Nostalgic"
@@ -140,10 +104,10 @@ enum MontageVibe: String, Codable, CaseIterable, Hashable {
 }
 
 enum MontageFocus: String, Codable, CaseIterable, Hashable {
-    case family   = "Family"
-    case friends  = "Friends"
-    case scenery  = "Scenery"
-    case everything = "Everything"
+    case family      = "Family"
+    case friends     = "Friends"
+    case scenery     = "Scenery"
+    case everything  = "Everything"
 
     var icon: String {
         switch self {
@@ -151,20 +115,6 @@ enum MontageFocus: String, Codable, CaseIterable, Hashable {
         case .friends:    return "person.3.fill"
         case .scenery:    return "mountain.2.fill"
         case .everything: return "sparkles"
-        }
-    }
-}
-
-enum MontagePacing: String, Codable, CaseIterable, Hashable {
-    case slow       = "Slow"
-    case balanced   = "Balanced"
-    case energetic  = "Energetic"
-
-    var beatsPerMinute: ClosedRange<Double> {
-        switch self {
-        case .slow:      return 60...90
-        case .balanced:  return 90...120
-        case .energetic: return 120...160
         }
     }
 }
@@ -183,24 +133,24 @@ enum AspectRatio: String, Codable, CaseIterable, Hashable {
     }
 }
 
-enum MusicGenre: String, Codable, CaseIterable, Hashable {
-    case ambient     = "Ambient"
-    case indie       = "Indie"
-    case electronic  = "Electronic"
-    case classical   = "Classical"
-    case hiphop      = "Hip-Hop"
-    case pop         = "Pop"
-    case none        = "No Music"
+enum RenderQuality: String, Codable, CaseIterable, Hashable {
+    case parallax2D = "2.5D Parallax"
+    case hybrid     = "Hybrid"
+    case generative = "Generative"
+
+    var description: String {
+        switch self {
+        case .parallax2D: return "Fast · any Mac · depth-based camera motion"
+        case .hybrid:     return "Best moments get generative video · Apple Silicon"
+        case .generative: return "Full SVD render · 16GB+ RAM · slowest"
+        }
+    }
 
     var icon: String {
         switch self {
-        case .ambient:    return "waveform"
-        case .indie:      return "guitars"
-        case .electronic: return "headphones"
-        case .classical:  return "music.note"
-        case .hiphop:     return "beats.headphones"
-        case .pop:        return "star.fill"
-        case .none:       return "speaker.slash.fill"
+        case .parallax2D: return "square.stack.3d.up"
+        case .hybrid:     return "sparkles.square.filled.on.square"
+        case .generative: return "cpu.fill"
         }
     }
 }

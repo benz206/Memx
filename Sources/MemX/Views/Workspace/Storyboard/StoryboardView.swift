@@ -7,14 +7,18 @@ struct StoryboardView: View {
         Group {
             if let plan = workspaceVM.montagePlan {
                 StoryboardContentView(plan: plan)
-            } else if workspaceVM.isGeneratingPlan {
+            } else if workspaceVM.isGeneratingPlan || workspaceVM.isProcessing {
                 generatingView
             } else {
                 EmptyStateView(
                     icon: "film.stack",
                     title: "No Storyboard Yet",
-                    subtitle: "Run analysis on your media to generate a montage storyboard.",
-                    action: ("Go to Analysis", { workspaceVM.selectedTab = .analysis })
+                    subtitle: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
+                        ? "Generate motion prompts first, then build the sequence."
+                        : "Import a song and photos to get started.",
+                    action: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
+                        ? ("Go to Motion", { workspaceVM.selectedTab = .motionPrompts })
+                        : nil
                 )
             }
         }
@@ -25,9 +29,12 @@ struct StoryboardView: View {
             ProgressView()
                 .controlSize(.large)
                 .tint(.accentColor)
-            Text("Building storyboard...")
+            Text(workspaceVM.processingStatus.message)
                 .font(MS.Font.heading)
                 .foregroundStyle(.secondary)
+            Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
+                .font(MS.Font.caption)
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -43,20 +50,18 @@ struct StoryboardContentView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Sequence list
             sequenceList
                 .frame(minWidth: 320, maxWidth: 380)
 
             MSDivider().frame(width: 1).frame(maxHeight: .infinity)
 
-            // Detail + summary panel
             VStack(spacing: 0) {
                 planSummaryHeader
                 MSDivider()
                 if let item = selectedItem {
                     itemDetailPanel(item)
                 } else {
-                    moodArcPanel
+                    overviewPanel
                 }
             }
         }
@@ -66,7 +71,6 @@ struct StoryboardContentView: View {
 
     private var sequenceList: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sequence")
@@ -77,14 +81,15 @@ struct StoryboardContentView: View {
                 }
                 Spacer()
                 Button {
-                    Task { await workspaceVM.generatePlan() }
+                    Task { await workspaceVM.buildSequence() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Re-generate storyboard")
+                .help("Re-sequence")
+                .disabled(workspaceVM.isProcessing || workspaceVM.isGeneratingPlan)
             }
             .padding(MS.Spacing.md)
 
@@ -92,21 +97,17 @@ struct StoryboardContentView: View {
 
             List(selection: $selectedItem) {
                 ForEach(plan.sequence) { item in
-                    StoryboardSequenceRow(
-                        item: item,
-                        position: item.position + 1,
-                        isSelected: selectedItem?.id == item.id
-                    )
-                    .tag(item)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            workspaceVM.removeSequenceItem(item)
-                            if selectedItem?.id == item.id { selectedItem = nil }
-                        } label: {
-                            Label("Remove", systemImage: "trash")
+                    StoryboardSequenceRow(item: item, position: item.position + 1, isSelected: selectedItem?.id == item.id)
+                        .tag(item)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                workspaceVM.removeSequenceItem(item)
+                                if selectedItem?.id == item.id { selectedItem = nil }
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
                         }
-                    }
                 }
                 .onMove { src, dst in
                     workspaceVM.moveSequenceItem(from: src, to: dst)
@@ -124,12 +125,11 @@ struct StoryboardContentView: View {
                 summaryItem(icon: "clock", label: "Duration", value: formatDuration(plan.totalDuration))
                 summaryItem(icon: "film.stack", label: "Clips", value: "\(plan.sequence.count)")
                 summaryItem(icon: "sparkles", label: "Vibe", value: plan.settings.vibe.rawValue)
-                summaryItem(icon: "speedometer", label: "Pacing", value: plan.settings.pacing.rawValue)
-                summaryItem(icon: "music.note", label: "Genre", value: plan.settings.musicPreference.rawValue)
                 summaryItem(icon: "aspectratio", label: "Ratio", value: plan.settings.aspectRatio.rawValue)
-
+                if !plan.excludedAssetIDs.isEmpty {
+                    summaryItem(icon: "photo.badge.minus", label: "Excluded", value: "\(plan.excludedAssetIDs.count)")
+                }
                 Spacer()
-
                 MSSecondaryButton("Export Plan", icon: "square.and.arrow.up") {
                     showExportSheet = true
                 }
@@ -150,119 +150,181 @@ struct StoryboardContentView: View {
     private func itemDetailPanel(_ item: MontageSequenceItem) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MS.Spacing.md) {
-                // Clip header
                 HStack {
                     Text("Clip \(item.position + 1)")
                         .font(MS.Font.title)
+                    if let sectionType = item.sectionType {
+                        MSBadge(text: sectionType.rawValue, size: .small)
+                    }
                     Spacer()
                     ConfidenceBadge(score: item.confidenceScore)
                 }
 
-                // Thumbnail
                 if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }) {
                     AssetThumbnailView(asset: asset, size: 200, cornerRadius: MS.Radius.md, isSelected: false, showOverlay: true)
                         .frame(maxWidth: .infinity)
                 }
 
-                // Clip timing
+                // Timing
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     MSSectionHeader(title: "Timing")
-                    MSStatRow(label: "Clip Start", value: formatTimestamp(item.clipStart), icon: "arrow.right.to.line")
-                    MSStatRow(label: "Clip End", value: formatTimestamp(item.clipEnd), icon: "arrow.left.to.line")
-                    MSStatRow(label: "Duration", value: formatDuration(item.clipDuration), icon: "timer")
-                    MSStatRow(label: "Timeline Start", value: formatTimestamp(item.estimatedFinalStart), icon: "play.fill")
-                    MSStatRow(label: "Timeline End", value: formatTimestamp(item.estimatedFinalEnd), icon: "stop.fill")
-                }
-                .msCard()
-
-                // Transition picker
-                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                    MSSectionHeader(title: "Transition")
-                    HStack {
-                        ForEach(TransitionType.allCases.prefix(5), id: \.self) { trans in
-                            transitionChip(trans, for: item)
+                    MSStatRow(label: "Start", value: formatTimestamp(item.startTime), icon: "play.fill")
+                    MSStatRow(label: "End", value: formatTimestamp(item.endTime), icon: "stop.fill")
+                    MSStatRow(label: "Duration", value: formatDuration(item.duration), icon: "timer")
+                    if item.beatAligned {
+                        HStack(spacing: 4) {
+                            BeatAlignedBadge()
+                            Spacer()
                         }
                     }
                 }
                 .msCard()
 
-                // AI reasoning
+                // Motion Prompt
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                    MSSectionHeader(title: "Why Selected")
-                    Text(item.selectionReason)
-                        .font(MS.Font.body)
-                        .foregroundStyle(.secondary)
+                    MSSectionHeader(title: "Motion Direction")
+                    if item.motionPrompt.isEmpty {
+                        Text("No motion prompt generated yet.")
+                            .font(MS.Font.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text(item.motionPrompt)
+                            .font(MS.Font.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    MSStatRow(label: "Intensity", value: "\(Int(item.motionIntensity * 100))%", icon: "bolt")
+                }
+                .msCard()
 
-                    HStack(spacing: MS.Spacing.xs) {
-                        MSBadge(text: item.eventLabel, color: .accentColor, size: .small)
-                        if item.beatAligned { BeatAlignedBadge() }
+                // Transitions
+                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                    MSSectionHeader(title: "Transitions")
+                    HStack {
+                        Text("In").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: MS.Spacing.xs) {
+                                ForEach(TransitionType.allCases, id: \.self) { trans in
+                                    transitionChip(trans, current: item.transitionIn) {
+                                        workspaceVM.updateTransition(for: item, transitionIn: trans)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HStack {
+                        Text("Out").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: MS.Spacing.xs) {
+                                ForEach(TransitionType.allCases, id: \.self) { trans in
+                                    transitionChip(trans, current: item.transitionOut) {
+                                        workspaceVM.updateTransition(for: item, transitionOut: trans)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 .msCard()
+
+                // Selection reason
+                if !item.selectionReason.isEmpty {
+                    VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                        MSSectionHeader(title: "Why Selected")
+                        Text(item.selectionReason)
+                            .font(MS.Font.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    .msCard()
+                }
             }
             .padding(MS.Spacing.md)
         }
     }
 
-    // MARK: - Mood Arc Panel
+    // MARK: - Overview Panel
 
-    private var moodArcPanel: some View {
+    private var overviewPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MS.Spacing.lg) {
-                MoodArcChart(points: plan.moodArc)
-                    .frame(height: 160)
-                    .msCard()
+                // Song card
+                if let song = workspaceVM.songTrack {
+                    selectedSongCard(song)
+                }
 
-                SoundtrackPanel(songs: plan.suggestedSongs)
+                // Energy arc
+                if !plan.moodArc.isEmpty {
+                    MoodArcChart(points: plan.moodArc)
+                        .frame(height: 160)
+                        .msCard()
+                }
 
-                // Export render placeholder
+                // Render pipeline
                 renderPipelinePlaceholder
             }
             .padding(MS.Spacing.md)
         }
     }
 
-    // MARK: - Render Pipeline Placeholder
+    private func selectedSongCard(_ song: SongTrack) -> some View {
+        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+            MSSectionHeader(title: "Selected Song")
+            HStack(spacing: MS.Spacing.md) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
+                        .fill(LinearGradient(colors: [.accentColor.opacity(0.3), .purple.opacity(0.2)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: song.fileFormatIcon)
+                        .font(.system(size: 18))
+                        .foregroundStyle(Color.accentColor)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(song.displayTitle)
+                        .font(MS.Font.caption).fontWeight(.semibold)
+                    Text(song.displayArtist)
+                        .font(MS.Font.micro).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let bpm = song.bpm {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(Int(bpm)) BPM")
+                            .font(MS.Font.micro).foregroundStyle(.secondary)
+                        Text(song.durationString)
+                            .font(MS.Font.micro).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .msCard()
+    }
 
     private var renderPipelinePlaceholder: some View {
         VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            MSSectionHeader(
-                title: "Export / Render Pipeline",
-                subtitle: "Future: AVFoundation composition + on-device rendering"
-            )
-
+            MSSectionHeader(title: "Render Pipeline", subtitle: "AVFoundation composition + on-device motion")
             VStack(spacing: MS.Spacing.sm) {
-                ForEach(exportSteps, id: \.0) { step in
+                ForEach(renderSteps, id: \.0) { step in
                     HStack(spacing: MS.Spacing.sm) {
-                        Image(systemName: step.1)
-                            .font(.system(size: 14))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 24)
+                        Image(systemName: step.1).font(.system(size: 14)).foregroundStyle(.tertiary).frame(width: 24)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(step.0)
-                                .font(MS.Font.caption)
-                                .foregroundStyle(.secondary)
-                            Text(step.2)
-                                .font(MS.Font.micro)
-                                .foregroundStyle(.tertiary)
+                            Text(step.0).font(MS.Font.caption).foregroundStyle(.secondary)
+                            Text(step.2).font(MS.Font.micro).foregroundStyle(.tertiary)
                         }
                         Spacer()
                         MSBadge(text: "TODO", color: .orange, size: .small)
                     }
                 }
             }
-
-            MSSecondaryButton("Export as Edit Decision List (.edl)", icon: "doc.text") {}
-                .disabled(true)
-                .opacity(0.5)
+            MSSecondaryButton("Export as JSON Storyboard", icon: "doc.text") {}
+                .disabled(true).opacity(0.5)
         }
         .msCard()
     }
 
-    private var exportSteps: [(String, String, String)] {[
+    private var renderSteps: [(String, String, String)] {[
+        ("2.5D Parallax / Motion Generation", "square.stack.3d.up", "MiDaS depth → animated camera layers per photo"),
         ("AVComposition Assembly", "film.fill", "Stitch clips using AVMutableComposition"),
-        ("Audio Mix", "waveform", "Overlay soundtrack via AVAudioMix"),
-        ("Transition Rendering", "sparkles", "Apply Core Image filters for transitions"),
+        ("Audio Mix", "waveform", "Align song via AVAudioMix, snapped to beatmap"),
+        ("Transition Rendering", "sparkles", "Core Image filters for crossfades, flash whites, dissolves"),
         ("Export Session", "arrow.down.circle", "AVAssetExportSession → H.264 / HEVC"),
     ]}
 
@@ -270,41 +332,30 @@ struct StoryboardContentView: View {
 
     private func summaryItem(icon: String, label: String, value: String) -> some View {
         VStack(spacing: 2) {
-            Image(systemName: icon)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(MS.Font.caption)
-                .fontWeight(.medium)
-            Text(label)
-                .font(MS.Font.micro)
-                .foregroundStyle(.secondary)
+            Image(systemName: icon).font(.system(size: 12)).foregroundStyle(.secondary)
+            Text(value).font(MS.Font.caption).fontWeight(.medium)
+            Text(label).font(MS.Font.micro).foregroundStyle(.secondary)
         }
         .frame(minWidth: 60)
     }
 
-    private func transitionChip(_ trans: TransitionType, for item: MontageSequenceItem) -> some View {
-        let isSelected = item.transitionType == trans
-        return Button {
-            workspaceVM.updateTransition(for: item, to: trans)
-        } label: {
+    private func transitionChip(_ trans: TransitionType, current: TransitionType, action: @escaping () -> Void) -> some View {
+        let isSelected = trans == current
+        return Button(action: action) {
             VStack(spacing: 3) {
-                Image(systemName: trans.icon)
-                    .font(.system(size: 12))
+                Image(systemName: trans.icon).font(.system(size: 11))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                Text(trans.rawValue)
-                    .font(.system(size: 9))
+                Text(trans.rawValue).font(.system(size: 8))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .lineLimit(1)
             }
-            .padding(6)
+            .padding(5)
             .background(
                 isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
                 in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1)
-            )
+            .overlay(RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+                .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -329,52 +380,58 @@ struct StoryboardSequenceRow: View {
 
     var body: some View {
         HStack(spacing: MS.Spacing.sm) {
-            // Position
             Text("\(position)")
                 .font(MS.Font.mono)
                 .foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .trailing)
 
-            // Thumbnail placeholder
             RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                .fill(Color.accentColor.opacity(0.1))
+                .fill(sectionColor(item.sectionType).opacity(0.15))
                 .frame(width: 52, height: 36)
                 .overlay(
-                    Image(systemName: "photo.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.accentColor.opacity(0.5))
+                    Image(systemName: item.sectionType?.icon ?? "photo.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(sectionColor(item.sectionType).opacity(0.7))
                 )
 
-            // Info
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
-                    Text(item.eventLabel)
+                    Text(item.sectionType?.rawValue ?? "—")
                         .font(MS.Font.caption)
                         .fontWeight(.medium)
                         .lineLimit(1)
                     if item.beatAligned { BeatAlignedBadge() }
                 }
                 HStack(spacing: MS.Spacing.xs) {
-                    Text(String(format: "%.1fs", item.clipDuration))
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
+                    Text(String(format: "%.1fs", item.duration))
+                        .font(MS.Font.micro).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.tertiary)
                     HStack(spacing: 2) {
-                        Image(systemName: item.transitionType.icon)
-                            .font(.system(size: 9))
-                        Text(item.transitionType.rawValue)
-                            .font(MS.Font.micro)
+                        Image(systemName: item.transitionIn.icon).font(.system(size: 9))
+                        Text(item.transitionIn.rawValue).font(MS.Font.micro)
                     }
                     .foregroundStyle(.tertiary)
                 }
             }
 
             Spacer()
-
             ConfidenceBadge(score: item.confidenceScore, style: .icon)
         }
         .contentShape(Rectangle())
+    }
+
+    private func sectionColor(_ type: SectionType?) -> Color {
+        switch type {
+        case .intro, .outro:  return .gray
+        case .verse:          return .blue
+        case .preChorus:      return .teal
+        case .chorus:         return .indigo
+        case .buildup:        return .orange
+        case .drop:           return .red
+        case .bridge:         return .purple
+        case .breakdown:      return .mint
+        case .none:           return .secondary
+        }
     }
 }
 
@@ -385,60 +442,49 @@ struct MoodArcChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            MSSectionHeader(title: "Mood Arc", subtitle: "Valence (joy) and energy through the timeline")
+            MSSectionHeader(title: "Energy Arc", subtitle: "Energy and valence through the song")
 
             if points.isEmpty {
-                Text("No mood data")
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
+                Text("No data").font(MS.Font.caption).foregroundStyle(.secondary)
             } else {
                 GeometryReader { geo in
                     ZStack {
-                        // Energy line (orange)
+                        // Energy (orange)
                         Path { path in
-                            for (i, point) in points.enumerated() {
-                                let x = point.position * geo.size.width
-                                let y = (1 - point.energy) * geo.size.height
+                            for (i, pt) in points.enumerated() {
+                                let x = pt.position * geo.size.width
+                                let y = (1 - pt.energy) * geo.size.height
                                 if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                                 else       { path.addLine(to: CGPoint(x: x, y: y)) }
                             }
                         }
                         .stroke(Color.orange.opacity(0.7), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                        // Valence line (blue)
+                        // Valence (blue)
                         Path { path in
-                            for (i, point) in points.enumerated() {
-                                let x = point.position * geo.size.width
-                                let y = (1 - point.valence) * geo.size.height
+                            for (i, pt) in points.enumerated() {
+                                let x = pt.position * geo.size.width
+                                let y = (1 - pt.valence) * geo.size.height
                                 if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                                 else       { path.addLine(to: CGPoint(x: x, y: y)) }
                             }
                         }
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                        // Labels
-                        ForEach(points, id: \.position) { point in
-                            let x = point.position * geo.size.width
-                            let y = (1 - point.valence) * geo.size.height
+                        // Dots at vocal peaks
+                        ForEach(points.prefix(8), id: \.position) { pt in
                             Circle()
                                 .fill(Color.accentColor)
-                                .frame(width: 5, height: 5)
-                                .position(x: x, y: y)
+                                .frame(width: 4, height: 4)
+                                .position(x: pt.position * geo.size.width, y: (1 - pt.valence) * geo.size.height)
                         }
                     }
                 }
                 .frame(height: 80)
 
-                // Legend
                 HStack(spacing: MS.Spacing.lg) {
                     legendItem(color: .accentColor, label: "Valence")
                     legendItem(color: .orange, label: "Energy")
-                    Spacer()
-                    ForEach(points.prefix(4), id: \.position) { p in
-                        Text(p.label)
-                            .font(MS.Font.micro)
-                            .foregroundStyle(.tertiary)
-                    }
                 }
             }
         }
@@ -449,54 +495,6 @@ struct MoodArcChart: View {
             Capsule().fill(color).frame(width: 16, height: 2)
             Text(label).font(MS.Font.micro).foregroundStyle(.secondary)
         }
-    }
-}
-
-// MARK: - SoundtrackPanel
-
-struct SoundtrackPanel: View {
-    let songs: [SongSuggestion]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            MSSectionHeader(title: "Suggested Soundtrack", subtitle: "Matched to mood arc and vibe")
-
-            ForEach(songs.prefix(3)) { song in
-                HStack(spacing: MS.Spacing.md) {
-                    // Album art placeholder
-                    RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor.opacity(0.3), .purple.opacity(0.2)],
-                                            startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Image(systemName: "music.note")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.accentColor)
-                        )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(song.title)
-                            .font(MS.Font.caption)
-                            .fontWeight(.semibold)
-                        Text(song.artist)
-                            .font(MS.Font.micro)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    VStack(alignment: .trailing, spacing: 2) {
-                        ConfidenceBadge(score: song.vibeMatch)
-                        Text("\(Int(song.bpm)) BPM")
-                            .font(MS.Font.micro)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(MS.Spacing.sm)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-            }
-        }
-        .msCard()
     }
 }
 
@@ -512,7 +510,7 @@ struct ExportPlanSheet: View {
                 .font(MS.Font.title)
 
             VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                exportOption(icon: "doc.text", title: "Edit Decision List (.edl)", subtitle: "Import directly into Premiere, DaVinci, or Final Cut", available: false)
+                exportOption(icon: "doc.text", title: "Edit Decision List (.edl)", subtitle: "Import into Premiere, DaVinci, or Final Cut", available: false)
                 exportOption(icon: "doc.badge.arrow.up", title: "JSON Storyboard", subtitle: "Machine-readable plan for custom pipelines", available: true)
                 exportOption(icon: "doc.richtext", title: "PDF Shot List", subtitle: "Printable shot-by-shot breakdown", available: false)
                 exportOption(icon: "film.fill", title: "Rendered Video (AVFoundation)", subtitle: "On-device render pipeline — coming soon", available: false)
@@ -526,10 +524,8 @@ struct ExportPlanSheet: View {
 
     private func exportOption(icon: String, title: String, subtitle: String, available: Bool) -> some View {
         HStack(spacing: MS.Spacing.md) {
-            Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundStyle(available ? Color.accentColor : Color.secondary)
-                .frame(width: 32)
+            Image(systemName: icon).font(.system(size: 20))
+                .foregroundStyle(available ? Color.accentColor : Color.secondary).frame(width: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(MS.Font.caption).fontWeight(.semibold)
                     .foregroundStyle(available ? .primary : .secondary)

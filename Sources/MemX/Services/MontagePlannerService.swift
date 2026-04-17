@@ -1,208 +1,197 @@
 import Foundation
 
-// MARK: - MontagePlannerServiceProtocol
+// MARK: - SequencerServiceProtocol
 
-protocol MontagePlannerServiceProtocol {
-    func buildPlan(
+protocol SequencerServiceProtocol {
+    func buildSequence(
         title: String,
         settings: MontageSettings,
-        analysisResult: AnalysisResult
+        assets: [MediaAsset],
+        motionPrompts: [MotionPrompt],
+        beatmap: Beatmap
     ) async -> MontagePlan
 }
 
-// MARK: - MontagePlannerService
+// MARK: - SequencerService
+// Matches photos to beats. High-score photos land on drops and chorus peaks.
+// Cut rhythm follows energy: short clips at high energy, long holds at low energy.
 
-final class MontagePlannerService: MontagePlannerServiceProtocol {
+final class SequencerService: SequencerServiceProtocol {
 
-    static let shared = MontagePlannerService()
-    private let musicService = MusicSuggestionService.shared
+    static let shared = SequencerService()
     private init() {}
 
-    func buildPlan(
+    func buildSequence(
         title: String,
         settings: MontageSettings,
-        analysisResult: AnalysisResult
+        assets: [MediaAsset],
+        motionPrompts: [MotionPrompt],
+        beatmap: Beatmap
     ) async -> MontagePlan {
 
-        let targetDuration = settings.targetDuration.seconds
-        let candidates = analysisResult.candidates
-            .filter(\.isIncluded)
-            .sorted { $0.overallScore > $1.overallScore }
+        let promptMap = Dictionary(uniqueKeysWithValues: motionPrompts.map { ($0.assetID, $0) })
+        let candidates = assets
+            .filter { ($0.analysisScore ?? 0) > 0.3 }
+            .sorted { ($0.analysisScore ?? 0) > ($1.analysisScore ?? 0) }
 
-        // Select clips that fit within target duration
         var sequence: [MontageSequenceItem] = []
-        var usedDuration: TimeInterval = 0
+        var excludedIDs: [String] = []
         var position = 0
-        var currentTime: TimeInterval = 0
+        var currentTime: Double = 0
+        let totalDuration = beatmap.durationSeconds
 
-        // Determine clip budget
-        let avgClipDuration = clipDuration(for: settings.pacing)
-        let maxClips = Int(targetDuration / avgClipDuration)
+        // Build time slots from beatmap sections
+        let timeSlots = buildTimeSlots(from: beatmap)
 
-        // Order by event for narrative flow
-        let orderedCandidates = orderByNarrativeFlow(
-            candidates: candidates,
-            events: analysisResult.events,
-            maxClips: maxClips,
-            assets: analysisResult.scoredAssets
-        )
+        // Assign candidates to time slots
+        var candidatePool = candidates
+        let highScoreCandidates = Array(candidatePool.prefix(max(1, candidatePool.count / 4)))
+        let remainingCandidates = Array(candidatePool.dropFirst(max(1, candidatePool.count / 4)))
+        candidatePool = remainingCandidates + highScoreCandidates // high score goes last → reserved for hero slots
 
-        for candidate in orderedCandidates {
-            guard usedDuration < targetDuration else { break }
-            let asset = analysisResult.scoredAssets.first(where: { $0.id == candidate.assetID })
-            let clipDur = candidateClipDuration(candidate: candidate, settings: settings)
-            let transition = selectTransition(for: position, settings: settings, candidate: candidate)
-            let event = analysisResult.events.first(where: { $0.assetIDs.contains(candidate.assetID) })
-            let reason = selectionReason(for: candidate, event: event)
+        var usedAssetIDs: [String] = []
+
+        for slot in timeSlots {
+            guard currentTime < totalDuration else { break }
+
+            // Pick best available asset for this slot's energy level
+            let isHeroSlot = slot.section.type == .drop || slot.section.type == .chorus
+            let asset: MediaAsset?
+            if isHeroSlot {
+                // Use highest-score unused asset
+                asset = candidates.first { !usedAssetIDs.contains($0.id) }
+            } else {
+                // Pick next sequential (chronological after scoring)
+                asset = candidatePool.first { !usedAssetIDs.contains($0.id) }
+            }
+
+            guard let selectedAsset = asset else { continue }
+            usedAssetIDs.append(selectedAsset.id)
+
+            let prompt = promptMap[selectedAsset.id]
+            let energy = Float(beatmap.energy(at: slot.startTime))
+            let transIn = transitionIn(for: slot.section.type, position: position)
+            let transOut = transitionOut(for: slot.section.type)
 
             let item = MontageSequenceItem(
                 position: position,
-                assetID: candidate.assetID,
-                clipStart: candidate.clipStart,
-                clipEnd: candidate.clipStart + clipDur,
-                transitionType: transition,
-                eventLabel: event?.label ?? "General",
-                selectionReason: reason,
-                beatAligned: Bool.random(),
-                confidenceScore: candidate.overallScore,
-                estimatedFinalStart: currentTime,
-                estimatedFinalEnd: currentTime + clipDur
+                assetID: selectedAsset.id,
+                startTime: slot.startTime,
+                endTime: min(slot.endTime, totalDuration),
+                transitionIn: transIn,
+                transitionOut: transOut,
+                motionPrompt: prompt?.prompt ?? "",
+                motionIntensity: prompt?.motionIntensity ?? energy,
+                beatAligned: slot.beatAligned,
+                confidenceScore: selectedAsset.analysisScore ?? 0.7,
+                sectionType: slot.section.type,
+                selectionReason: selectionReason(for: selectedAsset, slot: slot)
             )
             sequence.append(item)
-            usedDuration += clipDur
-            currentTime += clipDur + transition.defaultDuration
+            currentTime = slot.endTime
             position += 1
         }
 
-        // Mood arc
-        let moodArc = buildMoodArc(from: analysisResult.events, sequence: sequence)
+        // Track excluded assets
+        let usedSet = Set(usedAssetIDs)
+        excludedIDs = candidates.filter { !usedSet.contains($0.id) }.map(\.id)
 
-        // Songs
-        let songs = await musicService.suggestSongs(for: settings, moodArc: moodArc)
+        // Build mood arc from energy curve
+        let moodArc = buildMoodArc(from: beatmap, sequence: sequence)
 
-        var plan = MontagePlan(
+        return MontagePlan(
             title: title,
             settings: settings,
             sequence: sequence,
-            suggestedSongs: songs,
-            moodArc: moodArc
+            moodArc: moodArc,
+            excludedAssetIDs: excludedIDs
         )
-        plan.eventSummary = summarizeEvents(analysisResult.events)
-        plan.totalDuration = sequence.reduce(0) { $0 + $1.clipDuration }
-        return plan
     }
 
-    // MARK: - Helpers
+    // MARK: - Time Slot Building
 
-    private func clipDuration(for pacing: MontagePacing) -> TimeInterval {
-        switch pacing {
-        case .slow:      return 4.5
-        case .balanced:  return 2.8
-        case .energetic: return 1.6
+    private struct TimeSlot {
+        var startTime: Double
+        var endTime: Double
+        var section: BeatSection
+        var beatAligned: Bool
+    }
+
+    private func buildTimeSlots(from beatmap: Beatmap) -> [TimeSlot] {
+        var slots: [TimeSlot] = []
+
+        for section in beatmap.sections {
+            let clipRange = section.type.clipHoldSeconds
+            let clipDuration = Double.random(in: clipRange)
+            var t = section.start
+
+            while t + clipDuration <= section.end {
+                // Snap to nearest beat
+                let snappedStart = beatmap.nearestBeat(to: t)
+                let snappedEnd = min(beatmap.nearestBeat(to: t + clipDuration), section.end)
+                guard snappedEnd > snappedStart else { t += clipDuration; continue }
+
+                slots.append(TimeSlot(
+                    startTime: snappedStart,
+                    endTime: snappedEnd,
+                    section: section,
+                    beatAligned: true
+                ))
+                t = snappedEnd
+            }
+        }
+        return slots
+    }
+
+    // MARK: - Transition Selection
+
+    private func transitionIn(for section: SectionType, position: Int) -> TransitionType {
+        if position == 0 { return .fadeFromBlack }
+        switch section {
+        case .drop:           return .flashWhite
+        case .buildup:        return .crossfade
+        case .breakdown, .bridge: return .dissolve
+        case .intro, .outro:  return .dissolve
+        default:              return Bool.random() ? .hardCut : .crossfade
         }
     }
 
-    private func candidateClipDuration(candidate: ClipCandidate, settings: MontageSettings) -> TimeInterval {
-        let base = clipDuration(for: settings.pacing)
-        if candidate.overallScore > 0.85 {
-            return base * 1.4  // Let great shots breathe
-        } else if candidate.overallScore < 0.55 {
-            return base * 0.7  // Trim weaker shots
-        }
-        return base
-    }
-
-    private func selectTransition(for position: Int, settings: MontageSettings, candidate: ClipCandidate) -> TransitionType {
-        switch settings.pacing {
-        case .energetic:
-            return [.cut, .flash, .cut, .cut].randomElement()!
-        case .slow:
-            return [.crossDissolve, .dip, .crossDissolve].randomElement()!
-        case .balanced:
-            if position == 0 { return .dip }
-            return [.cut, .crossDissolve, .cut, .swipe].randomElement()!
+    private func transitionOut(for section: SectionType) -> TransitionType {
+        switch section {
+        case .drop:           return .hardCut
+        case .outro:          return .dissolve
+        case .breakdown:      return .crossfade
+        default:              return .hardCut
         }
     }
 
-    private func orderByNarrativeFlow(
-        candidates: [ClipCandidate],
-        events: [MemoryEvent],
-        maxClips: Int,
-        assets: [MediaAsset]
-    ) -> [ClipCandidate] {
-        // Group candidates by event, pick top N from each, then interleave for arc
-        var byEvent: [String: [ClipCandidate]] = [:]
-        let assetMap = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
+    // MARK: - Selection Reason
 
-        for candidate in candidates {
-            let eventLabel = assetMap[candidate.assetID]?.eventLabel ?? "General"
-            byEvent[eventLabel, default: []].append(candidate)
-        }
-
-        // Keep top 3 from each event, ordered by events
-        var ordered: [ClipCandidate] = []
-        for event in events {
-            let eventCandidates = (byEvent[event.label] ?? [])
-                .sorted { $0.overallScore > $1.overallScore }
-                .prefix(3)
-            ordered.append(contentsOf: eventCandidates)
-        }
-
-        // Fill remaining slots
-        let usedIDs = Set(ordered.map(\.assetID))
-        let remaining = candidates.filter { !usedIDs.contains($0.assetID) }
-        ordered.append(contentsOf: remaining)
-
-        return Array(ordered.prefix(maxClips))
-    }
-
-    private func selectionReason(for candidate: ClipCandidate, event: MemoryEvent?) -> String {
+    private func selectionReason(for asset: MediaAsset, slot: TimeSlot) -> String {
         var reasons: [String] = []
-
-        if candidate.qualityScore > 0.8 { reasons.append("sharp & well-exposed") }
-        if candidate.emotionScore > 0.75 { reasons.append("strong emotional valence") }
-        if candidate.noveltyScore > 0.7 { reasons.append("visually distinct from neighbors") }
-        if candidate.faces > 0 { reasons.append("\(candidate.faces) face\(candidate.faces > 1 ? "s" : "") detected") }
-        if candidate.motionScore > 0.7 { reasons.append("dynamic motion") }
-
-        if reasons.isEmpty { reasons.append("balanced score across quality metrics") }
+        if let q = asset.qualityScore, q > 0.8 { reasons.append("sharp & well-exposed") }
+        if let e = asset.emotionScore, e > 0.75 { reasons.append("strong emotional valence") }
+        if let n = asset.noveltyScore, n > 0.7 { reasons.append("visually distinct") }
+        if slot.section.type == .drop || slot.section.type == .chorus { reasons.append("hero slot") }
+        if slot.beatAligned { reasons.append("beat-aligned") }
+        if reasons.isEmpty { reasons.append("balanced score") }
         return reasons.joined(separator: " · ")
     }
 
-    private func buildMoodArc(from events: [MemoryEvent], sequence: [MontageSequenceItem]) -> [MoodPoint] {
-        guard !sequence.isEmpty else { return [] }
-        let totalDur = sequence.last.map { $0.estimatedFinalEnd } ?? 1
+    // MARK: - Mood Arc
 
-        return sequence.enumerated().compactMap { idx, item in
-            let position = totalDur > 0 ? item.estimatedFinalStart / totalDur : Double(idx) / Double(sequence.count)
-            let event = events.first(where: { $0.assetIDs.contains(item.assetID) })
-            let (valence, energy) = moodForEmotion(event?.dominantEmotion ?? .joy)
+    private func buildMoodArc(from beatmap: Beatmap, sequence: [MontageSequenceItem]) -> [MoodPoint] {
+        guard !beatmap.energyCurve.isEmpty else { return [] }
+        let total = beatmap.durationSeconds
+        return beatmap.energyCurve.compactMap { point in
+            guard total > 0 else { return nil }
+            let valence = 0.4 + point.energy * 0.6  // energy → approximate valence
             return MoodPoint(
-                position: position,
+                position: point.time / total,
                 valence: valence,
-                energy: energy,
-                label: event?.label ?? "Scene \(idx + 1)"
+                energy: point.energy,
+                label: beatmap.section(at: point.time)?.type.rawValue ?? ""
             )
         }
-    }
-
-    private func moodForEmotion(_ emotion: Emotion) -> (Double, Double) {
-        switch emotion {
-        case .joy:        return (0.9, 0.7)
-        case .nostalgia:  return (0.6, 0.3)
-        case .excitement: return (0.8, 0.95)
-        case .calm:       return (0.5, 0.2)
-        case .awe:        return (0.75, 0.5)
-        case .humor:      return (0.85, 0.6)
-        case .love:       return (0.95, 0.4)
-        case .surprise:   return (0.7, 0.8)
-        }
-    }
-
-    private func summarizeEvents(_ events: [MemoryEvent]) -> String {
-        let labels = events.map(\.label)
-        if labels.isEmpty { return "A personal montage" }
-        if labels.count == 1 { return labels[0] }
-        return labels.dropLast().joined(separator: ", ") + " & " + labels.last!
     }
 }

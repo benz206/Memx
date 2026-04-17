@@ -175,7 +175,9 @@ struct ProjectRowView: View {
                         MSBadge(text: "\(project.assetIDs.count) assets", size: .small)
                     }
                     MSBadge(text: project.settings.vibe.rawValue, size: .small)
-                    MSBadge(text: project.settings.targetDuration.label, size: .small)
+                    if let song = project.songTrack {
+                        MSBadge(text: song.displayTitle, color: .purple, size: .small)
+                    }
                     Spacer()
                 }
             }

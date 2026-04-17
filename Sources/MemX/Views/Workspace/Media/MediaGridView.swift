@@ -52,7 +52,7 @@ struct MediaGridView: View {
                     icon: "photo.stack",
                     title: "No Media Yet",
                     subtitle: "Import photos and videos from Apple Photos to get started.",
-                    action: ("Go to Import", { workspaceVM.selectedTab = .importMedia })
+                    action: ("Go to Photos", { workspaceVM.selectedTab = .photos })
                 )
             } else if visibleAssets.isEmpty {
                 EmptyStateView(
@@ -138,8 +138,8 @@ struct MediaGridView: View {
     private var mainGrid: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MS.Spacing.lg) {
-                if workspaceVM.hasAnalysisResult {
-                    // Grouped by event
+                if workspaceVM.hasMotionPrompts {
+                    // Show with motion prompt indicator
                     ForEach(groupedByEvent, id: \.0) { eventLabel, assets in
                         eventSection(label: eventLabel, assets: assets)
                     }

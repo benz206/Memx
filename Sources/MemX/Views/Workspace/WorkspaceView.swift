@@ -7,7 +7,6 @@ struct WorkspaceView: View {
 
     init(project: Project) {
         self.project = project
-        // @State init trick: will be replaced by environment in .onAppear
         _workspaceVM = State(initialValue: WorkspaceViewModel(
             project: project,
             appVM: AppViewModel()
@@ -49,7 +48,6 @@ struct WorkspaceView: View {
         .onAppear {
             workspaceVM = WorkspaceViewModel(project: project, appVM: appVM)
             if workspaceVM.assets.isEmpty && !project.assetIDs.isEmpty {
-                // Re-hydrate assets from mock if needed (real app: fetch from PhotoKit)
                 let allMock = MockDataProvider.mockAssets()
                 let mapped = project.assetIDs.compactMap { id in allMock.first { $0.id == id } }
                 workspaceVM.addAssets(mapped.isEmpty ? allMock : mapped)
@@ -61,9 +59,15 @@ struct WorkspaceView: View {
 
     private var sidebarContent: some View {
         List(WorkspaceTab.allCases, id: \.self, selection: $workspaceVM.selectedTab) { tab in
-            Label(tab.rawValue, systemImage: tab.icon)
-                .font(MS.Font.body)
-                .tag(tab)
+            HStack(spacing: MS.Spacing.sm) {
+                Text("\(tab.stepNumber)")
+                    .font(MS.Font.micro)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14)
+                Label(tab.rawValue, systemImage: tab.icon)
+                    .font(MS.Font.body)
+            }
+            .tag(tab)
         }
         .listStyle(.sidebar)
         .navigationTitle(workspaceVM.project.title)
@@ -76,9 +80,16 @@ struct WorkspaceView: View {
         VStack(alignment: .leading, spacing: MS.Spacing.xs) {
             MSDivider()
             VStack(alignment: .leading, spacing: 6) {
+                if let song = workspaceVM.songTrack {
+                    MSStatRow(label: "Song", value: song.displayTitle, icon: "music.note")
+                    if let bpm = song.bpm {
+                        MSStatRow(label: "BPM", value: "\(Int(bpm))", icon: "waveform")
+                    }
+                } else {
+                    MSStatRow(label: "Song", value: "None", icon: "music.note")
+                }
                 MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)", icon: "photo")
                 MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)", icon: "video")
-                MSStatRow(label: "Duration", value: workspaceVM.project.settings.targetDuration.rawValue, icon: "clock")
                 MSStatRow(label: "Status", value: workspaceVM.project.status.rawValue, icon: "info.circle")
             }
             .padding(MS.Spacing.sm)
@@ -91,14 +102,12 @@ struct WorkspaceView: View {
     private var detailContent: some View {
         Group {
             switch workspaceVM.selectedTab {
-            case .importMedia:
+            case .song:
+                SongImportView()
+            case .photos:
                 ImportView()
-            case .media:
-                MediaGridView()
-            case .setup:
-                MontageSetupView()
-            case .analysis:
-                AnalysisView()
+            case .motionPrompts:
+                MotionPromptsView()
             case .storyboard:
                 StoryboardView()
             }
@@ -138,23 +147,29 @@ struct WorkspaceView: View {
 
     private var toolbarActions: some View {
         HStack(spacing: MS.Spacing.sm) {
-            // Status badge
             MSBadge(
                 text: workspaceVM.project.status.rawValue,
                 color: statusColor(workspaceVM.project.status),
                 size: .small
             )
 
-            // Analyze button
-            if workspaceVM.selectedTab == .analysis || workspaceVM.selectedTab == .setup {
-                MSPrimaryButton(
-                    workspaceVM.isAnalyzing ? "Analyzing..." : "Generate Plan",
-                    icon: workspaceVM.isAnalyzing ? nil : "sparkles",
-                    isLoading: workspaceVM.isAnalyzing
-                ) {
-                    Task { await workspaceVM.runAnalysis() }
+            // Run pipeline shortcut from storyboard/motion tabs
+            if workspaceVM.selectedTab == .motionPrompts || workspaceVM.selectedTab == .storyboard {
+                if workspaceVM.hasPlan {
+                    MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
+                        Task { await workspaceVM.runPipeline() }
+                    }
+                    .disabled(workspaceVM.isProcessing)
+                } else if !workspaceVM.assets.isEmpty && workspaceVM.hasBeatmap {
+                    MSPrimaryButton(
+                        workspaceVM.isProcessing ? "Processing..." : "Run Pipeline",
+                        icon: workspaceVM.isProcessing ? nil : "sparkles",
+                        isLoading: workspaceVM.isProcessing
+                    ) {
+                        Task { await workspaceVM.runPipeline() }
+                    }
+                    .disabled(!workspaceVM.canRunPipeline)
                 }
-                .disabled(!workspaceVM.canAnalyze)
             }
         }
     }

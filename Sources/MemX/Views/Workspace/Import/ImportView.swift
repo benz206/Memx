@@ -243,7 +243,7 @@ struct ImportView: View {
                     Spacer()
                     MSPrimaryButton("Add to Project", icon: "arrow.right.circle.fill") {
                         workspaceVM.addAssets(importVM.selectedAssets)
-                        workspaceVM.selectedTab = .media
+                        workspaceVM.selectedTab = .motionPrompts
                     }
                 }
                 .padding(.horizontal, MS.Spacing.lg)
