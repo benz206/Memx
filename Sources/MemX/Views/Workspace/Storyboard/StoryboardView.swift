@@ -37,6 +37,12 @@ struct StoryboardView: View {
             Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
                 .font(MS.Font.caption)
                 .foregroundStyle(.tertiary)
+
+            if workspaceVM.isCancellable {
+                MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
+                    workspaceVM.cancelPipeline()
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -49,13 +55,16 @@ struct StoryboardContentView: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
     @State private var selectedItem: MontageSequenceItem? = nil
     @State private var showExportSheet = false
+    @State private var showDeleteConfirm = false
+    @State private var showReRenderConfirm = false
 
     var body: some View {
         HStack(spacing: 0) {
             sequenceList
                 .frame(minWidth: 320, maxWidth: 380)
 
-            MSDivider().frame(width: 1).frame(maxHeight: .infinity)
+            MSVerticalDivider()
+                .frame(maxHeight: .infinity)
 
             VStack(spacing: 0) {
                 planSummaryHeader
@@ -65,6 +74,17 @@ struct StoryboardContentView: View {
                 } else {
                     overviewPanel
                 }
+            }
+        }
+        .confirmationDialog("Delete rendered file?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) { workspaceVM.deleteExport() }
+        }
+        .confirmationDialog(
+            "Replace existing render? This will overwrite the current file.",
+            isPresented: $showReRenderConfirm
+        ) {
+            Button("Replace", role: .destructive) {
+                Task { await workspaceVM.renderVideo() }
             }
         }
     }
@@ -132,7 +152,7 @@ struct StoryboardContentView: View {
                     summaryItem(icon: "photo.badge.minus", label: "Excluded", value: "\(plan.excludedAssetIDs.count)")
                 }
                 Spacer()
-                MSSecondaryButton("Export Plan", icon: "square.and.arrow.up") {
+                MSSecondaryButton("Export Plan (JSON)", icon: "square.and.arrow.up") {
                     showExportSheet = true
                 }
                 .padding(.trailing, MS.Spacing.md)
@@ -167,7 +187,6 @@ struct StoryboardContentView: View {
                         .frame(maxWidth: .infinity)
                 }
 
-                // Timing
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     MSSectionHeader(title: "Timing")
                     MSStatRow(label: "Start", value: formatTimestamp(item.startTime), icon: "play.fill")
@@ -182,7 +201,6 @@ struct StoryboardContentView: View {
                 }
                 .msCard()
 
-                // Motion Prompt
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     MSSectionHeader(title: "Motion Direction")
                     if item.motionPrompt.isEmpty {
@@ -198,37 +216,24 @@ struct StoryboardContentView: View {
                 }
                 .msCard()
 
-                // Transitions
+                // §3.11: fade-out edge masks on scroll rows
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     MSSectionHeader(title: "Transitions")
                     HStack {
                         Text("In").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: MS.Spacing.xs) {
-                                ForEach(TransitionType.allCases, id: \.self) { trans in
-                                    transitionChip(trans, current: item.transitionIn) {
-                                        workspaceVM.updateTransition(for: item, transitionIn: trans)
-                                    }
-                                }
-                            }
+                        transitionScrollRow(current: item.transitionIn) { trans in
+                            workspaceVM.updateTransition(for: item, transitionIn: trans)
                         }
                     }
                     HStack {
                         Text("Out").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: MS.Spacing.xs) {
-                                ForEach(TransitionType.allCases, id: \.self) { trans in
-                                    transitionChip(trans, current: item.transitionOut) {
-                                        workspaceVM.updateTransition(for: item, transitionOut: trans)
-                                    }
-                                }
-                            }
+                        transitionScrollRow(current: item.transitionOut) { trans in
+                            workspaceVM.updateTransition(for: item, transitionOut: trans)
                         }
                     }
                 }
                 .msCard()
 
-                // Selection reason
                 if !item.selectionReason.isEmpty {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                         MSSectionHeader(title: "Why Selected")
@@ -243,24 +248,44 @@ struct StoryboardContentView: View {
         }
     }
 
+    private func transitionScrollRow(current: TransitionType, onSelect: @escaping (TransitionType) -> Void) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: MS.Spacing.xs) {
+                ForEach(TransitionType.allCases, id: \.self) { trans in
+                    transitionChip(trans, current: current) { onSelect(trans) }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: 0.08),
+                    .init(color: .black, location: 0.92),
+                    .init(color: .clear, location: 1),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
     // MARK: - Overview Panel
 
     private var overviewPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MS.Spacing.lg) {
-                // Song card
                 if let song = workspaceVM.songTrack {
                     selectedSongCard(song)
                 }
 
-                // Energy arc
                 if !plan.moodArc.isEmpty {
                     MoodArcChart(points: plan.moodArc)
                         .frame(height: 160)
                         .msCard()
                 }
 
-                // Render pipeline
                 renderPipelineSection
             }
             .padding(MS.Spacing.md)
@@ -316,19 +341,31 @@ struct StoryboardContentView: View {
                         Text("\(Int(workspaceVM.renderProgress * 100))%")
                             .font(MS.Font.micro).foregroundStyle(.tertiary)
                     }
+                    if workspaceVM.isCancellable {
+                        MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
+                            workspaceVM.cancelPipeline()
+                        }
+                    }
                 }
             } else if let videoURL = workspaceVM.renderedVideoURL {
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     HStack(spacing: MS.Spacing.sm) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Export ready").font(MS.Font.caption).fontWeight(.semibold)
+                            Text("Rendered").font(MS.Font.caption).fontWeight(.semibold)
                             Text(videoURL.lastPathComponent).font(MS.Font.micro).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer()
-                        MSPrimaryButton("Delete", icon: "trash", isDestructive: true) {
-                            workspaceVM.deleteExport()
+                        Menu {
+                            Button("Delete rendered file", role: .destructive) {
+                                showDeleteConfirm = true
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
                     }
                     HStack(spacing: MS.Spacing.sm) {
                         MSSecondaryButton("Open", icon: "play.circle") {
@@ -351,38 +388,68 @@ struct StoryboardContentView: View {
                 .padding(MS.Spacing.sm)
                 .background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
             } else {
+                // §3.3: real steps shown normally; unimplemented steps shown as "Coming soon"
                 VStack(spacing: MS.Spacing.xs) {
-                    ForEach(renderSteps, id: \.0) { step in
+                    ForEach(renderSteps, id: \.title) { step in
                         HStack(spacing: MS.Spacing.sm) {
-                            Image(systemName: step.1).font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 22)
+                            Image(systemName: step.implemented ? step.icon : "lock.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(step.0).font(MS.Font.caption).foregroundStyle(.secondary)
-                                Text(step.2).font(MS.Font.micro).foregroundStyle(.tertiary)
+                                HStack(spacing: 6) {
+                                    Text(step.title)
+                                        .font(MS.Font.caption)
+                                        .foregroundStyle(.secondary)
+                                    if !step.implemented {
+                                        Text("Coming soon")
+                                            .font(MS.Font.micro)
+                                            .foregroundStyle(.tertiary)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(.quaternary.opacity(0.5), in: Capsule())
+                                    }
+                                }
+                                Text(step.subtitle)
+                                    .font(MS.Font.micro)
+                                    .foregroundStyle(.tertiary)
                             }
                             Spacer()
                         }
+                        .opacity(step.implemented ? 1.0 : 0.5)
                     }
                 }
             }
 
             MSPrimaryButton(
-                workspaceVM.renderedVideoURL != nil ? "Re-render" : "Render Video",
+                workspaceVM.renderedVideoURL != nil ? "Re-render" : "Render Movie",
                 icon: "film.fill",
                 isLoading: workspaceVM.isRendering
             ) {
-                Task { await workspaceVM.renderVideo() }
+                if workspaceVM.renderedVideoURL != nil {
+                    showReRenderConfirm = true
+                } else {
+                    Task { await workspaceVM.renderVideo() }
+                }
             }
             .disabled(workspaceVM.isRendering || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
         }
         .msCard()
     }
 
-    private var renderSteps: [(String, String, String)] {[
-        ("2.5D Parallax / Motion Generation", "square.stack.3d.up", "MiDaS depth → animated camera layers per photo"),
-        ("AVComposition Assembly", "film.fill", "Stitch clips using AVMutableComposition"),
-        ("Audio Mix", "waveform", "Align song via AVAudioMix, snapped to beatmap"),
-        ("Transition Rendering", "sparkles", "Core Image filters for crossfades, flash whites, dissolves"),
-        ("Export Session", "arrow.down.circle", "AVAssetExportSession → H.264 / HEVC"),
+    private struct RenderStep {
+        let title: String
+        let icon: String
+        let subtitle: String
+        let implemented: Bool
+    }
+
+    private var renderSteps: [RenderStep] {[
+        RenderStep(title: "Stitch clips (AVMutableComposition)", icon: "film.fill", subtitle: "Assemble clips into a composition", implemented: true),
+        RenderStep(title: "Attach audio track", icon: "waveform", subtitle: "Align song via AVAudioMix, snapped to beatmap", implemented: true),
+        RenderStep(title: "Export (AVAssetExportSession)", icon: "arrow.down.circle", subtitle: "H.264 / HEVC output file", implemented: true),
+        RenderStep(title: "2.5D Parallax / Motion Generation", icon: "square.stack.3d.up", subtitle: "MiDaS depth → animated camera layers", implemented: false),
+        RenderStep(title: "Transition Rendering", icon: "sparkles", subtitle: "Core Image filters for crossfades, flash whites", implemented: false),
     ]}
 
     // MARK: - Helpers
@@ -402,11 +469,12 @@ struct StoryboardContentView: View {
             VStack(spacing: 3) {
                 Image(systemName: trans.icon).font(.system(size: 11))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                Text(trans.rawValue).font(.system(size: 8))
+                // §3.4: font size 11 (was 8)
+                Text(trans.rawValue).font(.system(size: 11))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .lineLimit(1)
             }
-            .padding(5)
+            .padding(6)
             .background(
                 isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
                 in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
@@ -506,7 +574,6 @@ struct MoodArcChart: View {
             } else {
                 GeometryReader { geo in
                     ZStack {
-                        // Energy (orange)
                         Path { path in
                             for (i, pt) in points.enumerated() {
                                 let x = pt.position * geo.size.width
@@ -517,7 +584,6 @@ struct MoodArcChart: View {
                         }
                         .stroke(Color.orange.opacity(0.7), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                        // Valence (blue)
                         Path { path in
                             for (i, pt) in points.enumerated() {
                                 let x = pt.position * geo.size.width
@@ -528,8 +594,8 @@ struct MoodArcChart: View {
                         }
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                        // Dots at vocal peaks
-                        ForEach(points.prefix(8), id: \.position) { pt in
+                        // §3.12: raised from prefix(8) to prefix(20)
+                        ForEach(points.prefix(20), id: \.position) { pt in
                             Circle()
                                 .fill(Color.accentColor)
                                 .frame(width: 4, height: 4)
@@ -540,7 +606,7 @@ struct MoodArcChart: View {
                 .frame(height: 80)
 
                 HStack(spacing: MS.Spacing.lg) {
-                    legendItem(color: .accentColor, label: "Valence")
+                    legendItem(color: .accentColor, label: "Valence (dots = highest-valence peaks)")
                     legendItem(color: .orange, label: "Energy")
                 }
             }
@@ -622,10 +688,14 @@ struct ExportPlanSheet: View {
             if available, let action {
                 MSSecondaryButton("Export", icon: "square.and.arrow.up", action: action)
             } else {
+                // §3.5: "Soon" badge already shown; row is disabled + dimmed
                 MSBadge(text: "Soon", color: .orange, size: .small)
             }
         }
         .padding(MS.Spacing.sm)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+        .opacity(available ? 1.0 : 0.45)
+        .disabled(!available)
+        .help(available ? "" : "Coming soon")
     }
 }

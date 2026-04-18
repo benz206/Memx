@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Photos
 
 struct ImportView: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
@@ -10,11 +11,9 @@ struct ImportView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Album sidebar
             albumSidebar
 
-            MSDivider()
-                .frame(width: 1)
+            MSVerticalDivider()
                 .frame(maxHeight: .infinity)
 
             // Main content
@@ -192,12 +191,24 @@ struct ImportView: View {
         if importVM.isLoadingRecents && importVM.recentAssets.isEmpty {
             loadingGrid
         } else if importVM.visibleAssets.isEmpty {
-            EmptyStateView(
-                icon: "photo.stack",
-                title: "No Media Found",
-                subtitle: "Try a different album or import directly from the Photos picker.",
-                action: ("Open Photos", { showPhotoPicker = true })
-            )
+            let authStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            if authStatus == .denied || authStatus == .restricted {
+                EmptyStateView(
+                    icon: "photo.stack",
+                    title: "Photos Access Denied",
+                    subtitle: "Open Settings to grant MemX access to your Photos library.",
+                    action: ("Open Settings", {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
+                    })
+                )
+            } else {
+                EmptyStateView(
+                    icon: "photo.stack",
+                    title: "No Media Found",
+                    subtitle: "No media match these filters.",
+                    action: ("Open Photos", { showPhotoPicker = true })
+                )
+            }
         } else {
             assetGrid
         }
@@ -263,7 +274,7 @@ struct ImportView: View {
                     Spacer()
                     MSPrimaryButton("Add to Project", icon: "arrow.right.circle.fill") {
                         workspaceVM.addAssets(importVM.selectedAssets)
-                        workspaceVM.selectedTab = .motionPrompts
+                        workspaceVM.selectedTab = workspaceVM.hasBeatmap ? .motionPrompts : .song
                     }
                 }
                 .padding(.horizontal, MS.Spacing.lg)

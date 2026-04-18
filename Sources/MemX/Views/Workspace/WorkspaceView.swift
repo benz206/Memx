@@ -1,18 +1,17 @@
 import SwiftUI
+import Photos
 
 struct WorkspaceView: View {
     let project: Project
     @Environment(AppViewModel.self) private var appVM
     @State private var workspaceVM: WorkspaceViewModel
-    @State private var isInitialized = false
+    @State private var showMissingAssetsBanner = false
+    @State private var showLeaveConfirm = false
+    @State private var isTitleHovered = false
 
-    init(project: Project) {
+    init(project: Project, appVM: AppViewModel) {
         self.project = project
-        // Placeholder VM — replaced with the real one (using the environment appVM) in onAppear
-        _workspaceVM = State(initialValue: WorkspaceViewModel(
-            project: project,
-            appVM: AppViewModel()
-        ))
+        _workspaceVM = State(initialValue: WorkspaceViewModel(project: project, appVM: appVM))
     }
 
     var body: some View {
@@ -26,7 +25,11 @@ struct WorkspaceView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
-                    appVM.showProjects()
+                    if workspaceVM.isProcessing || workspaceVM.isRendering {
+                        showLeaveConfirm = true
+                    } else {
+                        appVM.showProjects()
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
@@ -46,15 +49,20 @@ struct WorkspaceView: View {
                 toolbarActions
             }
         }
+        .confirmationDialog(
+            "Leave project? Current pipeline will be cancelled.",
+            isPresented: $showLeaveConfirm
+        ) {
+            Button("Leave", role: .destructive) {
+                workspaceVM.cancelPipeline()
+                appVM.showProjects()
+            }
+            Button("Stay", role: .cancel) {}
+        }
         .environment(workspaceVM)
         .onAppear {
-            guard !isInitialized else { return }
-            isInitialized = true
-            workspaceVM = WorkspaceViewModel(project: project, appVM: appVM)
             if workspaceVM.assets.isEmpty && !project.assetIDs.isEmpty {
-                let allMock = MockDataProvider.mockAssets()
-                let mapped = project.assetIDs.compactMap { id in allMock.first { $0.id == id } }
-                workspaceVM.addAssets(mapped.isEmpty ? allMock : mapped)
+                showMissingAssetsBanner = true
             }
         }
     }
@@ -64,10 +72,8 @@ struct WorkspaceView: View {
     private var sidebarContent: some View {
         List(WorkspaceTab.allCases, id: \.self, selection: $workspaceVM.selectedTab) { tab in
             HStack(spacing: MS.Spacing.sm) {
-                Text("\(tab.stepNumber)")
-                    .font(MS.Font.micro)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 14)
+                stepIcon(for: tab)
+                    .frame(width: 16)
                 Label(tab.rawValue, systemImage: tab.icon)
                     .font(MS.Font.body)
             }
@@ -76,11 +82,46 @@ struct WorkspaceView: View {
         .listStyle(.sidebar)
         .navigationTitle(workspaceVM.project.title)
         .safeAreaInset(edge: .bottom) {
-            sidebarStats
+            sidebarFooter
         }
     }
 
-    private var sidebarStats: some View {
+    @ViewBuilder
+    private func stepIcon(for tab: WorkspaceTab) -> some View {
+        if isTabComplete(tab) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.green)
+        } else if isTabActive(tab) {
+            Image(systemName: "circle.dotted")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.accentColor)
+        } else {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func isTabComplete(_ tab: WorkspaceTab) -> Bool {
+        switch tab {
+        case .song:          return workspaceVM.hasSong
+        case .photos:        return !workspaceVM.assets.isEmpty
+        case .motionPrompts: return workspaceVM.hasMotionPrompts
+        case .storyboard:    return workspaceVM.montagePlan != nil
+        }
+    }
+
+    private func isTabActive(_ tab: WorkspaceTab) -> Bool {
+        switch tab {
+        case .song:          return true
+        case .photos:        return workspaceVM.hasSong
+        case .motionPrompts: return !workspaceVM.assets.isEmpty
+        case .storyboard:    return workspaceVM.hasMotionPrompts || workspaceVM.hasPlan
+        }
+    }
+
+    private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: MS.Spacing.xs) {
             MSDivider()
             VStack(alignment: .leading, spacing: 6) {
@@ -94,7 +135,32 @@ struct WorkspaceView: View {
                 }
                 MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)", icon: "photo")
                 MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)", icon: "video")
-                MSStatRow(label: "Status", value: workspaceVM.project.status.rawValue, icon: "info.circle")
+                MSStatRow(label: "Status", value: statusDisplayName(workspaceVM.project.status), icon: "info.circle")
+
+                if workspaceVM.hasSong && !workspaceVM.assets.isEmpty {
+                    MSDivider()
+                    if workspaceVM.hasPlan {
+                        MSSecondaryButton("Re-run Pipeline", icon: "arrow.clockwise") {
+                            Task { await workspaceVM.runPipeline() }
+                        }
+                        .disabled(workspaceVM.isProcessing)
+                    } else {
+                        MSPrimaryButton(
+                            workspaceVM.isProcessing ? "Processing..." : "Run Pipeline",
+                            icon: workspaceVM.isProcessing ? nil : "sparkles",
+                            isLoading: workspaceVM.isProcessing
+                        ) {
+                            Task { await workspaceVM.runPipeline() }
+                        }
+                        .disabled(!workspaceVM.canRunPipeline)
+                    }
+
+                    if workspaceVM.isCancellable {
+                        MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
+                            workspaceVM.cancelPipeline()
+                        }
+                    }
+                }
             }
             .padding(MS.Spacing.sm)
         }
@@ -104,19 +170,79 @@ struct WorkspaceView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        Group {
-            switch workspaceVM.selectedTab {
-            case .song:
-                SongImportView()
-            case .photos:
-                ImportView()
-            case .motionPrompts:
-                MotionPromptsView()
-            case .storyboard:
-                StoryboardView()
+        VStack(spacing: 0) {
+            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .denied
+                || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .restricted {
+                photosAccessBanner
+            }
+
+            if showMissingAssetsBanner {
+                missingAssetsBanner
+            }
+
+            Group {
+                switch workspaceVM.selectedTab {
+                case .song:
+                    SongImportView()
+                case .photos:
+                    ImportView()
+                case .motionPrompts:
+                    MotionPromptsView()
+                case .storyboard:
+                    StoryboardView()
+                }
             }
         }
         .environment(workspaceVM)
+    }
+
+    private var photosAccessBanner: some View {
+        HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("Photos access is denied. Grant access to load your library.")
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Open Settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { MSDivider() }
+    }
+
+    private var missingAssetsBanner: some View {
+        HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
+            Text("Some assets from this project are no longer available. Add media to continue.")
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Pick Media") {
+                workspaceVM.selectedTab = .photos
+                showMissingAssetsBanner = false
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            Button {
+                showMissingAssetsBanner = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     // MARK: - Title Field
@@ -138,11 +264,21 @@ struct WorkspaceView: View {
                 Button {
                     workspaceVM.isEditingTitle = true
                 } label: {
-                    Text(workspaceVM.project.title)
-                        .font(MS.Font.heading)
-                        .foregroundStyle(.primary)
+                    HStack(spacing: 4) {
+                        Text(workspaceVM.project.title)
+                            .font(MS.Font.heading)
+                            .foregroundStyle(.primary)
+                            .underline(isTitleHovered)
+
+                        if isTitleHovered {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
+                .onHover { isTitleHovered = $0 }
             }
         }
     }
@@ -152,39 +288,28 @@ struct WorkspaceView: View {
     private var toolbarActions: some View {
         HStack(spacing: MS.Spacing.sm) {
             MSBadge(
-                text: workspaceVM.project.status.rawValue,
+                text: statusDisplayName(workspaceVM.project.status),
                 color: statusColor(workspaceVM.project.status),
                 size: .small
             )
-
-            // Run pipeline shortcut from storyboard/motion tabs
-            if workspaceVM.selectedTab == .motionPrompts || workspaceVM.selectedTab == .storyboard {
-                if workspaceVM.hasPlan {
-                    MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
-                        Task { await workspaceVM.runPipeline() }
-                    }
-                    .disabled(workspaceVM.isProcessing)
-                } else if !workspaceVM.assets.isEmpty && workspaceVM.hasBeatmap {
-                    MSPrimaryButton(
-                        workspaceVM.isProcessing ? "Processing..." : "Run Pipeline",
-                        icon: workspaceVM.isProcessing ? nil : "sparkles",
-                        isLoading: workspaceVM.isProcessing
-                    ) {
-                        Task { await workspaceVM.runPipeline() }
-                    }
-                    .disabled(!workspaceVM.canRunPipeline)
-                }
-            }
         }
     }
 
     private func statusColor(_ status: ProjectStatus) -> Color {
         switch status {
-        case .draft:     return .secondary
-        case .importing: return .blue
-        case .analyzing: return .orange
-        case .ready:     return .green
-        case .exported:  return .purple
+        case .draft:        return .secondary
+        case .importing:    return .blue
+        case .analyzing:    return .orange
+        case .ready:        return .green
+        case .exported:     return .purple
+        case .configuring:  return .teal
+        }
+    }
+
+    private func statusDisplayName(_ status: ProjectStatus) -> String {
+        switch status {
+        case .exported: return "Rendered"
+        default: return status.rawValue
         }
     }
 }

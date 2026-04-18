@@ -67,7 +67,7 @@ struct ProjectsView: View {
                         icon: "film.stack",
                         title: searchText.isEmpty ? "No Projects Yet" : "No Results",
                         subtitle: searchText.isEmpty
-                            ? "Create your first montage project to get started."
+                            ? "Create your first montage."
                             : "Try a different search term.",
                         action: searchText.isEmpty ? ("Create Project", { showNewProjectSheet = true }) : nil
                     )
@@ -90,19 +90,10 @@ struct ProjectsView: View {
                     }
                 }
             }
-
-            if showNewProjectSheet {
-                Color.black.opacity(0.35)
-                    .ignoresSafeArea()
-                    .onTapGesture { showNewProjectSheet = false }
-
-                NewProjectSheet(isPresented: $showNewProjectSheet)
-                    .msCard()
-                    .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-            }
         }
-        .animation(.easeOut(duration: 0.18), value: showNewProjectSheet)
+        .sheet(isPresented: $showNewProjectSheet) {
+            NewProjectSheet(isPresented: $showNewProjectSheet)
+        }
         .confirmationDialog(
             "Delete \"\(projectToDelete?.title ?? "")\"?",
             isPresented: Binding(
@@ -187,7 +178,7 @@ struct ProjectRowView: View {
                 }
 
                 HStack(spacing: MS.Spacing.sm) {
-                    MSBadge(text: project.status.rawValue, color: statusColor, size: .small)
+                    MSBadge(text: statusDisplayName(project.status), color: statusColor, size: .small)
                     if !project.assetIDs.isEmpty {
                         MSBadge(text: "\(project.assetIDs.count) assets", size: .small)
                     }
@@ -215,11 +206,19 @@ struct ProjectRowView: View {
 
     private var statusColor: Color {
         switch project.status {
-        case .draft:     return .secondary
-        case .importing: return .blue
-        case .analyzing: return .orange
-        case .ready:     return .green
-        case .exported:  return .purple
+        case .draft:        return .secondary
+        case .importing:    return .blue
+        case .analyzing:    return .orange
+        case .configuring:  return .teal
+        case .ready:        return .green
+        case .exported:     return .purple
+        }
+    }
+
+    private func statusDisplayName(_ status: ProjectStatus) -> String {
+        switch status {
+        case .exported: return "Rendered"
+        default: return status.rawValue
         }
     }
 

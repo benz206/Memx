@@ -130,10 +130,12 @@ struct MSSecondaryButton: View {
     let title: String
     let icon: String?
     let action: () -> Void
+    var isDestructive: Bool = false
 
-    init(_ title: String, icon: String? = nil, action: @escaping () -> Void) {
+    init(_ title: String, icon: String? = nil, isDestructive: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.icon = icon
+        self.isDestructive = isDestructive
         self.action = action
     }
 
@@ -147,10 +149,16 @@ struct MSSecondaryButton: View {
                 Text(title)
                     .font(MS.Font.button)
             }
-            .foregroundStyle(.primary)
+            .foregroundStyle(isDestructive ? Color.red.opacity(0.85) : .primary)
             .padding(.horizontal, MS.Spacing.sm + 4)
             .padding(.vertical, 7)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous))
+            .overlay(
+                isDestructive
+                    ? RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous)
+                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                    : nil
+            )
         }
         .buttonStyle(.plain)
     }
@@ -290,10 +298,24 @@ struct MSBadge: View {
 // MARK: - Divider
 
 struct MSDivider: View {
+    var orientation: Axis = .horizontal
+
     var body: some View {
-        Rectangle()
-            .fill(.separator)
-            .frame(height: 0.5)
+        if orientation == .horizontal {
+            Rectangle()
+                .fill(.separator)
+                .frame(height: 0.5)
+        } else {
+            Rectangle()
+                .fill(.separator)
+                .frame(width: 0.5)
+        }
+    }
+}
+
+struct MSVerticalDivider: View {
+    var body: some View {
+        MSDivider(orientation: .vertical)
     }
 }
 

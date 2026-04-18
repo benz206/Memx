@@ -4,10 +4,28 @@ struct LandingView: View {
     @Environment(AppViewModel.self) private var appVM
     @State private var appeared = false
     @State private var showPermissionAlert = false
+    @State private var showPrivacySettings = false
 
     var body: some View {
         ZStack {
             MSGradientBackground()
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        showPrivacySettings = true
+                    } label: {
+                        Image(systemName: "gear")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Privacy Settings")
+                    .padding([.top, .trailing], MS.Spacing.md)
+                }
+                Spacer()
+            }
 
             VStack(spacing: 0) {
                 Spacer()
@@ -66,9 +84,11 @@ struct LandingView: View {
 
                 Spacer()
 
-                Text("All processing happens on your Mac. Your photos and music never leave your device.")
+                Text("Analysis and rendering run on your Mac. Optional AI motion prompts use Anthropic Claude only when you enable it in Privacy settings.")
                     .font(MS.Font.micro)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
                     .padding(.bottom, MS.Spacing.lg)
                     .opacity(appeared ? 1 : 0)
             }
@@ -83,10 +103,12 @@ struct LandingView: View {
             Button("Open Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
             }
-            Button("Continue Anyway") { appVM.createProject() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("MemX needs access to your Photos library to browse and import memories.")
+        }
+        .sheet(isPresented: $showPrivacySettings) {
+            PrivacySettingsView()
         }
     }
 
@@ -171,7 +193,7 @@ struct LandingView: View {
 
     private var features: [Feature] {[
         Feature(icon: "music.note.list", title: "Song First", description: "Pick a track. The beatmap drives every cut, hold, and transition.", color: .purple),
-        Feature(icon: "sparkles.rectangle.stack", title: "Motion Prompts", description: "Every photo gets a cinematographer's direction — it breathes, not hallucinate.", color: .orange),
+        Feature(icon: "sparkles.rectangle.stack", title: "Motion Prompts", description: "Every photo gets a cinematographer's direction — it breathes, not invents.", color: .orange),
         Feature(icon: "waveform.badge.mic", title: "Beat-Synced Cuts", description: "Drops hit hard. Verses breathe. Breakdowns hold. Fully automatic.", color: .blue),
     ]}
 }

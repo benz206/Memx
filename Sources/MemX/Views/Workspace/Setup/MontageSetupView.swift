@@ -115,7 +115,8 @@ struct SongImportView: View {
                 guard let provider = providers.first else { return false }
                 _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.audio.identifier) { url, _ in
                     guard let url else { return }
-                    // Copy to a stable temp location
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
                     let dest = FileManager.default.temporaryDirectory
                         .appendingPathComponent(url.lastPathComponent)
                     try? FileManager.default.copyItem(at: url, to: dest)

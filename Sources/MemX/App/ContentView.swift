@@ -8,13 +8,13 @@ struct ContentView: View {
             switch appVM.navigationState {
             case .landing:
                 LandingView()
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             case .projects:
                 ProjectsView()
-                    .transition(.opacity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             case .workspace(let project):
-                WorkspaceView(project: project)
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                WorkspaceView(project: project, appVM: appVM)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.35), value: appVM.navigationState)

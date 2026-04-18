@@ -3,6 +3,7 @@ import Photos
 
 public struct MemXApp: App {
     @State private var appViewModel = AppViewModel()
+    @State private var showPrivacySettings = false
 
     public init() {}
 
@@ -11,6 +12,9 @@ public struct MemXApp: App {
             ContentView()
                 .environment(appViewModel)
                 .frame(minWidth: 1100, minHeight: 720)
+                .sheet(isPresented: $showPrivacySettings) {
+                    PrivacySettingsView()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -19,6 +23,11 @@ public struct MemXApp: App {
                     appViewModel.createProject()
                 }
                 .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(after: .appSettings) {
+                Button("Privacy Settings…") {
+                    showPrivacySettings = true
+                }
             }
         }
     }
