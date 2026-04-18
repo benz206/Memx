@@ -20,11 +20,9 @@ final class VideoAnalysisService {
     static let shared = VideoAnalysisService()
     private init() {}
 
-    /// Samples frames across the video, scores each with Vision, and returns the best
-    /// contiguous window of `targetDuration` seconds plus aggregate quality scores.
     func analyzeVideo(assetID: String, targetDuration: TimeInterval) async -> VideoAnalysisResult {
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let phAsset = fetchResult.firstObject, phAsset.mediaType == .video else {
+        guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
+              phAsset.mediaType == .video else {
             return fallback()
         }
         guard let avAsset = await requestAVAsset(for: phAsset) else { return fallback() }
@@ -37,7 +35,6 @@ final class VideoAnalysisService {
         }
         guard totalSeconds > 0 else { return fallback() }
 
-        // Sample up to 60 frames, at least every 0.5 s
         let sampleInterval = max(totalSeconds / 60.0, 0.5)
         var sampleTimes: [CMTime] = []
         var t = 0.0
@@ -53,17 +50,31 @@ final class VideoAnalysisService {
         generator.requestedTimeToleranceAfter  = CMTime(seconds: 0.25, preferredTimescale: 600)
 
         struct FrameScore { var time: TimeInterval; var q: Float; var e: Float; var n: Float; var faces: Int }
+
+        let concurrencyLimit = 6
         var frames: [FrameScore] = []
 
-        for requestedTime in sampleTimes {
-            guard let cgImage = try? generator.copyCGImage(at: requestedTime, actualTime: nil) else { continue }
-            let (q, e, n, f) = await scoreFrame(cgImage)
-            frames.append(FrameScore(time: CMTimeGetSeconds(requestedTime), q: q, e: e, n: n, faces: f))
+        var pendingImages: [(time: CMTime, cgImage: CGImage)] = []
+
+        for await result in generator.images(for: sampleTimes) {
+            guard let cgImage = try? result.image else { continue }
+            pendingImages.append((result.requestedTime, cgImage))
+
+            if pendingImages.count >= concurrencyLimit {
+                let batch = pendingImages
+                pendingImages = []
+                let scored = await scoreBatch(batch)
+                frames.append(contentsOf: scored.map { FrameScore(time: $0.time, q: $0.q, e: $0.e, n: $0.n, faces: $0.faces) })
+            }
+        }
+
+        if !pendingImages.isEmpty {
+            let scored = await scoreBatch(pendingImages)
+            frames.append(contentsOf: scored.map { FrameScore(time: $0.time, q: $0.q, e: $0.e, n: $0.n, faces: $0.faces) })
         }
 
         guard !frames.isEmpty else { return fallback() }
 
-        // Sliding window: find window whose average composite score is highest
         let windowSize = max(1, Int((targetDuration / sampleInterval).rounded()))
         var bestStart = 0
         var bestScore: Float = -1
@@ -82,11 +93,26 @@ final class VideoAnalysisService {
         let avgN = best.map(\.n).reduce(0, +) / c
         let maxF = best.map(\.faces).max() ?? 0
 
-        // Clamp so the clip fits entirely within the video
         let rawStart = frames[bestStart].time
         let safeStart = min(rawStart, max(0, totalSeconds - targetDuration))
 
         return VideoAnalysisResult(quality: avgQ, emotion: avgE, novelty: avgN, faces: maxF, bestStartTime: safeStart)
+    }
+
+    // MARK: - Batch Frame Scoring (async let parallelism)
+
+    private func scoreBatch(_ batch: [(time: CMTime, cgImage: CGImage)]) async -> [(time: TimeInterval, q: Float, e: Float, n: Float, faces: Int)] {
+        await withTaskGroup(of: (TimeInterval, Float, Float, Float, Int).self) { group in
+            for item in batch {
+                group.addTask {
+                    let (q, e, n, f) = await self.scoreFrame(item.cgImage)
+                    return (CMTimeGetSeconds(item.time), q, e, n, f)
+                }
+            }
+            var results: [(TimeInterval, Float, Float, Float, Int)] = []
+            for await r in group { results.append(r) }
+            return results.map { (time: $0.0, q: $0.1, e: $0.2, n: $0.3, faces: $0.4) }
+        }
     }
 
     // MARK: - Per-Frame Vision Scoring

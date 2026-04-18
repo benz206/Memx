@@ -16,6 +16,26 @@ protocol PhotosLibraryServiceProtocol {
     func fetchAsset(for id: String) -> PHAsset?
 }
 
+// MARK: - PHAssetCache (serial-queue-protected)
+
+actor PHAssetCache {
+    static let shared = PHAssetCache()
+    private var store: [String: PHAsset] = [:]
+    private init() {}
+
+    func phAsset(for localIdentifier: String) -> PHAsset? {
+        if let cached = store[localIdentifier] { return cached }
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = result.firstObject else { return nil }
+        store[localIdentifier] = asset
+        return asset
+    }
+
+    func invalidate(_ localIdentifier: String) {
+        store.removeValue(forKey: localIdentifier)
+    }
+}
+
 // MARK: - PhotosLibraryService (real PhotoKit integration)
 
 final class PhotosLibraryService: PhotosLibraryServiceProtocol {
@@ -50,19 +70,16 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
     func fetchAlbums() async -> [MSAlbum] {
         var albums: [MSAlbum] = []
 
-        // Smart albums (Favorites, Videos, Selfies, etc.)
-        let smartOptions = PHFetchOptions()
         let smartResult = PHAssetCollection.fetchAssetCollections(
             with: .smartAlbum,
             subtype: .any,
-            options: smartOptions
+            options: PHFetchOptions()
         )
         smartResult.enumerateObjects { collection, _, _ in
             let album = MSAlbum(collection: collection)
             if album.count > 0 { albums.append(album) }
         }
 
-        // User albums
         let userOptions = PHFetchOptions()
         userOptions.sortDescriptors = [NSSortDescriptor(key: "localizedTitle", ascending: true)]
         let userResult = PHAssetCollection.fetchAssetCollections(
@@ -96,17 +113,15 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
     // MARK: - Thumbnail
 
     func fetchThumbnail(for assetID: String, size: CGSize = CGSize(width: 200, height: 200)) async -> NSImage? {
-        // Check cache first
         if let cached = await ThumbnailCache.shared.thumbnail(for: assetID) {
             return cached
         }
 
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let asset = assets.firstObject else { return nil }
+        guard let asset = await PHAssetCache.shared.phAsset(for: assetID) else { return nil }
 
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.deliveryMode = .opportunistic
+        options.deliveryMode = .fastFormat
         options.resizeMode = .fast
 
         return await withCheckedContinuation { continuation in
@@ -133,10 +148,8 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
 
     // MARK: - Export for Processing
 
-    /// Exports an asset to a temporary local file URL used by PhotoScoringService (Vision) and VideoRenderService.
     func exportAssetForProcessing(_ assetID: String) async throws -> URL {
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let asset = assets.firstObject else {
+        guard let asset = await PHAssetCache.shared.phAsset(for: assetID) else {
             throw PhotosServiceError.assetNotFound(assetID)
         }
 
@@ -171,7 +184,7 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         options.version = .current
 
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("memx-\(UUID().uuidString)")
             .appendingPathExtension("jpg")
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -193,10 +206,10 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         }
     }
 
-    /// Exports a trimmed video clip starting at `startTime` for `duration` seconds.
     func exportVideoClip(assetID: String, startTime: TimeInterval, duration: TimeInterval) async throws -> URL {
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let asset = assets.firstObject else { throw PhotosServiceError.assetNotFound(assetID) }
+        guard let asset = await PHAssetCache.shared.phAsset(for: assetID) else {
+            throw PhotosServiceError.assetNotFound(assetID)
+        }
 
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
@@ -204,7 +217,7 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         options.version = .current
 
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("memx-\(UUID().uuidString)")
             .appendingPathExtension("mov")
 
         let timescale: CMTimeScale = 600
@@ -244,7 +257,7 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         options.version = .current
 
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("memx-\(UUID().uuidString)")
             .appendingPathExtension("mov")
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -267,6 +280,18 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Temp File Cleanup
+
+    func cleanupTemporaryFiles() {
+        let fm = FileManager.default
+        let tmpDir = fm.temporaryDirectory.path
+        guard let contents = try? fm.contentsOfDirectory(atPath: tmpDir) else { return }
+        for name in contents where name.hasPrefix("memx-") {
+            let url = URL(fileURLWithPath: tmpDir).appendingPathComponent(name)
+            try? fm.removeItem(at: url)
         }
     }
 }

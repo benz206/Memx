@@ -36,7 +36,6 @@ final class BeatmapService: BeatmapServiceProtocol {
             logger.info("Beatmap analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), \(result.sections.count) sections, \(result.beats.count) beats")
             return result
         } catch {
-            // File unreadable (mock path, DRM, etc.) — return mock beatmap with real duration
             logger.warning("Audio unreadable (\(error.localizedDescription)), using mock beatmap at \(realDuration > 0 ? realDuration : 180, format: .fixed(precision: 1))s")
             onProgress(1.0, "Beatmap complete")
             return MockDataProvider.mockBeatmap(duration: realDuration > 0 ? realDuration : 180)
@@ -45,41 +44,80 @@ final class BeatmapService: BeatmapServiceProtocol {
 
     // MARK: - Core Analysis
 
+    private static let windowSeconds = 5.0
+    private static let targetSampleRate: Double = 22050
+
     private func performAnalysis(url: URL, onProgress: @escaping (Double, String) -> Void) async throws -> Beatmap {
-        let audioFile  = try AVAudioFile(forReading: url)
-        let format     = audioFile.processingFormat
-        let sampleRate = format.sampleRate
+        let audioFile = try AVAudioFile(forReading: url)
+        let sourceFormat = audioFile.processingFormat
+        let sourceSampleRate = sourceFormat.sampleRate
         let totalFrames = audioFile.length
-        let duration   = Double(totalFrames) / sampleRate
+        let duration = Double(totalFrames) / sourceSampleRate
 
-        // Cap at 10 minutes to keep memory sane
-        let frameCount = AVAudioFrameCount(min(totalFrames, Int64(sampleRate * 600)))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            throw BeatmapError.loadFailed("PCM buffer allocation failed")
+        let outSampleRate = Self.targetSampleRate
+        guard let monoFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: outSampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw BeatmapError.loadFailed("Cannot create mono output format")
         }
-        try audioFile.read(into: buffer, frameCount: frameCount)
-        guard let channelData = buffer.floatChannelData else {
-            throw BeatmapError.loadFailed("No float channel data")
+
+        guard let converter = AVAudioConverter(from: sourceFormat, to: monoFormat) else {
+            throw BeatmapError.loadFailed("Cannot create audio converter")
         }
 
-        let frameLength  = Int(buffer.frameLength)
-        let channelCount = Int(format.channelCount)
+        let windowFramesSource = AVAudioFrameCount(sourceSampleRate * Self.windowSeconds)
+        let windowFramesMono   = AVAudioFrameCount(outSampleRate * Self.windowSeconds)
 
-        onProgress(0.18, "Mixing to mono...")
+        var mono: [Float] = []
+        mono.reserveCapacity(Int(Double(totalFrames) / sourceSampleRate * outSampleRate) + 1)
 
-        // Mix to mono (simple loop avoids vDSP aliasing)
-        var mono = [Float](repeating: 0, count: frameLength)
-        let invCh = 1.0 / Float(channelCount)
-        for i in 0..<frameLength {
-            var sum: Float = 0
-            for ch in 0..<channelCount { sum += channelData[ch][i] }
-            mono[i] = sum * invCh
+        onProgress(0.18, "Streaming audio to mono 22 kHz...")
+
+        while audioFile.framePosition < totalFrames {
+            let remaining = AVAudioFrameCount(totalFrames - audioFile.framePosition)
+            let chunkFrames = min(windowFramesSource, remaining)
+
+            guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: chunkFrames) else {
+                throw BeatmapError.loadFailed("PCM buffer allocation failed")
+            }
+            try audioFile.read(into: srcBuffer, frameCount: chunkFrames)
+            guard srcBuffer.frameLength > 0 else { break }
+
+            guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: windowFramesMono) else {
+                throw BeatmapError.loadFailed("Mono buffer allocation failed")
+            }
+
+            var conversionError: NSError?
+            var inputConsumed = false
+            converter.convert(to: dstBuffer, error: &conversionError) { _, outStatus in
+                if inputConsumed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                inputConsumed = true
+                outStatus.pointee = .haveData
+                return srcBuffer
+            }
+
+            if let err = conversionError { throw err }
+
+            let frameLen = Int(dstBuffer.frameLength)
+            if frameLen == 0 { continue }
+            guard let channelData = dstBuffer.floatChannelData else { continue }
+            mono.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameLen))
         }
+
+        guard !mono.isEmpty else { throw BeatmapError.loadFailed("No audio data after conversion") }
+
+        let sampleRate = outSampleRate
 
         onProgress(0.32, "Computing energy envelope...")
 
-        let hopSamples = max(1, Int(sampleRate * 0.010))  // 10 ms hop
-        let winSamples = max(hopSamples, Int(sampleRate * 0.023))  // 23 ms window
+        let hopSamples = max(1, Int(sampleRate * 0.010))
+        let winSamples = max(hopSamples, Int(sampleRate * 0.023))
         let hopRate    = sampleRate / Double(hopSamples)
 
         let (envelope, energyCurve) = buildEnvelope(
@@ -142,7 +180,6 @@ final class BeatmapService: BeatmapServiceProtocol {
             }
         }
 
-        // Normalize to [0, 1]
         var maxVal: Float = 0
         vDSP_maxv(envelope, 1, &maxVal, vDSP_Length(envelope.count))
         guard maxVal > 0 else { return (envelope, energyCurve) }
@@ -161,8 +198,8 @@ final class BeatmapService: BeatmapServiceProtocol {
         let n = envelope.count
         guard n > 200 else { return 120 }
 
-        let minLag = max(1, Int(hopRate * 60.0 / 200.0))  // 200 BPM ceiling
-        let maxLag = min(n - 1, Int(hopRate * 60.0 / 50.0))  // 50 BPM floor
+        let minLag = max(1, Int(hopRate * 60.0 / 200.0))
+        let maxLag = min(n - 1, Int(hopRate * 60.0 / 50.0))
         guard minLag < maxLag else { return 120 }
 
         var bestLag = minLag
@@ -189,7 +226,6 @@ final class BeatmapService: BeatmapServiceProtocol {
     private func detectOnsets(envelope: [Float], hopRate: Double) -> [Onset] {
         guard envelope.count > 2 else { return [] }
 
-        // Positive first-order difference
         var flux = [Float](repeating: 0, count: envelope.count)
         for i in 1..<envelope.count {
             flux[i] = max(0, envelope[i] - envelope[i - 1])
@@ -205,7 +241,7 @@ final class BeatmapService: BeatmapServiceProtocol {
         vDSP_maxv(flux, 1, &maxFlux, vDSP_Length(flux.count))
         if maxFlux == 0 { maxFlux = 1 }
 
-        let minGap = Int(hopRate * 0.08)  // 80 ms minimum gap
+        let minGap = Int(hopRate * 0.08)
         var lastIdx = -minGap
         var onsets: [Onset] = []
 
@@ -223,7 +259,6 @@ final class BeatmapService: BeatmapServiceProtocol {
 
     private func buildBeatGrid(bpm: Double, onsets: [Onset], duration: Double) -> [Double] {
         let interval = 60.0 / bpm
-        // Anchor to strongest onset in first 20% of song
         var phase = 0.0
         let earlyWindow = duration * 0.2
         if let anchor = onsets.filter({ $0.time < earlyWindow }).max(by: { $0.strength < $1.strength }) {
@@ -235,7 +270,7 @@ final class BeatmapService: BeatmapServiceProtocol {
         return beats
     }
 
-    // MARK: - Section Segmentation
+    // MARK: - Section Segmentation (O(n) two-pointer sweep)
 
     private func buildSections(energyCurve: [EnergyPoint], duration: Double) -> [BeatSection] {
         guard !energyCurve.isEmpty, duration > 0 else { return [] }
@@ -243,10 +278,25 @@ final class BeatmapService: BeatmapServiceProtocol {
         let blockDur = 12.0
         var blocks: [(time: Double, energy: Double)] = []
         var t = 0.0
+
+        var curveIndex = 0
+        let curveCount = energyCurve.count
+
         while t < duration {
             let end = min(t + blockDur, duration)
-            let pts = energyCurve.filter { $0.time >= t && $0.time < end }
-            let avg = pts.isEmpty ? 0.3 : pts.map(\.energy).reduce(0, +) / Double(pts.count)
+            var sum = 0.0
+            var count = 0
+
+            while curveIndex < curveCount && energyCurve[curveIndex].time < end {
+                if energyCurve[curveIndex].time >= t {
+                    sum += energyCurve[curveIndex].energy
+                    count += 1
+                }
+                curveIndex += 1
+            }
+            if curveIndex > 0 && curveIndex < curveCount { curveIndex -= 1 }
+
+            let avg = count == 0 ? 0.3 : sum / Double(count)
             blocks.append((t, avg))
             t += blockDur
         }

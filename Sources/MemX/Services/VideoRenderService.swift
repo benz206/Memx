@@ -28,6 +28,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
     private let renderSize  = CGSize(width: 1920, height: 1080)
     private let timescale: CMTimeScale = 600
     private let fps: Int32  = 30
+    private let exportConcurrencyLimit = 3
 
     // MARK: - Public Entry Point
 
@@ -44,30 +45,52 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         logger.info("Render started: \(sequence.count) clips, song=\(songURL.lastPathComponent)")
         onProgress(0.02, "Exporting \(sequence.count) clips…")
 
-        // Step 1 — Convert each clip to a temp video URL
-        var clipURLs: [URL] = []
-        for (i, item) in sequence.enumerated() {
-            let clipDuration = CMTime(seconds: item.duration, preferredTimescale: timescale)
+        // Step 1 — Export clips concurrently (bounded at exportConcurrencyLimit)
+        var clipURLs: [URL?] = [URL?](repeating: nil, count: sequence.count)
 
-            let url: URL
-            if let asset = assetMap[item.assetID], asset.isVideo {
-                do {
-                    url = try await exportVideoClip(assetID: item.assetID, startTime: item.clipOffset, duration: item.duration)
-                } catch {
-                    logger.warning("Video export failed for \(item.assetID), falling back to thumbnail: \(error)")
-                    url = try await exportPhotoClip(assetID: item.assetID, duration: clipDuration)
+        try await withThrowingTaskGroup(of: (Int, URL).self) { group in
+            var inFlight = 0
+            var nextIndex = 0
+
+            while nextIndex < sequence.count || inFlight > 0 {
+                while inFlight < exportConcurrencyLimit && nextIndex < sequence.count {
+                    let i = nextIndex
+                    let item = sequence[i]
+                    group.addTask {
+                        let url: URL
+                        if let asset = assetMap[item.assetID], asset.isVideo {
+                            do {
+                                url = try await self.exportVideoClip(
+                                    assetID: item.assetID, startTime: item.clipOffset, duration: item.duration)
+                            } catch {
+                                logger.warning("Video export failed for \(item.assetID), falling back to thumbnail: \(error)")
+                                url = try await self.exportPhotoClip(
+                                    assetID: item.assetID,
+                                    duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale))
+                            }
+                        } else {
+                            url = try await self.exportPhotoClip(
+                                assetID: item.assetID,
+                                duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale))
+                        }
+                        return (i, url)
+                    }
+                    inFlight += 1
+                    nextIndex += 1
                 }
-            } else {
-                url = try await exportPhotoClip(assetID: item.assetID, duration: clipDuration)
-            }
-            clipURLs.append(url)
 
-            let progress = Double(i + 1) / Double(sequence.count) * 0.50
-            onProgress(0.02 + progress, "Clip \(i + 1)/\(sequence.count) ready")
+                let (i, url) = try await group.next()!
+                clipURLs[i] = url
+                inFlight -= 1
+                let progress = Double(sequence.count - inFlight - (nextIndex < sequence.count ? sequence.count - nextIndex : 0)) / Double(sequence.count) * 0.50
+                onProgress(0.02 + progress, "Clip \(i + 1)/\(sequence.count) ready")
+            }
         }
 
+        let resolvedURLs = clipURLs.compactMap { $0 }
+
         defer {
-            for url in clipURLs { try? FileManager.default.removeItem(at: url) }
+            for url in resolvedURLs { try? FileManager.default.removeItem(at: url) }
         }
 
         onProgress(0.54, "Assembling composition…")
@@ -80,7 +103,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         ) else { throw RenderError.compositionFailed }
 
         var insertTime = CMTime.zero
-        for (clipURL, item) in zip(clipURLs, sequence) {
+        for (clipURL, item) in zip(resolvedURLs, sequence) {
             let clipAsset   = AVURLAsset(url: clipURL)
             let clipDuration = CMTime(seconds: item.duration, preferredTimescale: timescale)
             guard let srcTrack = try? await clipAsset.loadTracks(withMediaType: .video).first else {
@@ -113,7 +136,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         // Step 4 — Export
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MemX_\(UUID().uuidString).mp4")
+            .appendingPathComponent("memx-\(UUID().uuidString).mp4")
 
         guard let exportSession = AVAssetExportSession(
             asset: composition,
@@ -122,7 +145,6 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         exportSession.shouldOptimizeForNetworkUse = true
 
-        // Poll progress on a background Task
         let progressTask = Task {
             while !Task.isCancelled {
                 onProgress(0.60 + Double(exportSession.progress) * 0.38, "Rendering… \(Int(exportSession.progress * 100))%")
@@ -142,7 +164,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
     private func exportPhotoClip(assetID: String, duration: CMTime) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".mp4")
+            .appendingPathComponent("memx-\(UUID().uuidString).mp4")
 
         let cgImage = await fetchCGImageFromPhotos(assetID: assetID)
             ?? createPlaceholderImage(assetID: assetID)
@@ -173,10 +195,8 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
         writer.startSession(atSourceTime: .zero)
 
-        // First frame at t=0
         adaptor.append(pixelBuffer, withPresentationTime: .zero)
 
-        // Duplicate frame near end to establish duration
         let lastFrameTime = CMTimeSubtract(duration, CMTime(value: 1, timescale: CMTimeScale(fps)))
         let safeEnd = CMTimeCompare(lastFrameTime, .zero) > 0
             ? lastFrameTime
@@ -231,7 +251,6 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { throw RenderError.pixelBufferFailed }
 
-        // Letterbox: black background, aspect-fit image centered
         ctx.setFillColor(CGColor(gray: 0, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: Int(renderSize.width), height: Int(renderSize.height)))
 
@@ -248,8 +267,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
     // MARK: - Image Helpers
 
     private func fetchCGImageFromPhotos(assetID: String) async -> CGImage? {
-        let results = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let phAsset = results.firstObject else { return nil }
+        guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID) else { return nil }
 
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat

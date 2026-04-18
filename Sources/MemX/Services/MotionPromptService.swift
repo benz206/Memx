@@ -50,14 +50,17 @@ final class MotionPromptService: MotionPromptServiceProtocol {
 
     private var apiKey: String? {
         if let envKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !envKey.isEmpty { return envKey }
-        if let stored = UserDefaults.standard.string(forKey: "anthropic_api_key"), !stored.isEmpty { return stored }
+        if let stored = KeychainHelper.anthropicAPIKey(), !stored.isEmpty { return stored }
         return nil
     }
 
     // MARK: - Claude API Call
 
     private func callAPI(asset: MediaAsset, energy: Float, section: SectionType?, key: String) async throws -> String {
-        // Fetch thumbnail for visual context
+        guard PrivacyPreferences.allowAnthropicUploads else {
+            throw MotionPromptError.networkUploadsDisabled
+        }
+
         let imageData = await fetchThumbnailData(for: asset.id)
 
         let energyLabel = energy > 0.8 ? "very high energy" : energy > 0.55 ? "moderate energy" : "low energy"
@@ -94,13 +97,48 @@ final class MotionPromptService: MotionPromptServiceProtocol {
         request.setValue(key, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 12
+        request.timeoutInterval = 30
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        return try await performRequestWithRetry(request)
+    }
+
+    // MARK: - Retry / Exponential Backoff
+
+    private func performRequestWithRetry(_ request: URLRequest) async throws -> String {
+        let maxRetries = 4
+        var delay: Double = 1.0
+
+        for attempt in 0...maxRetries {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            if let httpResponse = response as? HTTPURLResponse {
+                let status = httpResponse.statusCode
+
+                if status == 200 {
+                    return try parseResponse(data)
+                }
+
+                let isRetryable = status == 429 || (status >= 500 && status < 600)
+                if isRetryable && attempt < maxRetries {
+                    var waitSeconds = delay
+                    if let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After"),
+                       let retrySeconds = Double(retryAfter) {
+                        waitSeconds = retrySeconds
+                    }
+                    logger.warning("Claude API HTTP \(status), retry \(attempt + 1)/\(maxRetries) after \(waitSeconds, format: .fixed(precision: 1))s")
+                    try await Task.sleep(for: .seconds(waitSeconds))
+                    delay = min(delay * 2, 30.0)
+                    continue
+                }
+            }
+
             throw MotionPromptError.apiError
         }
 
+        throw MotionPromptError.apiError
+    }
+
+    private func parseResponse(_ data: Data) throws -> String {
         guard
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let contentArray = json["content"] as? [[String: Any]],
@@ -110,24 +148,24 @@ final class MotionPromptService: MotionPromptServiceProtocol {
         else {
             throw MotionPromptError.parseError
         }
-
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Image Fetching (512px thumbnail → JPEG)
 
     private func fetchThumbnailData(for assetID: String) async -> Data? {
-        let results = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let phAsset = results.firstObject, phAsset.mediaType == .image else { return nil }
+        guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
+              phAsset.mediaType == .image else { return nil }
 
         let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .fastFormat
         options.isNetworkAccessAllowed = true
 
+        let targetSize = CGSize(width: 512, height: 512)
         let nsImage: NSImage? = await withCheckedContinuation { continuation in
             PHImageManager.default().requestImage(
                 for: phAsset,
-                targetSize: CGSize(width: 512, height: 512),
+                targetSize: targetSize,
                 contentMode: .aspectFit,
                 options: options
             ) { image, _ in
@@ -135,13 +173,26 @@ final class MotionPromptService: MotionPromptServiceProtocol {
             }
         }
 
-        guard
-            let nsImage,
-            let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else { return nil }
+        guard let nsImage else { return nil }
+
+        let resized = resizeTo512(nsImage) ?? nsImage
+        guard let cgImage = resized.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
         return NSBitmapImageRep(cgImage: cgImage)
             .representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+    }
+
+    private func resizeTo512(_ image: NSImage) -> NSImage? {
+        let origSize = image.size
+        let maxDim: CGFloat = 512
+        guard origSize.width > maxDim || origSize.height > maxDim else { return image }
+        let scale = maxDim / max(origSize.width, origSize.height)
+        let newSize = CGSize(width: origSize.width * scale, height: origSize.height * scale)
+        let result = NSImage(size: newSize)
+        result.lockFocus()
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        result.unlockFocus()
+        return result
     }
 
     // MARK: - Mock Generator (used when no API key or on API failure)
@@ -185,11 +236,13 @@ final class MotionPromptService: MotionPromptServiceProtocol {
 enum MotionPromptError: LocalizedError {
     case apiError
     case parseError
+    case networkUploadsDisabled
 
     var errorDescription: String? {
         switch self {
-        case .apiError:  return "Claude API request failed."
-        case .parseError: return "Could not parse Claude API response."
+        case .apiError:               return "Claude API request failed."
+        case .parseError:             return "Could not parse Claude API response."
+        case .networkUploadsDisabled: return "Network uploads are disabled in Privacy settings."
         }
     }
 }

@@ -32,25 +32,63 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         logger.info("Photo scoring started: \(assets.count) assets")
         onProgress(0.05, "Preparing \(assets.count) photos for analysis...")
 
-        var scoredAssets = assets
-        var faceCounts: [Int] = Array(repeating: 0, count: assets.count)
+        let total = assets.count
+        let concurrencyLimit = 6
 
-        for (i, asset) in assets.enumerated() {
-            let (quality, emotion, novelty, faces, clipStart) = await analyzeAsset(asset)
-            let overall = quality * 0.4 + emotion * 0.35 + novelty * 0.25
-            scoredAssets[i].qualityScore   = quality
-            scoredAssets[i].emotionScore   = emotion
-            scoredAssets[i].noveltyScore   = novelty
-            scoredAssets[i].analysisScore  = overall
-            scoredAssets[i].clipStartTime  = clipStart
-            faceCounts[i] = faces
+        struct IndexedResult {
+            let index: Int
+            let quality: Float
+            let emotion: Float
+            let novelty: Float
+            let faces: Int
+            let clipStart: TimeInterval?
+        }
 
-            let progress = Double(i + 1) / Double(max(assets.count, 1))
-            onProgress(0.05 + progress * 0.87, "Analyzed \(i + 1)/\(assets.count): \(asset.filename ?? asset.id)")
-            logger.debug("Scored \(asset.filename ?? asset.id): quality=\(overall, format: .fixed(precision: 2))")
+        var results = [IndexedResult?](repeating: nil, count: total)
+        var completedCount = 0
+
+        try await withThrowingTaskGroup(of: IndexedResult.self) { group in
+            var inFlight = 0
+            var nextIndex = 0
+
+            while nextIndex < total || inFlight > 0 {
+                while inFlight < concurrencyLimit && nextIndex < total {
+                    let i = nextIndex
+                    let asset = assets[i]
+                    group.addTask {
+                        let (quality, emotion, novelty, faces, clipStart) = await self.analyzeAsset(asset)
+                        return IndexedResult(index: i, quality: quality, emotion: emotion,
+                                            novelty: novelty, faces: faces, clipStart: clipStart)
+                    }
+                    inFlight += 1
+                    nextIndex += 1
+                }
+
+                if let result = try await group.next() {
+                    results[result.index] = result
+                    inFlight -= 1
+                    completedCount += 1
+                    let progress = Double(completedCount) / Double(max(total, 1))
+                    onProgress(0.05 + progress * 0.87,
+                               "Analyzed \(completedCount)/\(total): \(assets[result.index].filename ?? assets[result.index].id)")
+                    logger.debug("Scored \(assets[result.index].filename ?? assets[result.index].id): quality=\(result.quality * 0.4 + result.emotion * 0.35 + result.novelty * 0.25, format: .fixed(precision: 2))")
+                }
+            }
         }
 
         onProgress(0.95, "Ranking candidates...")
+
+        var scoredAssets = assets
+        var faceCounts = [Int](repeating: 0, count: total)
+        for r in results.compactMap({ $0 }) {
+            let overall = r.quality * 0.4 + r.emotion * 0.35 + r.novelty * 0.25
+            scoredAssets[r.index].qualityScore  = r.quality
+            scoredAssets[r.index].emotionScore  = r.emotion
+            scoredAssets[r.index].noveltyScore  = r.novelty
+            scoredAssets[r.index].analysisScore = overall
+            scoredAssets[r.index].clipStartTime = r.clipStart
+            faceCounts[r.index] = r.faces
+        }
 
         let candidates: [ClipCandidate] = scoredAssets.enumerated().compactMap { (i, asset) in
             guard let score = asset.analysisScore else { return nil }
@@ -74,7 +112,6 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
     // MARK: - Per-Asset Vision Analysis
 
     private func analyzeAsset(_ asset: MediaAsset) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, clipStartTime: TimeInterval?) {
-        // Videos: sample frames and find best segment
         if asset.isVideo {
             let result = await VideoAnalysisService.shared.analyzeVideo(
                 assetID: asset.id,
@@ -83,7 +120,6 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             return (result.quality, result.emotion, result.novelty, result.faces, result.bestStartTime)
         }
 
-        // Photos: single-frame Vision analysis
         guard let cgImage = await fetchCGImage(for: asset.id) else {
             return fallbackScores()
         }
@@ -130,8 +166,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
     // MARK: - Image Fetching
 
     private func fetchCGImage(for assetID: String) async -> CGImage? {
-        let results = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let phAsset = results.firstObject, phAsset.mediaType == .image else { return nil }
+        guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
+              phAsset.mediaType == .image else { return nil }
 
         let options = PHImageRequestOptions()
         options.deliveryMode   = .highQualityFormat

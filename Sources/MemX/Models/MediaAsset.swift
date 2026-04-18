@@ -178,10 +178,19 @@ struct MSAlbum: Identifiable, Hashable {
 @MainActor
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
-    private var cache: [String: NSImage] = [:]
+    private let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.totalCostLimit = 256 * 1024 * 1024
+        return c
+    }()
     private init() {}
 
-    func thumbnail(for id: String) -> NSImage? { cache[id] }
-    func store(_ image: NSImage, for id: String) { cache[id] = image }
-    func clear() { cache.removeAll() }
+    func thumbnail(for id: String) -> NSImage? { cache.object(forKey: id as NSString) }
+
+    func store(_ image: NSImage, for id: String) {
+        let cost = Int(image.size.width) * Int(image.size.height) * 4
+        cache.setObject(image, forKey: id as NSString, cost: cost)
+    }
+
+    func clear() { cache.removeAllObjects() }
 }
