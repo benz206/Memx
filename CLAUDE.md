@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # Run tests
 
 `swift test` must be prefixed with `DEVELOPER_DIR` because XCTest is only available from Xcode, not Command Line Tools. Build and run benefit from the same `DEVELOPER_DIR` prefix when the Xcode 26 toolchain isn't selected system-wide (`xcode-select -s /Applications/Xcode.app/Contents/Developer`).
 
-The app is opened in Xcode via the `.swiftpm` wrapper. No third-party dependencies — only Apple frameworks (Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, FoundationModels) and an optional call-out to the Anthropic Claude API for motion prompt generation.
+The app is opened in Xcode via the `.swiftpm` wrapper. No third-party dependencies — only Apple frameworks (Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, FoundationModels).
 
 ## Platform
 
@@ -28,7 +28,7 @@ Three targets:
 
 ## What This Is
 
-**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage using on-device AI. It imports a song and a set of photos/videos, analyzes the track (BPM, sections, onsets, repeating hooks), scores the visuals with Vision, generates per-asset cinematographer-style motion prompts (Apple Foundation Models for scene captions; Anthropic Claude for motion direction), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4. Audio, photo analysis, and rendering all run locally; only the optional motion-prompt step leaves the device (and only when the user enables it in Privacy settings).
+**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage using on-device AI. It imports a song and a set of photos/videos, analyzes the track (BPM, sections, onsets, repeating hooks), scores the visuals with Vision, generates per-asset scene captions and cinematographer-style motion prompts (both via Apple Foundation Models running locally), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4. All processing — audio analysis, photo scoring, captioning, motion prompt generation, and rendering — runs entirely on-device.
 
 ## Architecture
 
@@ -55,7 +55,7 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 - **`PhotoScoringService`** (in `AnalysisService.swift`) — Vision-powered: face rectangles, attention-based saliency, and `VNClassifyImageRequest` labels. Emits `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, plus scene labels on each `MediaAsset`. Concurrency scales with `ScoringDensity`.
 - **`VideoAnalysisService`** — samples N frames per video (N = `ScoringDensity.videoFrameSamples`, 8/14/20/30/48), scores each, and returns best-segment metadata.
 - **`SceneCaptionService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) running locally on macOS 26. Falls back to joining scene labels into a text caption if the model is unavailable or times out (8s).
-- **`MotionPromptService`** — Anthropic Claude (Haiku 4.5) for one-to-two-sentence cinematographer directions. Weaves scene caption + labels into the prompt. Falls back to a deterministic mock when no API key is configured, when `PrivacyPreferences.allowAnthropicUploads` is off, or when the request fails.
+- **`MotionPromptService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) for one-to-two-sentence cinematographer directions. Weaves `asset.sceneCaption` + `sceneLabels` into a text prompt. Falls back to a deterministic mock when the model is unavailable or times out (6s).
 - **`SequencerService`** (in `MontagePlannerService.swift`) — builds the `MontagePlan` from beatmap + scored assets. Hook-aware (see below). Exposes a `preflight(...)` call so the UI can warn before building.
 - **`MusicSuggestionService`** — matches songs to mood arc via vibe/genre/energy scoring; uses a hardcoded mock catalog.
 - **`VideoRenderService`** — real `AVMutableComposition` stitching, Ken Burns over video-toolbox frames, transitions, and `AVAssetExportSession` output.
@@ -75,7 +75,7 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
 1. `analyzeAudio` → `BeatmapService` (0.00 → 0.33)
 2. `scorePhotos` → `PhotoScoringService` + `VideoAnalysisService` + `SceneCaptionService` (0.33 → 0.55)
-3. `generateAllMotionPrompts` → `MotionPromptService` (0.55 → 0.77); runs **4-wide bounded concurrency** — the Claude round-trip dominates wall time.
+3. `generateAllMotionPrompts` → `MotionPromptService` (0.55 → 0.77); runs **4-wide bounded concurrency** — throughput is bounded by on-device Foundation Models inference.
 4. `buildSequence` → `SequencerService` (0.77 → 1.00). Preflighted first — if the plan would run out of unique clips, `clipShortfall` is populated and `pendingShortfallAck` gates the build until the user confirms (Add Photos / Build Anyway / Dismiss).
 
 ### Sequencer / Emotional Edit Logic

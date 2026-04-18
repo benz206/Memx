@@ -84,6 +84,9 @@ final class SceneCaptionTests: XCTestCase {
     // MARK: - MotionPromptService.mockPrompt weaves scene context
 
     func testMotionPromptMockReferencesSceneCaption() async throws {
+        MotionPromptService._testForceMock = true
+        defer { MotionPromptService._testForceMock = false }
+
         var asset = MediaAsset(id: "asset-with-caption", mediaType: .photo, pixelWidth: 1920, pixelHeight: 1080)
         asset.sceneCaption = "Children laughing on a swing in a sunny park"
 
@@ -92,8 +95,6 @@ final class SceneCaptionTests: XCTestCase {
             songEnergy: 0.5,
             sectionType: .verse
         )
-        // Without a real API key the service must fall back to mockPrompt,
-        // which we extended to weave in the caption verbatim.
         XCTAssertTrue(
             prompt.contains("Children laughing on a swing in a sunny park"),
             "Mock prompt should reference the scene caption. Got: \(prompt)"
@@ -101,6 +102,9 @@ final class SceneCaptionTests: XCTestCase {
     }
 
     func testMotionPromptMockOmitsSceneWhenNoCaption() async throws {
+        MotionPromptService._testForceMock = true
+        defer { MotionPromptService._testForceMock = false }
+
         let asset = MediaAsset(id: "asset-plain", mediaType: .photo, pixelWidth: 1920, pixelHeight: 1080)
         let prompt = try await MotionPromptService.shared.generatePrompt(
             for: asset,
@@ -109,6 +113,37 @@ final class SceneCaptionTests: XCTestCase {
         )
         XCTAssertFalse(prompt.contains("Scene:"),
                        "Mock prompt should not reference a scene when none is set. Got: \(prompt)")
+    }
+
+    // MARK: - LocalVLMService protocol conformance
+
+    func testLocalVLMServiceSharedIsAccessible() {
+        let service = LocalVLMService.shared
+        XCTAssertNotNil(service)
+    }
+
+    func testMockLocalVLMServiceReturnsNilWhenConfigured() async {
+        let mock = MockLocalVLMService(canned: nil)
+        let stub = Self.stubCGImage()
+        let result = await mock.describe(
+            image: stub,
+            instructions: "System prompt",
+            prompt: "Caption this photo.",
+            maxTokens: 60
+        )
+        XCTAssertNil(result)
+    }
+
+    func testMockLocalVLMServiceReturnsCannedString() async {
+        let mock = MockLocalVLMService(canned: "Golden light spills across an empty desert road")
+        let stub = Self.stubCGImage()
+        let result = await mock.describe(
+            image: stub,
+            instructions: "System prompt",
+            prompt: "Caption this photo.",
+            maxTokens: 60
+        )
+        XCTAssertEqual(result, "Golden light spills across an empty desert road")
     }
 
     // MARK: - Helpers
@@ -126,6 +161,20 @@ final class SceneCaptionTests: XCTestCase {
         context.setFillColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
         return context.makeImage()!
+    }
+}
+
+// MARK: - Mock LocalVLMService
+
+private final class MockLocalVLMService: LocalVLMServiceProtocol {
+    let canned: String?
+
+    init(canned: String?) {
+        self.canned = canned
+    }
+
+    func describe(image: CGImage, instructions: String, prompt: String, maxTokens: Int) async -> String? {
+        return canned
     }
 }
 

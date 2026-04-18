@@ -280,8 +280,8 @@ final class WorkspaceViewModel {
 
         // Build work queue up front so per-prompt inputs (energy, section) are
         // captured while we still hold the relevant beatmap state, then fan
-        // out with bounded concurrency — Claude round-trips dominate wall time,
-        // so serial iteration was leaving ~4x on the table.
+        // out with bounded concurrency — on-device FM inference is the bottleneck,
+        // so serial iteration would leave ~4x on the table.
         struct PromptWork {
             let index: Int
             let asset: MediaAsset

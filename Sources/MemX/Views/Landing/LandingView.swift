@@ -84,7 +84,7 @@ struct LandingView: View {
 
                 Spacer()
 
-                Text("Analysis and rendering run on your Mac. Optional AI motion prompts use Anthropic Claude only when you enable it in Privacy settings.")
+                Text("All analysis, AI scene captioning, motion prompts, and rendering run entirely on your Mac.")
                     .font(MS.Font.micro)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)

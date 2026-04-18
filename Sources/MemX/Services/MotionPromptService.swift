@@ -1,7 +1,8 @@
 import Foundation
-import Photos
-import AppKit
 import OSLog
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 private let logger = Logger(subsystem: "com.memx.app", category: "motionprompt")
 
@@ -15,198 +16,113 @@ protocol MotionPromptServiceProtocol {
     ) async throws -> String
 }
 
-// MARK: - MotionPromptService (Claude API with mock fallback)
+// MARK: - MotionPromptService (on-device Apple Foundation Models with mock fallback)
 
 final class MotionPromptService: MotionPromptServiceProtocol {
 
     static let shared = MotionPromptService()
     private init() {}
 
-    private static let apiEndpoint = URL(string: "https://api.anthropic.com/v1/messages")!
-    private static let model = "claude-haiku-4-5-20251001"
+    internal static var _testForceMock = false
+
+    private static let timeoutSeconds: TimeInterval = 6
+
+    private static let instructions: String =
+        "You direct cinematic camera motion for a music-video montage. Each response is a single " +
+        "1–2 sentence direction describing zoom, pan, tilt, Ken Burns drift, or parallax. " +
+        "Be precise and evocative. No preamble, no quotes, no emoji."
 
     func generatePrompt(
         for asset: MediaAsset,
         songEnergy: Float,
         sectionType: SectionType?
     ) async throws -> String {
-        guard let key = apiKey else {
-            logger.debug("No API key — using mock prompt for \(asset.filename ?? asset.id)")
+        guard !Self._testForceMock else {
             try await Task.sleep(for: .milliseconds(Int.random(in: 150...300)))
             return mockPrompt(energy: songEnergy, section: sectionType, asset: asset)
         }
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            return await generateViaFoundationModels(asset: asset, energy: songEnergy, section: sectionType)
+        }
+        #endif
+        logger.debug("FoundationModels unavailable — using mock for \(asset.filename ?? asset.id)")
+        try await Task.sleep(for: .milliseconds(Int.random(in: 150...300)))
+        return mockPrompt(energy: songEnergy, section: sectionType, asset: asset)
+    }
 
-        do {
-            let result = try await callAPI(asset: asset, energy: songEnergy, section: sectionType, key: key)
-            logger.debug("Claude prompt OK for \(asset.filename ?? asset.id): \(result.prefix(60))...")
-            return result
-        } catch {
-            logger.warning("Claude API failed for \(asset.filename ?? asset.id): \(error.localizedDescription) — falling back to mock")
-            return mockPrompt(energy: songEnergy, section: sectionType, asset: asset)
+    // MARK: - FoundationModels path
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private func generateViaFoundationModels(asset: MediaAsset, energy: Float, section: SectionType?) async -> String {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            break
+        case .unavailable(let reason):
+            logger.warning("Apple Intelligence unavailable: \(String(describing: reason), privacy: .public) — using mock")
+            return mockPrompt(energy: energy, section: section, asset: asset)
+        }
+
+        let prompt = buildPrompt(asset: asset, energy: energy, section: section)
+        logger.debug("FoundationModels motion prompt (\(prompt.count) chars)")
+
+        return await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                let start = Date()
+                do {
+                    let session = LanguageModelSession(instructions: Self.instructions)
+                    let response = try await session.respond(to: prompt)
+                    let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let elapsed = Date().timeIntervalSince(start)
+                    let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    if trimmed.isEmpty {
+                        logger.warning("FoundationModels empty motion prompt after \(elapsed, format: .fixed(precision: 2))s")
+                        return nil
+                    }
+                    logger.info("FoundationModels motion prompt ok in \(elapsed, format: .fixed(precision: 2))s")
+                    return trimmed
+                } catch {
+                    let elapsed = Date().timeIntervalSince(start)
+                    logger.warning("FoundationModels error after \(elapsed, format: .fixed(precision: 2))s: \(String(describing: error), privacy: .public)")
+                    return nil
+                }
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: .seconds(Self.timeoutSeconds))
+                    logger.warning("FoundationModels motion prompt timeout after \(Self.timeoutSeconds, format: .fixed(precision: 1))s")
+                    return nil
+                } catch {
+                    return nil
+                }
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            if let result = first {
+                return result
+            }
+            logger.debug("FoundationModels returned nil — falling back to mock")
+            return self.mockPrompt(energy: energy, section: section, asset: asset)
         }
     }
 
-    // MARK: - API Key
-
-    private var apiKey: String? {
-        if let envKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !envKey.isEmpty { return envKey }
-        if let stored = KeychainHelper.anthropicAPIKey(), !stored.isEmpty { return stored }
-        return nil
-    }
-
-    // MARK: - Claude API Call
-
-    private func callAPI(asset: MediaAsset, energy: Float, section: SectionType?, key: String) async throws -> String {
-        guard PrivacyPreferences.allowAnthropicUploads else {
-            throw MotionPromptError.networkUploadsDisabled
-        }
-
-        let imageData = await fetchThumbnailData(for: asset.id)
-
+    @available(macOS 26.0, *)
+    private func buildPrompt(asset: MediaAsset, energy: Float, section: SectionType?) -> String {
         let energyLabel = energy > 0.8 ? "very high energy" : energy > 0.55 ? "moderate energy" : "low energy"
         let sectionLabel = section?.rawValue ?? "verse"
-
-        // Weave in scene context when available so the motion direction can
-        // reference what's actually in the frame.
-        var sceneContext = ""
-        if let caption = asset.sceneCaption, !caption.isEmpty {
-            sceneContext += " Scene: \(caption)."
-        }
-        if let labels = asset.sceneLabels, !labels.isEmpty {
-            sceneContext += " Tags: \(labels.joined(separator: ", "))."
-        }
-
-        let promptText = """
-        Generate a single cinematic camera motion direction (1–2 sentences) for this photo in a music video montage.\(sceneContext) \
-        The song is at \(energyLabel) in the \(sectionLabel) section. \
-        Describe specific motion: zoom direction, pan, tilt, Ken Burns drift, or parallax. \
-        Be precise and evocative. Reply with only the motion direction, no preamble.
+        let caption = asset.sceneCaption.flatMap { $0.isEmpty ? nil : $0 } ?? "none"
+        let tags = asset.sceneLabels.map { $0.isEmpty ? "none" : $0.joined(separator: ", ") } ?? "none"
+        return """
+        Photo description: \(caption).
+        Tags: \(tags).
+        Song: \(energyLabel) in the \(sectionLabel) section.
+        Write the camera motion direction.
         """
-
-        var content: [[String: Any]] = []
-        if let imgData = imageData {
-            content.append([
-                "type": "image",
-                "source": [
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": imgData.base64EncodedString()
-                ] as [String: Any]
-            ])
-        }
-        content.append(["type": "text", "text": promptText])
-
-        let body: [String: Any] = [
-            "model": Self.model,
-            "max_tokens": 120,
-            "messages": [["role": "user", "content": content]]
-        ]
-
-        var request = URLRequest(url: Self.apiEndpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(key, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 30
-
-        return try await performRequestWithRetry(request)
     }
+    #endif
 
-    // MARK: - Retry / Exponential Backoff
-
-    private func performRequestWithRetry(_ request: URLRequest) async throws -> String {
-        let maxRetries = 4
-        var delay: Double = 1.0
-
-        for attempt in 0...maxRetries {
-            let (data, response) = try await URLSession.shared.data(for: request)
-
-            if let httpResponse = response as? HTTPURLResponse {
-                let status = httpResponse.statusCode
-
-                if status == 200 {
-                    return try parseResponse(data)
-                }
-
-                let isRetryable = status == 429 || (status >= 500 && status < 600)
-                if isRetryable && attempt < maxRetries {
-                    var waitSeconds = delay
-                    if let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After"),
-                       let retrySeconds = Double(retryAfter) {
-                        waitSeconds = retrySeconds
-                    }
-                    logger.warning("Claude API HTTP \(status), retry \(attempt + 1)/\(maxRetries) after \(waitSeconds, format: .fixed(precision: 1))s")
-                    try await Task.sleep(for: .seconds(waitSeconds))
-                    delay = min(delay * 2, 30.0)
-                    continue
-                }
-            }
-
-            throw MotionPromptError.apiError
-        }
-
-        throw MotionPromptError.apiError
-    }
-
-    private func parseResponse(_ data: Data) throws -> String {
-        guard
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let contentArray = json["content"] as? [[String: Any]],
-            let firstBlock = contentArray.first,
-            let text = firstBlock["text"] as? String,
-            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            throw MotionPromptError.parseError
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Image Fetching (512px thumbnail → JPEG)
-
-    private func fetchThumbnailData(for assetID: String) async -> Data? {
-        guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
-              phAsset.mediaType == .image else { return nil }
-
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
-        options.isNetworkAccessAllowed = true
-
-        let targetSize = CGSize(width: 512, height: 512)
-        let nsImage: NSImage? = await withCheckedContinuation { continuation in
-            PHImageManager.default().requestImage(
-                for: phAsset,
-                targetSize: targetSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { image, _ in
-                continuation.resume(returning: image)
-            }
-        }
-
-        guard let nsImage else { return nil }
-
-        let resized = resizeTo512(nsImage) ?? nsImage
-        guard let cgImage = resized.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-
-        return NSBitmapImageRep(cgImage: cgImage)
-            .representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-    }
-
-    private func resizeTo512(_ image: NSImage) -> NSImage? {
-        let origSize = image.size
-        let maxDim: CGFloat = 512
-        guard origSize.width > maxDim || origSize.height > maxDim else { return image }
-        let scale = maxDim / max(origSize.width, origSize.height)
-        let newSize = CGSize(width: origSize.width * scale, height: origSize.height * scale)
-        let result = NSImage(size: newSize)
-        result.lockFocus()
-        image.draw(in: CGRect(origin: .zero, size: newSize))
-        result.unlockFocus()
-        return result
-    }
-
-    // MARK: - Mock Generator (used when no API key or on API failure)
+    // MARK: - Mock Generator (used when FM is unavailable or times out)
 
     private func mockPrompt(energy: Float, section: SectionType?, asset: MediaAsset) -> String {
         let base: String
@@ -238,27 +154,9 @@ final class MotionPromptService: MotionPromptServiceProtocol {
             ].randomElement()!
         }
 
-        // When scene context is present, reference it so tests / the UI can
-        // verify the mock is actually using analysis output.
         if let caption = asset.sceneCaption, !caption.isEmpty {
             return "\(base) Scene: \(caption)"
         }
         return base
-    }
-}
-
-// MARK: - MotionPromptError
-
-enum MotionPromptError: LocalizedError {
-    case apiError
-    case parseError
-    case networkUploadsDisabled
-
-    var errorDescription: String? {
-        switch self {
-        case .apiError:               return "Claude API request failed."
-        case .parseError:             return "Could not parse Claude API response."
-        case .networkUploadsDisabled: return "Network uploads are disabled in Privacy settings."
-        }
     }
 }

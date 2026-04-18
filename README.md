@@ -1,6 +1,6 @@
 # MemX
 
-A macOS 14+ SwiftUI app that turns your Photos library into a cinematic memory montage, beat-synced to a song. Analysis, scoring, motion planning, and render all run on-device by default. Optional AI motion prompts via Anthropic Claude are strictly opt-in and off out of the box.
+A macOS 26 SwiftUI app that turns your Photos library into a cinematic memory montage, beat-synced to a song. Analysis, scoring, motion planning, and render all run entirely on-device using Apple frameworks.
 
 The pipeline is four tabs, in order: **Song → Photos → Motion → Storyboard**. Drop in an audio file, pick your photos, run the pipeline, render an MP4.
 
@@ -11,7 +11,7 @@ The pipeline is four tabs, in order: **Song → Photos → Motion → Storyboard
 - **Real on-device analysis** — Vision face/saliency/classify, `vDSP` autocorrelation BPM, AVFoundation frame scoring. No mock fallbacks behind the hood.
 - **Beat-synced sequencing** — song energy arc, section detection, onset grid, and mood arc drive clip duration, ordering, and transition choice.
 - **Real render** — `AVMutableComposition` + `AVAssetExportSession` produces an actual MP4 at the end. Song is mixed in; clips are exported, stitched, and persisted.
-- **Privacy first** — nothing leaves your Mac unless you flip the "Enable Anthropic motion prompts" toggle in Privacy Settings. The API key lives in Keychain, not `UserDefaults`.
+- **Privacy first** — everything runs on-device. No images, prompts, or analysis ever leave your Mac.
 - **Non-blocking UI** — every service is `nonisolated` (no default `@MainActor` isolation) and heavy work runs in bounded `TaskGroup`s. You can cancel mid-pipeline and mid-render.
 - **Project persistence** — projects are JSON-serialized to `~/Library/Application Support/MemX/projects.json` with atomic writes, and `PHAsset` references are restored when you reopen a project.
 
@@ -48,15 +48,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # 192 test
    Song import            Photo import           Motion prompts        Storyboard + render
 ┌──────────────────┐   ┌──────────────────┐   ┌───────────────────┐  ┌─────────────────────┐
 │ AVAudioFile      │   │ PhotosPicker +   │   │ Per-asset prompt  │  │ SequencerService    │
-│ stream → mono    │   │ PHCachingImage-  │   │ (local heuristic  │  │ builds beat-aligned │
-│ 22.05 kHz        │   │ Manager          │   │ or Claude opt-in) │  │ sequence            │
+│ stream → mono    │   │ PHCachingImage-  │   │ (Apple Foundation │  │ builds beat-aligned │
+│ 22.05 kHz        │   │ Manager          │   │ Models, on-device)│  │ sequence            │
 │                  │   │                  │   │                   │  │                     │
 │ vDSP autocorr    │   │ Vision: face,    │   │ energy-aware text │  │ AVMutableComposition│
 │ BPM detection    │   │ saliency,        │   │ describing motion │  │ + AVAssetExport-    │
 │                  │   │ classify         │   │ per clip          │  │ Session → .mp4      │
 │ Onset + section  │   │                  │   │                   │  │                     │
-│ detection        │   │ Bounded Task-    │   │ Exponential       │  │ Mood arc drives     │
-│                  │   │ Group (6-way)    │   │ backoff on 429    │  │ transitions + dur.  │
+│ detection        │   │ Bounded Task-    │   │ 6s timeout, falls │  │ Mood arc drives     │
+│                  │   │ Group (6-way)    │   │ back to heuristic │  │ transitions + dur.  │
 └──────────────────┘   └──────────────────┘   └───────────────────┘  └─────────────────────┘
    BeatmapService         PhotoScoringService    MotionPromptService   SequencerService +
                           VideoAnalysisService                         VideoRenderService
@@ -89,10 +89,10 @@ Every phase reports progress through a callback, and every long-running phase is
 
 ### Motion prompts (`MotionPromptService`)
 
-- Local heuristic prompt generator runs on-device by default.
-- Optional Anthropic Claude path is **guarded by `PrivacyPreferences.allowAnthropicUploads`** — off by default. If the guard trips it throws `MotionPromptError.networkUploadsDisabled` before any data leaves the machine.
-- When enabled: images are pre-scaled to ≤512 px, base64-encoded, and sent with **exponential backoff (1s → 30s, max 4 retries)** that honors `Retry-After` headers on 429/5xx.
-- API key is stored in the **Keychain** (`kSecClassGenericPassword`, service `com.memx.anthropic`). Any legacy key in `UserDefaults` is migrated to Keychain on first access.
+- Calls `SystemLanguageModel` + `LanguageModelSession` (Apple Foundation Models, macOS 26) entirely on-device.
+- Builds a text prompt from `asset.sceneCaption`, `asset.sceneLabels`, song energy bucket, and section type.
+- Races the model against a **6-second wall-clock timeout** via `withTaskGroup`; falls back to a deterministic heuristic prompt on timeout or model unavailability.
+- Strips leading/trailing quotes from the model response.
 
 ### Sequencer + render (`SequencerService`, `VideoRenderService`)
 
@@ -124,7 +124,7 @@ Every phase reports progress through a callback, and every long-running phase is
 
 ## UX & Flow
 
-- **Privacy Settings** — a Toggle + `SecureField` (Keychain-backed) lives behind a gear icon on the Landing view and in the app menu. Documents exactly what is transmitted.
+- **Privacy Settings** — accessible behind a gear icon on the Landing view. Confirms all AI runs on-device.
 - **Step gating** — sidebar shows `checkmark.circle.fill` for completed steps, `circle.dotted` for the active one, `lock.fill` for unreachable. Navigating is never blocked; the lock is a cue, not a barrier.
 - **Persistent pipeline runner** — "Run Pipeline" lives in the sidebar footer on every tab once `hasSong && !assets.isEmpty`, with a matching "Cancel" when a task is in flight.
 - **Honest render steps** — the progress list shows what actually runs (clip stitch, audio attach, `AVAssetExportSession`). Planned items are tagged "Coming soon" instead of lying.
@@ -140,14 +140,12 @@ Entitlements (`Resources/MemX.entitlements`):
 
 ```
 com.apple.security.app-sandbox                               true
-com.apple.security.network.client                            true   # Claude (opt-in)
 com.apple.security.files.user-selected.read-write            true   # NSSavePanel + drag-drop
 com.apple.security.personal-information.photos-library       true
 com.apple.security.device.audio-input                        true   # future mic support
 ```
 
-- API keys in **Keychain**, never `UserDefaults`.
-- Claude calls **throw before the network request** unless the user has opted in.
+- All AI inference runs on-device — no network calls for analysis or prompts.
 - Drag-dropped audio files wrap their `FileManager.copyItem` with `startAccessingSecurityScopedResource()` / `stop…`.
 - App Sandbox + Hardened Runtime are both on for the Xcode target. (The `swift run` CLI binary is unsigned and dev-only; use Xcode for signed builds.)
 
@@ -167,13 +165,11 @@ MemXApp  →  ContentView
          BeatmapService          Streamed mono 22 kHz + vDSP BPM + onset/section
          PhotoScoringService     Vision face/saliency/classify (6-way TaskGroup)
          VideoAnalysisService    AsyncSequence frames + parallel Vision
-         MotionPromptService     Local + opt-in Claude with Keychain + backoff
+         MotionPromptService     Apple Foundation Models on-device (6s timeout + mock fallback)
          SequencerService        Event-aware storyboard builder
          VideoRenderService      AVMutableComposition + AVAssetExportSession (3-way)
               ↓
          ProjectStore         ~/Library/Application Support/MemX/projects.json
-         PrivacyPreferences   UserDefaults-backed opt-in flag
-         KeychainHelper       SecItem* wrapper (service = "com.memx.anthropic")
 ```
 
 All services are protocol-based singletons and can be swapped under the `WorkspaceViewModel.init` defaults — the 192-test suite exercises this via mock implementations.
@@ -192,7 +188,7 @@ Sources/MemX/
 │                          MusicSuggestionService
 ├── ViewModels/            AppViewModel, WorkspaceViewModel, ImportViewModel
 ├── Persistence/           ProjectStore
-├── Utilities/             KeychainHelper, PrivacyPreferences
+├── Utilities/             (shared utilities)
 ├── Views/
 │   ├── Landing/           LandingView (gear → Privacy)
 │   ├── Projects/          ProjectsView
