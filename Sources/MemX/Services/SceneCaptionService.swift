@@ -43,6 +43,7 @@ final class SceneCaptionService: SceneCaptionServiceProtocol {
         let cleanLabels = sceneLabels
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        logger.info("caption requested: \(cleanLabels.count) labels")
         guard !cleanLabels.isEmpty else {
             logger.info("skip caption — no scene labels supplied")
             return nil
@@ -66,6 +67,7 @@ final class SceneCaptionService: SceneCaptionServiceProtocol {
     #if canImport(FoundationModels)
     @available(macOS 26.0, *)
     private func captionViaFoundationModels(labels: [String]) async -> String? {
+        logger.info("FoundationModels invoke: \(labels.count) labels")
         switch SystemLanguageModel.default.availability {
         case .available:
             break
@@ -74,39 +76,51 @@ final class SceneCaptionService: SceneCaptionServiceProtocol {
             return nil
         }
 
+        logger.debug("FoundationModels available — building prompt")
         let joined = labels.joined(separator: ", ")
         let promptText = "Write a caption for a photo showing: \(joined). One sentence."
+        logger.debug("FoundationModels prompt (\(promptText.count) chars): \(promptText, privacy: .public)")
 
         // Race the model against a wall-clock timeout. If the model stalls,
         // return `nil` so the pipeline never blocks on a slow caption.
         return await withTaskGroup(of: String?.self) { group in
             group.addTask {
+                let start = Date()
                 do {
                     let session = LanguageModelSession(instructions: Self.instructions)
                     let response = try await session.respond(to: promptText)
                     let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let elapsed = Date().timeIntervalSince(start)
+                    logger.info("FoundationModels response in \(elapsed, format: .fixed(precision: 2))s — \(raw.count) chars raw")
                     // Model sometimes wraps the sentence in quotes even when
                     // told not to — strip them.
                     let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                     if trimmed.isEmpty {
-                        logger.warning("empty caption from FoundationModels")
+                        logger.warning("FoundationModels returned empty content after \(elapsed, format: .fixed(precision: 2))s")
                         return nil
                     }
-                    logger.info("caption ok (\(trimmed.count) chars)")
+                    logger.info("FoundationModels caption ok in \(elapsed, format: .fixed(precision: 2))s (\(trimmed.count) chars): \(trimmed, privacy: .public)")
                     return trimmed
                 } catch {
-                    logger.warning("FoundationModels error: \(error.localizedDescription, privacy: .public)")
+                    let elapsed = Date().timeIntervalSince(start)
+                    logger.warning("FoundationModels error after \(elapsed, format: .fixed(precision: 2))s: \(String(describing: error), privacy: .public)")
                     return nil
                 }
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(Self.timeoutSeconds))
-                return nil
+                do {
+                    try await Task.sleep(for: .seconds(Self.timeoutSeconds))
+                    logger.warning("FoundationModels timeout after \(Self.timeoutSeconds, format: .fixed(precision: 1))s — using nil caption")
+                    return nil
+                } catch {
+                    return nil
+                }
             }
             // First non-nil wins; if the first result is nil (timeout or
             // model failure), accept it and stop waiting on the other task.
             let first = await group.next() ?? nil
             group.cancelAll()
+            logger.debug("FoundationModels group resolved (returning \(first == nil ? "nil" : "caption"))")
             return first
         }
     }

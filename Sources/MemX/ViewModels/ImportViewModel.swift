@@ -1,7 +1,10 @@
 import AppKit
 import Foundation
+import OSLog
 import Photos
 import Observation
+
+private let logger = Logger(subsystem: "com.memx.app", category: "import")
 
 @Observable
 final class ImportViewModel {
@@ -78,7 +81,9 @@ final class ImportViewModel {
         let status = photosService.authorizationStatus()
         if status == .authorized || status == .limited {
             recentAssets = await photosService.fetchRecentAssets(limit: 300)
+            logger.info("loadRecents: fetched \(self.recentAssets.count) assets")
         } else {
+            logger.warning("loadRecents: photos permission \(String(describing: status)) — using mock data")
             recentAssets = MockDataProvider.mockAssets()
         }
         isLoadingRecents = false
@@ -90,7 +95,9 @@ final class ImportViewModel {
         let status = photosService.authorizationStatus()
         if status == .authorized || status == .limited {
             albums = await photosService.fetchAlbums()
+            logger.info("loadAlbums: fetched \(self.albums.count) albums")
         } else {
+            logger.warning("loadAlbums: photos permission \(String(describing: status)) — using mock data")
             albums = MockDataProvider.mockAlbums()
         }
         isLoadingAlbums = false
@@ -103,7 +110,9 @@ final class ImportViewModel {
         let status = photosService.authorizationStatus()
         if status == .authorized || status == .limited {
             albumAssets = await photosService.fetchAssets(in: album, limit: 300)
+            logger.info("selectAlbum: \(album.id) — \(self.albumAssets.count) assets")
         } else {
+            logger.warning("selectAlbum: photos permission \(String(describing: status)) — using mock data")
             albumAssets = MockDataProvider.mockAssets()
         }
         isLoadingAlbumAssets = false
@@ -133,12 +142,14 @@ final class ImportViewModel {
         isImportingFromPicker = true
         importProgress = 0
         pickerError = nil
+        logger.info("picker import started: \(assetIDs.count) ids")
 
         for (i, assetID) in assetIDs.enumerated() {
             defer { importProgress = Double(i + 1) / Double(assetIDs.count) }
 
             let resolved = await PhotosLibraryService.shared.resolveAssets(for: [assetID])
             guard let asset = resolved.first else {
+                logger.warning("picker import: failed to resolve \(assetID) — full-library access required")
                 pickerError = "Photos full-library access is required to import selected items."
                 continue
             }
@@ -148,6 +159,7 @@ final class ImportViewModel {
         }
 
         isImportingFromPicker = false
+        logger.info("picker import complete: \(self.importedPickerAssets.count) imported")
     }
 
     // MARK: - Thumbnail

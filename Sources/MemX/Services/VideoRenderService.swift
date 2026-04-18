@@ -173,27 +173,28 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         onProgress(0.58, "Building video composition (\(Int(renderSize.width))×\(Int(renderSize.height)) @ \(fps)fps)…")
 
         // Build video composition with aspect-fit per-segment transforms
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = renderSize
-        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
-
-        var instructions: [AVMutableVideoCompositionInstruction] = []
+        var instructions: [AVVideoCompositionInstruction] = []
         for seg in segments {
-            let inst = AVMutableVideoCompositionInstruction()
-            inst.timeRange = seg.compositionRange
-            inst.backgroundColor = CGColor(gray: 0, alpha: 1)
-
-            let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+            var layerConfig = AVVideoCompositionLayerInstruction.Configuration(assetTrack: videoTrack)
             let t = aspectFitTransform(
                 naturalSize: seg.srcNaturalSize,
                 preferredTransform: seg.srcTransform,
                 into: renderSize
             )
-            layer.setTransform(t, at: seg.compositionRange.start)
-            inst.layerInstructions = [layer]
-            instructions.append(inst)
+            layerConfig.setTransform(t, at: seg.compositionRange.start)
+            let layer = AVVideoCompositionLayerInstruction(configuration: layerConfig)
+            let instConfig = AVVideoCompositionInstruction.Configuration(
+                backgroundColor: CGColor(gray: 0, alpha: 1),
+                layerInstructions: [layer],
+                timeRange: seg.compositionRange
+            )
+            instructions.append(AVVideoCompositionInstruction(configuration: instConfig))
         }
-        videoComposition.instructions = instructions
+        var videoCompositionConfig = AVVideoComposition.Configuration()
+        videoCompositionConfig.renderSize = renderSize
+        videoCompositionConfig.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        videoCompositionConfig.instructions = instructions
+        let videoComposition = AVVideoComposition(configuration: videoCompositionConfig)
 
         onProgress(0.60, "Exporting via AVAssetExportSession…")
 
