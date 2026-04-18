@@ -45,7 +45,7 @@ struct MotionPromptsView: View {
                     ForEach(ProcessingPhase.allCases.dropFirst(), id: \.self) { phase in
                         ProcessingPhaseRow(phase: phase,
                                           isActive: workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing,
-                                          isComplete: phase.index < workspaceVM.processingStatus.phase.index || workspaceVM.processingStatus.isComplete)
+                                          isComplete: phaseIsComplete(phase))
                         if phase != .complete {
                             Rectangle()
                                 .fill(.separator)
@@ -101,10 +101,18 @@ struct MotionPromptsView: View {
 
             // Generate all button — label reflects actual processing phase
             let phaseLabel: String = {
-                if workspaceVM.processingStatus.phase == .scoringPhotos { return "Scoring photos..." }
-                if workspaceVM.processingStatus.phase == .generatingPrompts { return "Generating..." }
-                if workspaceVM.isProcessing { return "Processing..." }
+                if workspaceVM.isProcessing {
+                    switch workspaceVM.processingStatus.phase {
+                    case .scoringPhotos:     return "Scoring photos..."
+                    case .generatingPrompts: return "Generating..."
+                    case .sequencing:        return "Building storyboard..."
+                    default:                 return "Processing..."
+                    }
+                }
                 if !workspaceVM.hasBeatmap { return "Import a song first" }
+                if workspaceVM.assets.count > 0 && workspaceVM.readyPromptCount >= workspaceVM.assets.count {
+                    return "Re-Generate All Prompts"
+                }
                 return "Generate All Prompts"
             }()
             MSPrimaryButton(
@@ -118,6 +126,22 @@ struct MotionPromptsView: View {
             .padding(MS.Spacing.md)
         }
         .background(.regularMaterial)
+    }
+
+    private func phaseIsComplete(_ phase: ProcessingPhase) -> Bool {
+        if workspaceVM.processingStatus.isComplete { return true }
+        let currentIndex = workspaceVM.processingStatus.phase.index
+        if phase.index < currentIndex { return true }
+        switch phase {
+        case .analyzingAudio:    return workspaceVM.hasBeatmap
+        case .scoringPhotos:     return workspaceVM.hasScoredAssets
+        case .generatingPrompts: return workspaceVM.assets.count > 0
+            && workspaceVM.readyPromptCount >= workspaceVM.assets.count
+            && !workspaceVM.isProcessing
+        case .sequencing:        return workspaceVM.hasPlan
+        case .complete:          return workspaceVM.hasPlan
+        default:                 return false
+        }
     }
 
     // MARK: - Toolbar

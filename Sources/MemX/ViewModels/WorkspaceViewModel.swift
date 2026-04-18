@@ -304,12 +304,29 @@ final class WorkspaceViewModel {
         }
 
         logger.info("Motion prompts complete: \(self.readyPromptCount)/\(total) ready")
+        processingStatus.progress = 0.77
+        processingStatus.message = "\(readyPromptCount)/\(total) prompts ready — build the storyboard to continue"
         isProcessing = false
     }
 
     func buildSequence() async {
         guard !assets.isEmpty, !isProcessing else { return }
-        guard let bm = beatmap else { return }
+        guard let bm = beatmap else {
+            logger.warning("buildSequence: beatmap unavailable — re-analyzing song")
+            if let track = songTrack {
+                await analyzeAudio(track: track)
+            }
+            guard let bm2 = beatmap else {
+                processingStatus.error = "Song analysis is required before building the storyboard. Re-import the song."
+                return
+            }
+            await buildSequenceCore(bm: bm2)
+            return
+        }
+        await buildSequenceCore(bm: bm)
+    }
+
+    private func buildSequenceCore(bm: Beatmap) async {
         isProcessing = true
         isGeneratingPlan = true
         processingStatus.phase = .sequencing
