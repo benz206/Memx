@@ -190,7 +190,7 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertTrue(usedAssetIDs.contains(lowAssets[0].id))
     }
 
-    func testBuildSequenceWithNoPassingCandidatesProducesEmptySequence() async {
+    func testBuildSequenceWithNoPassingCandidatesUsesFallback() async {
         var assets = MockDataProvider.mockAssets()
         for i in 0..<assets.count {
             assets[i].analysisScore = 0.1  // all below 0.3 threshold
@@ -206,8 +206,8 @@ final class SequencerServiceTests: XCTestCase {
             onProgress: { _, _ in }
         )
 
-        // No candidates above 0.3 means empty sequence
-        XCTAssertTrue(plan.sequence.isEmpty)
+        // When no candidates pass the threshold, the sequencer falls back to all assets
+        XCTAssertFalse(plan.sequence.isEmpty)
     }
 
     // MARK: - buildSequence: excluded assets

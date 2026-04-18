@@ -25,6 +25,9 @@ final class AppViewModel {
 
     init() {
         loadProjects()
+        Task.detached {
+            PhotosLibraryService.shared.cleanupTemporaryFiles()
+        }
     }
 
     // MARK: - Navigation
@@ -35,6 +38,9 @@ final class AppViewModel {
 
     func showProjects() {
         navigationState = .projects
+        Task.detached {
+            PhotosLibraryService.shared.cleanupTemporaryFiles()
+        }
     }
 
     func openProject(_ project: Project) {
@@ -63,16 +69,17 @@ final class AppViewModel {
         saveProjects()
         if case .workspace(let current) = navigationState, current.id == project.id {
             navigationState = .projects
+            Task.detached {
+                PhotosLibraryService.shared.cleanupTemporaryFiles()
+            }
         }
     }
 
     private func cleanUpProjectFiles(_ project: Project) {
         let fm = FileManager.default
-        // Exported video
         if let videoURL = project.exportedVideoURL {
             try? fm.removeItem(at: videoURL)
         }
-        // Copied song + any other project files under App Support/MemX/Songs/{id}/
         if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let memxBase = base.appendingPathComponent("MemX")
             let songDir = memxBase.appendingPathComponent("Songs/\(project.id.uuidString)")
@@ -87,21 +94,26 @@ final class AppViewModel {
         saveProjects()
     }
 
-    // MARK: - Persistence (simple UserDefaults; swap for Core Data as needed)
+    // MARK: - Persistence
 
     private func saveProjects() {
-        guard let data = try? JSONEncoder().encode(projects) else { return }
-        UserDefaults.standard.set(data, forKey: "ms_projects")
+        ProjectStore.shared.save(projects)
     }
 
     private func loadProjects() {
-        if let data = UserDefaults.standard.data(forKey: "ms_projects"),
-           let decoded = try? JSONDecoder().decode([Project].self, from: data) {
-            projects = decoded
-        } else {
-            // Seed demo project on first launch
-            projects = MockDataProvider.sampleProjects()
+        migrateFromUserDefaultsIfNeeded()
+        let loaded = ProjectStore.shared.load()
+        projects = loaded
+    }
+
+    private func migrateFromUserDefaultsIfNeeded() {
+        let key = "ms_projects"
+        guard let data = UserDefaults.standard.data(forKey: key) else { return }
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode([Project].self, from: data) {
+            ProjectStore.shared.save(decoded)
         }
+        UserDefaults.standard.removeObject(forKey: key)
     }
 
     // MARK: - Photos Permission

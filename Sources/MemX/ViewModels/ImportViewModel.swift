@@ -7,14 +7,14 @@ import Observation
 final class ImportViewModel {
 
     // MARK: State
-    var recentAssets: [MediaAsset] = []
+    var recentAssets: [MediaAsset] = [] { didSet { refreshFilter() } }
     var albums: [MSAlbum] = []
-    var selectedAlbum: MSAlbum? = nil
-    var albumAssets: [MediaAsset] = []
+    var selectedAlbum: MSAlbum? = nil { didSet { refreshFilter() } }
+    var albumAssets: [MediaAsset] = [] { didSet { refreshFilter() } }
     var selectedAssetIDs: Set<String> = []
-    var searchText: String = ""
-    var sortOrder: AssetSortOrder = .newestFirst
-    var filterType: AssetFilterType = .all
+    var searchText: String = "" { didSet { refreshFilter() } }
+    var sortOrder: AssetSortOrder = .newestFirst { didSet { refreshFilter() } }
+    var filterType: AssetFilterType = .all { didSet { refreshFilter() } }
 
     // MARK: Loading
     var isLoadingRecents: Bool = false
@@ -25,9 +25,14 @@ final class ImportViewModel {
     // MARK: PhotosPicker
     var importedPickerAssets: [MediaAsset] = []
     var isImportingFromPicker: Bool = false
+    var pickerError: String? = nil
 
-    // MARK: Computed
-    var visibleAssets: [MediaAsset] {
+    // MARK: Filtered (cached)
+    private(set) var filteredAssets: [MediaAsset] = []
+
+    var visibleAssets: [MediaAsset] { filteredAssets }
+
+    private func refreshFilter() {
         var assets = selectedAlbum != nil ? albumAssets : recentAssets
         if !searchText.isEmpty {
             assets = assets.filter {
@@ -36,9 +41,9 @@ final class ImportViewModel {
             }
         }
         switch filterType {
-        case .all:     break
-        case .photos:  assets = assets.filter { $0.mediaType == .photo || $0.mediaType == .livePhoto }
-        case .videos:  assets = assets.filter { $0.mediaType == .video }
+        case .all:       break
+        case .photos:    assets = assets.filter { $0.mediaType == .photo || $0.mediaType == .livePhoto }
+        case .videos:    assets = assets.filter { $0.mediaType == .video }
         case .favorites: assets = assets.filter(\.isFavorite)
         }
         switch sortOrder {
@@ -46,7 +51,7 @@ final class ImportViewModel {
         case .oldestFirst: assets.sort { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         case .bestScore:   assets.sort { ($0.analysisScore ?? 0) > ($1.analysisScore ?? 0) }
         }
-        return assets
+        filteredAssets = assets
     }
 
     var selectedAssets: [MediaAsset] {
@@ -69,7 +74,6 @@ final class ImportViewModel {
         if status == .authorized || status == .limited {
             recentAssets = await photosService.fetchRecentAssets(limit: 300)
         } else {
-            // Use mock data in unauthorized state (simulator / demo)
             recentAssets = MockDataProvider.mockAssets()
         }
         isLoadingRecents = false
@@ -123,9 +127,17 @@ final class ImportViewModel {
     func handlePickerSelection(_ assetIDs: [String]) async {
         isImportingFromPicker = true
         importProgress = 0
+        pickerError = nil
 
         for (i, assetID) in assetIDs.enumerated() {
             defer { importProgress = Double(i + 1) / Double(assetIDs.count) }
+
+            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+            guard fetchResult.count > 0 else {
+                pickerError = "Photos full-library access is required to import selected items."
+                continue
+            }
+
             let asset = MediaAsset(id: assetID, filename: "Imported \(i+1)")
             importedPickerAssets.append(asset)
             selectedAssetIDs.insert(assetID)

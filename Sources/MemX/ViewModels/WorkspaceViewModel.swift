@@ -71,6 +71,14 @@ final class WorkspaceViewModel {
     var renderedVideoURL: URL? = nil
     var renderError: String? = nil
 
+    // MARK: Cancellation
+    var cancelledNotice: String? = nil
+    private var pipelineTask: Task<Void, Never>?
+    private var renderTask: Task<Void, Never>?
+
+    // MARK: Dedup scoring
+    private var photosScoredSuccessfully: Bool = false
+
     // MARK: Services
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol
@@ -98,12 +106,10 @@ final class WorkspaceViewModel {
         self.processingStatus = ProcessingStatus(projectID: project.id)
         self.songTrack = project.songTrack
 
-        // Restore exported video URL if the file still exists on disk
         if let url = project.exportedVideoURL, FileManager.default.fileExists(atPath: url.path) {
             self.renderedVideoURL = url
         }
 
-        // Hydrate existing plan if present
         if let plan = project.montagePlan {
             self.montagePlan = plan
             self.processingStatus = MockDataProvider.completedProcessingStatus(for: project)
@@ -117,21 +123,24 @@ final class WorkspaceViewModel {
         let filename = url.deletingPathExtension().lastPathComponent
         let format = url.pathExtension.lowercased()
 
-        // Copy song into App Support so the reference stays valid if the original is moved
         let resolvedURL = copySongToAppSupport(from: url) ?? url
 
         let track = SongTrack(
             title: filename,
             artist: nil,
             fileURL: resolvedURL,
-            durationSeconds: 0,  // filled by beatmap analysis
+            durationSeconds: 0,
             fileFormat: format
         )
         songTrack = track
         project.songTrack = track
+
+        if project.status == .draft {
+            project.status = .configuring
+        }
+
         appVM.updateProject(project)
 
-        // Immediately analyze audio
         await analyzeAudio(track: track)
 
         selectedTab = .photos
@@ -161,10 +170,9 @@ final class WorkspaceViewModel {
             beatmap = result
             logger.info("Audio analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), duration=\(result.durationSeconds, format: .fixed(precision: 1))s, sections=\(result.sections.count)")
 
-            // Update song track with BPM
             if var t = songTrack {
                 t.bpm = result.bpm
-                t.fileURL = track.fileURL.absoluteURL  // normalize
+                t.fileURL = track.fileURL.absoluteURL
                 songTrack = t
                 project.songTrack = t
                 appVM.updateProject(project)
@@ -189,7 +197,11 @@ final class WorkspaceViewModel {
         processingStatus.error = nil
         logger.info("Photo scoring started: \(self.assets.count) assets")
 
+        let priorStatus = project.status
+
         do {
+            try Task.checkCancellation()
+
             let result = try await scoringService.scorePhotos(
                 for: project,
                 assets: assets
@@ -205,7 +217,15 @@ final class WorkspaceViewModel {
             assets = assets.map { scoreMap[$0.id] ?? $0 }
             let included = result.candidates.filter(\.isIncluded).count
             logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
+            photosScoredSuccessfully = true
 
+        } catch is CancellationError {
+            logger.info("Photo scoring cancelled")
+            project.status = priorStatus
+            appVM.updateProject(project)
+            cancelledNotice = "Pipeline cancelled"
+            isProcessing = false
+            return
         } catch {
             logger.error("Photo scoring failed: \(error.localizedDescription)")
             processingStatus.error = error.localizedDescription
@@ -217,11 +237,9 @@ final class WorkspaceViewModel {
     func generateAllMotionPrompts() async {
         guard !assets.isEmpty, !isProcessing else { return }
 
-        // Score photos first if none have been scored yet (required for energy-mapped prompts
-        // and to populate clipStartTime on video assets before prompt generation).
-        if !hasScoredAssets {
+        if !photosScoredSuccessfully {
             await scorePhotos()
-            guard !isProcessing else { return }  // guard against error leaving isProcessing = true
+            guard !isProcessing else { return }
         }
 
         guard !assets.isEmpty, !isProcessing else { return }
@@ -231,7 +249,6 @@ final class WorkspaceViewModel {
         processingStatus.message = "Generating motion prompts..."
         processingStatus.error = nil
 
-        // Initialize pending prompts for any assets not yet prompted
         let existingIDs = Set(motionPrompts.map(\.assetID))
         let newAssets = assets.filter { !existingIDs.contains($0.id) }
         for asset in newAssets {
@@ -241,9 +258,22 @@ final class WorkspaceViewModel {
         let total = motionPrompts.count
         logger.info("Motion prompt generation started: \(total) prompts")
 
+        let priorStatus = project.status
+
         for i in motionPrompts.indices {
+            do {
+                try Task.checkCancellation()
+            } catch {
+                logger.info("Motion prompt generation cancelled")
+                project.status = priorStatus
+                appVM.updateProject(project)
+                cancelledNotice = "Pipeline cancelled"
+                isProcessing = false
+                return
+            }
+
             guard let asset = assets.first(where: { $0.id == motionPrompts[i].assetID }) else { continue }
-            guard motionPrompts[i].status != .edited else { continue }  // don't overwrite user edits
+            guard motionPrompts[i].status != .edited else { continue }
 
             motionPrompts[i].status = .generating
             let energy = Float(beatmap?.energy(at: Double(i) / Double(max(assets.count, 1)) * (beatmap?.durationSeconds ?? 60)) ?? 0.5)
@@ -313,14 +343,28 @@ final class WorkspaceViewModel {
         isGeneratingPlan = false
     }
 
-    /// Run the full pipeline: score photos → generate motion prompts → build sequence
     func runPipeline() async {
         guard !isProcessing else { return }
         logger.info("Full pipeline started: \(self.assets.count) assets")
-        await scorePhotos()
-        await generateAllMotionPrompts()
-        await buildSequence()
-        logger.info("Full pipeline finished")
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try Task.checkCancellation()
+                await self.scorePhotos()
+                try Task.checkCancellation()
+                await self.generateAllMotionPrompts()
+                try Task.checkCancellation()
+                await self.buildSequence()
+                logger.info("Full pipeline finished")
+            } catch is CancellationError {
+                self.isProcessing = false
+                self.cancelledNotice = "Pipeline cancelled"
+            } catch {}
+        }
+        pipelineTask = task
+        await task.value
+        pipelineTask = nil
     }
 
     // MARK: - Video Render
@@ -340,31 +384,50 @@ final class WorkspaceViewModel {
         renderError = nil
         logger.info("Render started: \(plan.sequence.count) clips, song=\(song.fileURL.lastPathComponent)")
 
-        do {
-            let tempURL = try await renderService.render(
-                plan: plan,
-                songURL: song.fileURL,
-                assets: assets
-            ) { [weak self] (prog: Double, msg: String) in
-                Task { @MainActor in
-                    self?.renderProgress = prog
-                    self?.renderProgressMessage = msg
-                }
-            }
-            // Move from temp to a persistent App Support location
-            let persistentURL = persistExport(from: tempURL)
-            renderedVideoURL = persistentURL
-            project.exportedVideoURL = persistentURL
-            project.status = .exported
-            appVM.updateProject(project)
-            logger.info("Render complete: \(persistentURL.lastPathComponent)")
-        } catch {
-            logger.error("Render failed: \(error.localizedDescription)")
-            renderError = error.localizedDescription
-        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try Task.checkCancellation()
 
-        isRendering = false
+                let tempURL = try await self.renderService.render(
+                    plan: plan,
+                    songURL: song.fileURL,
+                    assets: self.assets
+                ) { [weak self] (prog: Double, msg: String) in
+                    Task { @MainActor in
+                        self?.renderProgress = prog
+                        self?.renderProgressMessage = msg
+                    }
+                }
+                let persistentURL = self.persistExport(from: tempURL)
+                self.renderedVideoURL = persistentURL
+                self.project.exportedVideoURL = persistentURL
+                self.project.status = .exported
+                self.appVM.updateProject(self.project)
+                logger.info("Render complete: \(persistentURL.lastPathComponent)")
+            } catch is CancellationError {
+                logger.info("Render cancelled")
+                self.cancelledNotice = "Render cancelled"
+            } catch {
+                logger.error("Render failed: \(error.localizedDescription)")
+                self.renderError = error.localizedDescription
+            }
+
+            self.isRendering = false
+        }
+        renderTask = task
+        await task.value
+        renderTask = nil
     }
+
+    // MARK: - Cancellation
+
+    func cancelPipeline() {
+        pipelineTask?.cancel()
+        renderTask?.cancel()
+    }
+
+    var isCancellable: Bool { pipelineTask != nil || renderTask != nil }
 
     // MARK: - Asset Management
 
@@ -374,6 +437,10 @@ final class WorkspaceViewModel {
         assets.append(contentsOf: toAdd)
         project.assetIDs = assets.map(\.id)
         project.updatedAt = Date()
+        photosScoredSuccessfully = false
+        if project.status == .draft {
+            project.status = .configuring
+        }
         appVM.updateProject(project)
     }
 
@@ -381,6 +448,7 @@ final class WorkspaceViewModel {
         assets.removeAll { $0.id == asset.id }
         motionPrompts.removeAll { $0.assetID == asset.id }
         project.assetIDs.removeAll { $0 == asset.id }
+        photosScoredSuccessfully = false
         appVM.updateProject(project)
     }
 

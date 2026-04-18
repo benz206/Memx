@@ -33,19 +33,21 @@ struct Project: Identifiable, Codable, Hashable {
 // MARK: - ProjectStatus
 
 enum ProjectStatus: String, Codable, CaseIterable {
-    case draft     = "Draft"
-    case importing = "Importing"
-    case analyzing = "Analyzing"
-    case ready     = "Ready"
-    case exported  = "Exported"
+    case draft        = "Draft"
+    case configuring  = "Configuring"
+    case importing    = "Importing"
+    case analyzing    = "Analyzing"
+    case ready        = "Ready"
+    case exported     = "Exported"
 
     var icon: String {
         switch self {
-        case .draft:     return "doc.badge.plus"
-        case .importing: return "arrow.down.circle"
-        case .analyzing: return "cpu"
-        case .ready:     return "checkmark.circle.fill"
-        case .exported:  return "film.stack"
+        case .draft:        return "doc.badge.plus"
+        case .configuring:  return "slider.horizontal.3"
+        case .importing:    return "arrow.down.circle"
+        case .analyzing:    return "cpu"
+        case .ready:        return "checkmark.circle.fill"
+        case .exported:     return "film.stack"
         }
     }
 }
