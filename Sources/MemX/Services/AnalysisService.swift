@@ -219,8 +219,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoringLog("     [\(label)] no PHAsset or not an image")
             return nil
         }
-        let inCloud = (phAsset.value(forKey: "isCloudPlaceholder") as? Bool) ?? false
-        scoringLog("     [\(label)] requesting 384px image (isCloudPlaceholder=\(inCloud))")
+        scoringLog("     [\(label)] requesting 384px image")
 
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
