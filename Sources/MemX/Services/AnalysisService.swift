@@ -6,6 +6,25 @@ import OSLog
 
 private let logger = Logger(subsystem: "com.memx.app", category: "scoring")
 
+@inline(__always)
+private func scoringLog(_ message: @autoclosure () -> String) {
+    let line = "[scoring] \(message())"
+    print(line)
+    fflush(stdout)
+    logger.info("\(line, privacy: .public)")
+}
+
+private final class ScoringTimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
+    }
+}
+
 // MARK: - PhotoScoringServiceProtocol
 
 protocol PhotoScoringServiceProtocol {
@@ -23,17 +42,20 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
     static let shared = PhotoScoringService()
     private init() {}
 
+    private static let perAssetTimeoutSeconds: TimeInterval = 30
+    private static let photoConcurrencyLimit = 6
+    private static let videoConcurrencyLimit = 2
+
     func scorePhotos(
         for project: Project,
         assets: [MediaAsset],
         onProgress: @escaping (Double, String) -> Void
     ) async throws -> PhotoScoringResult {
 
-        logger.info("Photo scoring started: \(assets.count) assets")
+        scoringLog("▶︎ scorePhotos START — \(assets.count) assets, photoConcurrency=\(Self.photoConcurrencyLimit), videoConcurrency=\(Self.videoConcurrencyLimit), perPhotoTimeout=\(Int(Self.perAssetTimeoutSeconds))s")
         onProgress(0.05, "Preparing \(assets.count) photos for analysis...")
 
         let total = assets.count
-        let concurrencyLimit = 6
 
         struct IndexedResult {
             let index: Int
@@ -42,38 +64,52 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             let novelty: Float
             let faces: Int
             let clipStart: TimeInterval?
+            let isVideo: Bool
         }
 
         var results = [IndexedResult?](repeating: nil, count: total)
         var completedCount = 0
 
         try await withThrowingTaskGroup(of: IndexedResult.self) { group in
-            var inFlight = 0
+            var inFlightPhotos = 0
+            var inFlightVideos = 0
             var nextIndex = 0
 
-            while nextIndex < total || inFlight > 0 {
-                while inFlight < concurrencyLimit && nextIndex < total {
+            while nextIndex < total || (inFlightPhotos + inFlightVideos) > 0 {
+                try Task.checkCancellation()
+
+                while nextIndex < total {
+                    let asset = assets[nextIndex]
+                    let canLaunch = asset.isVideo
+                        ? inFlightVideos < Self.videoConcurrencyLimit
+                        : inFlightPhotos < Self.photoConcurrencyLimit
+                    guard canLaunch else { break }
+
                     let i = nextIndex
-                    let asset = assets[i]
+                    let label = asset.filename ?? asset.id
+                    let isVideo = asset.isVideo
+                    scoringLog("   → launch [\(i + 1)/\(total)] \(label) (isVideo=\(isVideo), \(isVideo ? "videos" : "photos") in flight now \(isVideo ? inFlightVideos + 1 : inFlightPhotos + 1))")
                     group.addTask {
+                        let startedAt = Date()
                         let (quality, emotion, novelty, faces, clipStart) = await self.analyzeAsset(asset)
+                        let elapsed = Date().timeIntervalSince(startedAt)
+                        scoringLog("   ✓ done   [\(i + 1)/\(total)] \(label) in \(String(format: "%.1f", elapsed))s — q=\(String(format: "%.2f", quality)) e=\(String(format: "%.2f", emotion)) n=\(String(format: "%.2f", novelty)) faces=\(faces)")
                         return IndexedResult(index: i, quality: quality, emotion: emotion,
-                                            novelty: novelty, faces: faces, clipStart: clipStart)
+                                            novelty: novelty, faces: faces, clipStart: clipStart, isVideo: isVideo)
                     }
                     onProgress(0.05 + Double(nextIndex) / Double(total) * 0.04,
                                "Starting \(nextIndex + 1)/\(total)…")
-                    inFlight += 1
+                    if isVideo { inFlightVideos += 1 } else { inFlightPhotos += 1 }
                     nextIndex += 1
                 }
 
                 if let result = try await group.next() {
                     results[result.index] = result
-                    inFlight -= 1
+                    if result.isVideo { inFlightVideos -= 1 } else { inFlightPhotos -= 1 }
                     completedCount += 1
                     let progress = Double(completedCount) / Double(max(total, 1))
                     onProgress(0.05 + progress * 0.87,
-                               "Analyzed \(completedCount)/\(total): \(assets[result.index].filename ?? assets[result.index].id)")
-                    logger.debug("Scored \(assets[result.index].filename ?? assets[result.index].id): quality=\(result.quality * 0.4 + result.emotion * 0.35 + result.novelty * 0.25, format: .fixed(precision: 2))")
+                               "Analyzed \(completedCount)/\(total) — \(inFlightPhotos) photos, \(inFlightVideos) videos in flight")
                 }
             }
         }
@@ -106,7 +142,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         }
 
         let included = candidates.filter(\.isIncluded).count
-        logger.info("Photo scoring complete: \(included)/\(candidates.count) candidates included")
+        scoringLog("■ scorePhotos DONE — \(included)/\(candidates.count) candidates included, \(completedCount)/\(total) assets analyzed")
         onProgress(1.0, "Photo scoring complete")
         return PhotoScoringResult(scoredAssets: scoredAssets, candidates: candidates)
     }
@@ -122,37 +158,46 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             return (result.quality, result.emotion, result.novelty, result.faces, result.bestStartTime)
         }
 
-        guard let cgImage = await fetchCGImage(for: asset.id) else {
-            return fallbackScores()
+        let label = asset.filename ?? asset.id
+        return await withAssetTimeout(
+            seconds: Self.perAssetTimeoutSeconds,
+            fallback: fallbackScores(),
+            label: label
+        ) {
+            guard let cgImage = await self.fetchCGImage(for: asset.id, label: label) else {
+                scoringLog("     [\(label)] no image available — fallback scores")
+                return self.fallbackScores()
+            }
+
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let faceRequest     = VNDetectFaceRectanglesRequest()
+            let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
+            let classifyRequest = VNClassifyImageRequest()
+
+            do {
+                try handler.perform([faceRequest, saliencyRequest, classifyRequest])
+            } catch {
+                scoringLog("     [\(label)] Vision perform failed: \(error.localizedDescription) — fallback scores")
+                return self.fallbackScores()
+            }
+
+            let faces = faceRequest.results ?? []
+            let faceCount = faces.count
+            let avgFaceConf: Float = faceCount > 0
+                ? faces.map(\.confidence).reduce(0, +) / Float(faceCount) : 0
+
+            let saliencyConf = Float((saliencyRequest.results?.first)?.confidence ?? 0.5)
+            let topLabels    = (classifyRequest.results ?? []).prefix(3)
+            let topConfSum   = topLabels.map { Float($0.confidence) }.reduce(0, +)
+
+            let quality = min(1.0, saliencyConf * 0.65 + avgFaceConf * 0.2 + 0.15)
+            let emotion = faceCount > 0
+                ? min(1.0, 0.45 + Float(faceCount) * 0.15 + avgFaceConf * 0.3)
+                : min(0.72, saliencyConf * 0.5 + 0.2)
+            let novelty = min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
+
+            return (quality, emotion, novelty, faceCount, nil)
         }
-
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let faceRequest     = VNDetectFaceRectanglesRequest()
-        let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
-        let classifyRequest = VNClassifyImageRequest()
-
-        do {
-            try handler.perform([faceRequest, saliencyRequest, classifyRequest])
-        } catch {
-            return fallbackScores()
-        }
-
-        let faces = faceRequest.results ?? []
-        let faceCount = faces.count
-        let avgFaceConf: Float = faceCount > 0
-            ? faces.map(\.confidence).reduce(0, +) / Float(faceCount) : 0
-
-        let saliencyConf = Float((saliencyRequest.results?.first)?.confidence ?? 0.5)
-        let topLabels    = (classifyRequest.results ?? []).prefix(3)
-        let topConfSum   = topLabels.map { Float($0.confidence) }.reduce(0, +)
-
-        let quality = min(1.0, saliencyConf * 0.65 + avgFaceConf * 0.2 + 0.15)
-        let emotion = faceCount > 0
-            ? min(1.0, 0.45 + Float(faceCount) * 0.15 + avgFaceConf * 0.3)
-            : min(0.72, saliencyConf * 0.5 + 0.2)
-        let novelty = min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
-
-        return (quality, emotion, novelty, faceCount, nil)
     }
 
     private func fallbackScores() -> (Float, Float, Float, Int, TimeInterval?) {
@@ -165,33 +210,99 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         )
     }
 
-    // MARK: - Image Fetching
+    // MARK: - Image Fetching (properly cancellable)
 
-    private func fetchCGImage(for assetID: String) async -> CGImage? {
+    private func fetchCGImage(for assetID: String, label: String) async -> CGImage? {
+        scoringLog("     [\(label)] PHAssetCache.phAsset lookup…")
         guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
-              phAsset.mediaType == .image else { return nil }
+              phAsset.mediaType == .image else {
+            scoringLog("     [\(label)] no PHAsset or not an image")
+            return nil
+        }
+        let inCloud = (phAsset.value(forKey: "isCloudPlaceholder") as? Bool) ?? false
+        scoringLog("     [\(label)] requesting 384px image (isCloudPlaceholder=\(inCloud))")
 
         let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
+        options.deliveryMode = .highQualityFormat
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
 
-        return await withCheckedContinuation { continuation in
-            var resumed = false
-            let resume: (CGImage?) -> Void = { img in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: img)
+        final class RequestIDBox: @unchecked Sendable {
+            let lock = NSLock()
+            var id: PHImageRequestID = PHInvalidImageRequestID
+            func set(_ newID: PHImageRequestID) { lock.lock(); id = newID; lock.unlock() }
+            func get() -> PHImageRequestID { lock.lock(); defer { lock.unlock() }; return id }
+        }
+        let box = RequestIDBox()
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<CGImage?, Never>) in
+                let resumeLock = NSLock()
+                var resumed = false
+                let resume: (CGImage?) -> Void = { img in
+                    resumeLock.lock()
+                    let shouldResume = !resumed
+                    resumed = true
+                    resumeLock.unlock()
+                    if shouldResume { continuation.resume(returning: img) }
+                }
+
+                let id = PHImageManager.default().requestImage(
+                    for: phAsset,
+                    targetSize: CGSize(width: 384, height: 384),
+                    contentMode: .aspectFit,
+                    options: options
+                ) { image, info in
+                    if let image = image {
+                        resume(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                        return
+                    }
+                    if (info?[PHImageCancelledKey] as? Bool) == true {
+                        scoringLog("     [\(label)] PHImage request cancelled by Photos")
+                        resume(nil); return
+                    }
+                    if let err = info?[PHImageErrorKey] as? Error {
+                        scoringLog("     [\(label)] PHImage error: \(err.localizedDescription)")
+                        resume(nil); return
+                    }
+                    let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                    if !isDegraded { resume(nil) }
+                }
+                box.set(id)
             }
-            PHImageManager.default().requestImage(
-                for: phAsset,
-                targetSize: CGSize(width: 384, height: 384),
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if !isDegraded {
-                    resume(image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        } onCancel: {
+            let id = box.get()
+            if id != PHInvalidImageRequestID {
+                scoringLog("     [\(label)] task cancelled — cancelling PHImage request \(id)")
+                PHImageManager.default().cancelImageRequest(id)
+            }
+        }
+    }
+
+    // MARK: - Per-asset timeout that actually returns (does not await hung op)
+
+    private func withAssetTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        fallback: T,
+        label: String,
+        _ op: @Sendable @escaping () async -> T
+    ) async -> T {
+        let state = ScoringTimeoutState()
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+            let opTask = Task<Void, Never> {
+                let value = await op()
+                if state.claim() {
+                    continuation.resume(returning: value)
+                }
+            }
+            Task<Void, Never> {
+                try? await Task.sleep(for: .seconds(seconds))
+                if state.claim() {
+                    scoringLog("   ⏱ TIMEOUT after \(Int(seconds))s on \(label) — cancelling work and using fallback")
+                    opTask.cancel()
+                    continuation.resume(returning: fallback)
                 }
             }
         }

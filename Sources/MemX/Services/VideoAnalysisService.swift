@@ -2,6 +2,28 @@ import Foundation
 import AVFoundation
 import Vision
 import Photos
+import OSLog
+
+private let logger = Logger(subsystem: "com.memx.app", category: "video-analysis")
+
+@inline(__always)
+private func videoLog(_ message: @autoclosure () -> String) {
+    let line = "[video] \(message())"
+    print(line)
+    fflush(stdout)
+    logger.info("\(line, privacy: .public)")
+}
+
+private final class TimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
+    }
+}
 
 // MARK: - VideoAnalysisResult
 
@@ -21,27 +43,50 @@ final class VideoAnalysisService {
     private init() {}
 
     func analyzeVideo(assetID: String, targetDuration: TimeInterval) async -> VideoAnalysisResult {
+        videoLog("▶︎ analyzeVideo START assetID=\(assetID)")
+        let result = await withTimeout(seconds: 90, fallback: fallback(), label: assetID) {
+            await self.performAnalyzeVideo(assetID: assetID, targetDuration: targetDuration)
+        }
+        videoLog("■ analyzeVideo END   assetID=\(assetID)")
+        return result
+    }
+
+    // MARK: - Internal analysis
+
+    private func performAnalyzeVideo(assetID: String, targetDuration: TimeInterval) async -> VideoAnalysisResult {
         guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
               phAsset.mediaType == .video else {
+            videoLog("   [\(assetID)] no PHAsset or not a video — fallback")
             return fallback()
         }
-        guard let avAsset = await requestAVAsset(for: phAsset) else { return fallback() }
+        videoLog("   [\(assetID)] requesting AVAsset…")
+        guard let avAsset = await requestAVAsset(for: phAsset) else {
+            videoLog("   [\(assetID)] AVAsset unavailable — fallback")
+            return fallback()
+        }
 
         let totalSeconds: Double
-        if let dur = try? await avAsset.load(.duration) {
+        let loadedDuration = await withTimeout(seconds: 20, fallback: Optional<CMTime>.none, label: "\(assetID) duration") {
+            try? await avAsset.load(.duration)
+        }
+        if let dur = loadedDuration {
             totalSeconds = CMTimeGetSeconds(dur)
+            videoLog("   [\(assetID)] duration=\(String(format: "%.1f", totalSeconds))s")
         } else {
+            videoLog("   [\(assetID)] duration load timed out — fallback")
             return fallback()
         }
         guard totalSeconds > 0 else { return fallback() }
 
-        let sampleInterval = max(totalSeconds / 60.0, 0.5)
+        let maxSamples = 20
+        let sampleInterval = max(totalSeconds / Double(maxSamples), 0.5)
         var sampleTimes: [CMTime] = []
         var t = 0.0
         while t < totalSeconds {
             sampleTimes.append(CMTime(seconds: t, preferredTimescale: 600))
             t += sampleInterval
         }
+        videoLog("   [\(assetID)] sampling \(sampleTimes.count) frames every \(String(format: "%.2f", sampleInterval))s")
 
         let generator = AVAssetImageGenerator(asset: avAsset)
         generator.appliesPreferredTrackTransform = true
@@ -51,28 +96,32 @@ final class VideoAnalysisService {
 
         struct FrameScore { var time: TimeInterval; var q: Float; var e: Float; var n: Float; var faces: Int }
 
-        let concurrencyLimit = 6
+        let totalExpected = sampleTimes.count
         var frames: [FrameScore] = []
-
-        var pendingImages: [(time: CMTime, cgImage: CGImage)] = []
+        var decoded = 0
+        var failed = 0
+        let logEvery = max(1, totalExpected / 4)
 
         for await result in generator.images(for: sampleTimes) {
-            guard let cgImage = try? result.image else { continue }
-            pendingImages.append((result.requestedTime, cgImage))
+            if Task.isCancelled {
+                videoLog("   [\(assetID)] cancelled at frame \(decoded + failed)/\(totalExpected)")
+                break
+            }
+            guard let cgImage = try? result.image else {
+                failed += 1
+                continue
+            }
+            decoded += 1
+            let (q, e, n, f) = await scoreFrame(cgImage)
+            frames.append(FrameScore(time: CMTimeGetSeconds(result.requestedTime), q: q, e: e, n: n, faces: f))
 
-            if pendingImages.count >= concurrencyLimit {
-                let batch = pendingImages
-                pendingImages = []
-                let scored = await scoreBatch(batch)
-                frames.append(contentsOf: scored.map { FrameScore(time: $0.time, q: $0.q, e: $0.e, n: $0.n, faces: $0.faces) })
+            if decoded % logEvery == 0 || decoded == totalExpected {
+                videoLog("   [\(assetID)] frame \(decoded)/\(totalExpected) scored")
             }
         }
 
-        if !pendingImages.isEmpty {
-            let scored = await scoreBatch(pendingImages)
-            frames.append(contentsOf: scored.map { FrameScore(time: $0.time, q: $0.q, e: $0.e, n: $0.n, faces: $0.faces) })
-        }
-
+        if Task.isCancelled { return fallback() }
+        if failed > 0 { videoLog("   [\(assetID)] \(failed) frame(s) failed to decode") }
         guard !frames.isEmpty else { return fallback() }
 
         let windowSize = max(1, Int((targetDuration / sampleInterval).rounded()))
@@ -96,22 +145,35 @@ final class VideoAnalysisService {
         let rawStart = frames[bestStart].time
         let safeStart = min(rawStart, max(0, totalSeconds - targetDuration))
 
+        logger.info("[\(assetID)] Video analysis complete: \(frames.count) frames, duration \(String(format: "%.1f", totalSeconds))s")
         return VideoAnalysisResult(quality: avgQ, emotion: avgE, novelty: avgN, faces: maxF, bestStartTime: safeStart)
     }
 
-    // MARK: - Batch Frame Scoring (async let parallelism)
+    // MARK: - Timeout helper (does NOT await a hung op — returns promptly on timeout)
 
-    private func scoreBatch(_ batch: [(time: CMTime, cgImage: CGImage)]) async -> [(time: TimeInterval, q: Float, e: Float, n: Float, faces: Int)] {
-        await withTaskGroup(of: (TimeInterval, Float, Float, Float, Int).self) { group in
-            for item in batch {
-                group.addTask {
-                    let (q, e, n, f) = await self.scoreFrame(item.cgImage)
-                    return (CMTimeGetSeconds(item.time), q, e, n, f)
+    private func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        fallback: T,
+        label: String,
+        _ op: @Sendable @escaping () async -> T
+    ) async -> T {
+        let state = TimeoutState()
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+            let opTask = Task<Void, Never> {
+                let value = await op()
+                if state.claim() {
+                    continuation.resume(returning: value)
                 }
             }
-            var results: [(TimeInterval, Float, Float, Float, Int)] = []
-            for await r in group { results.append(r) }
-            return results.map { (time: $0.0, q: $0.1, e: $0.2, n: $0.3, faces: $0.4) }
+            Task<Void, Never> {
+                try? await Task.sleep(for: .seconds(seconds))
+                if state.claim() {
+                    videoLog("   ⏱ TIMEOUT after \(Int(seconds))s on \(label) — cancelling and using fallback")
+                    opTask.cancel()
+                    continuation.resume(returning: fallback)
+                }
+            }
         }
     }
 
@@ -147,18 +209,33 @@ final class VideoAnalysisService {
     // MARK: - PHAsset → AVAsset
 
     private func requestAVAsset(for phAsset: PHAsset) async -> AVAsset? {
-        let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = true
-        options.deliveryMode = .fastFormat
+        final class RequestIDBox: @unchecked Sendable {
+            var id: PHImageRequestID = PHInvalidImageRequestID
+        }
+        let box = RequestIDBox()
 
-        return await withCheckedContinuation { continuation in
-            var resumed = false
-            PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, _ in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: avAsset)
+        let result = await withTimeout(seconds: 60, fallback: AVAsset?.none, label: "\(phAsset.localIdentifier) AVAsset") {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<AVAsset?, Never>) in
+                    let options = PHVideoRequestOptions()
+                    options.isNetworkAccessAllowed = true
+                    options.deliveryMode = .fastFormat
+                    var resumed = false
+                    box.id = PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, _ in
+                        guard !resumed else { return }
+                        resumed = true
+                        continuation.resume(returning: avAsset)
+                    }
+                }
+            } onCancel: {
+                PHImageManager.default().cancelImageRequest(box.id)
             }
         }
+
+        if result == nil {
+            logger.warning("requestAVAsset timed out for asset \(phAsset.localIdentifier)")
+        }
+        return result
     }
 
     // MARK: - Fallback
