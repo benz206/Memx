@@ -4,6 +4,15 @@ import OSLog
 
 private let logger = Logger(subsystem: "com.memx.app", category: "workspace")
 
+// MARK: - RenderLogEntry
+
+struct RenderLogEntry: Identifiable, Hashable {
+    let id = UUID()
+    let timestamp: Date
+    let progress: Double
+    let message: String
+}
+
 // MARK: - WorkspaceTab
 
 enum WorkspaceTab: String, CaseIterable, Hashable {
@@ -72,6 +81,7 @@ final class WorkspaceViewModel {
     var renderProgressMessage: String = ""
     var renderedVideoURL: URL? = nil
     var renderError: String? = nil
+    var renderLog: [RenderLogEntry] = []
 
     // MARK: Cancellation
     var cancelledNotice: String? = nil
@@ -401,6 +411,8 @@ final class WorkspaceViewModel {
         renderProgressMessage = "Starting render…"
         renderedVideoURL = nil
         renderError = nil
+        renderLog = []
+        appendRenderLog(progress: 0, message: "Starting render — \(plan.sequence.count) clips, song volume \(Int(plan.settings.songVolume * 100))%")
         logger.info("Render started: \(plan.sequence.count) clips, song=\(song.fileURL.lastPathComponent)")
 
         let task = Task { [weak self] in
@@ -416,6 +428,7 @@ final class WorkspaceViewModel {
                     Task { @MainActor in
                         self?.renderProgress = prog
                         self?.renderProgressMessage = msg
+                        self?.appendRenderLog(progress: prog, message: msg)
                     }
                 }
                 let persistentURL = self.persistExport(from: tempURL)
@@ -423,12 +436,15 @@ final class WorkspaceViewModel {
                 self.project.exportedVideoURL = persistentURL
                 self.project.status = .exported
                 self.appVM.updateProject(self.project)
+                self.appendRenderLog(progress: 1.0, message: "Saved to \(persistentURL.lastPathComponent)")
                 logger.info("Render complete: \(persistentURL.lastPathComponent)")
             } catch is CancellationError {
                 logger.info("Render cancelled")
+                self.appendRenderLog(progress: self.renderProgress, message: "Render cancelled")
                 self.cancelledNotice = "Render cancelled"
             } catch {
                 logger.error("Render failed: \(error.localizedDescription)")
+                self.appendRenderLog(progress: self.renderProgress, message: "Error: \(error.localizedDescription)")
                 self.renderError = error.localizedDescription
             }
 
@@ -437,6 +453,16 @@ final class WorkspaceViewModel {
         renderTask = task
         await task.value
         renderTask = nil
+    }
+
+    // MARK: - Render Log
+
+    private func appendRenderLog(progress: Double, message: String) {
+        if let last = renderLog.last, last.message == message { return }
+        renderLog.append(RenderLogEntry(timestamp: Date(), progress: progress, message: message))
+        if renderLog.count > 200 {
+            renderLog.removeFirst(renderLog.count - 200)
+        }
     }
 
     // MARK: - Cancellation
@@ -499,7 +525,19 @@ final class WorkspaceViewModel {
     func updateSettings(_ settings: MontageSettings) {
         project.settings = settings
         project.updatedAt = Date()
+        if var plan = montagePlan {
+            plan.settings = settings
+            montagePlan = plan
+            project.montagePlan = plan
+        }
         appVM.updateProject(project)
+    }
+
+    func setSongVolume(_ volume: Double) {
+        let clamped = max(0, min(1, volume))
+        var settings = project.settings
+        settings.songVolume = clamped
+        updateSettings(settings)
     }
 
     func updateTitle(_ title: String) {

@@ -23,9 +23,14 @@ protocol SequencerServiceProtocol {
 //   Breakdown / Bridge   → one clip per 2 bars, maximum calm
 //   Verse                → one clip per 2 beats
 //   Pre-chorus           → one clip per beat
-//   Buildup (early half) → one clip per beat
-//   Buildup (late half)  → flash: sub-beat clips (~0.5 beat), rapid cycle
+//   Buildup (no drop next)          → one clip per beat for the whole section
+//   Buildup (drop next, early part) → one clip per beat
+//   Buildup (drop next, final ~16 bars) → flash: sub-beat clips (~0.5 beat)
 //   Chorus / Drop        → hero: land clip 1 on bar downbeat (2-beat hold), then 1-beat cuts
+//
+// Flash/super-buildup only fires when the section is actually leading into a
+// drop (or chorus-hero) and only within the ~16 bars (~64 beats) immediately
+// preceding the drop. Otherwise buildups cut on every beat — no flash.
 //
 // All cuts snap to an integer multiple of the beat grid.
 // Clips are never reused (same assetID + clipOffset pair used at most once).
@@ -137,14 +142,17 @@ final class SequencerService: SequencerServiceProtocol {
         let allEnergies = beatmap.sections.map(\.energyAvg).sorted()
         let songMedian = allEnergies.isEmpty ? 0.5 : allEnergies[allEnergies.count / 2]
 
-        for section in beatmap.sections {
+        for (idx, section) in beatmap.sections.enumerated() {
             let sectionBeats = beatmap.beats.filter { $0 >= section.start && $0 < section.end }
             let sectionBars  = barStarts.filter      { $0 >= section.start && $0 < section.end }
             guard !sectionBeats.isEmpty else { continue }
 
+            let nextType = idx + 1 < beatmap.sections.count ? beatmap.sections[idx + 1].type : nil
+
             switch section.type {
             case .buildup:
-                appendBuildupSlots(beats: sectionBeats, section: section, beatDur: beatDur, to: &slots)
+                appendBuildupSlots(beats: sectionBeats, section: section, beatDur: beatDur,
+                                   nextSectionType: nextType, to: &slots)
             case .chorus, .drop:
                 appendHeroSlots(bars: sectionBars, beats: sectionBeats, beatDur: beatDur,
                                 section: section, to: &slots)
@@ -225,20 +233,32 @@ final class SequencerService: SequencerServiceProtocol {
         }
     }
 
-    /// Buildup: first half = 1-beat clips; second half = flash (0.5-beat synthetic grid).
+    /// Buildup: only apply the rapid half-beat flash if the section actually leads
+    /// into a drop (or chorus-hero), and only for the ~16 bars (64 beats)
+    /// immediately before the drop. Everything else is 1-beat cuts.
     private func appendBuildupSlots(beats: [Double], section: BeatSection,
-                                    beatDur: Double, to slots: inout [TimeSlot]) {
+                                    beatDur: Double,
+                                    nextSectionType: SectionType?,
+                                    to slots: inout [TimeSlot]) {
         guard !beats.isEmpty else { return }
-        let midpoint = section.start + (section.end - section.start) * 0.5
-        let earlyBeats = beats.filter { $0 < midpoint }
-        let lateStart = beats.first(where: { $0 >= midpoint }) ?? midpoint
 
-        // Early: 1-beat cuts (not flash)
+        let leadsToDrop = nextSectionType == .drop || nextSectionType == .chorus
+
+        guard leadsToDrop else {
+            appendBeatSlots(beats: beats, step: 1, section: section, isFlash: false, to: &slots)
+            return
+        }
+
+        let flashWindowBeats = 64
+        let sectionBeatCount = beats.count
+        let flashStartIdx = max(0, sectionBeatCount - flashWindowBeats)
+        let flashStartBeat = beats[flashStartIdx]
+
+        let earlyBeats = Array(beats.prefix(flashStartIdx))
         appendBeatSlots(beats: earlyBeats, step: 1, section: section, isFlash: false, to: &slots)
 
-        // Late: rapid half-beat flash
         let halfBeat = beatDur * 0.5
-        var t = lateStart
+        var t = flashStartBeat
         while t < section.end {
             let end = min(t + halfBeat, section.end)
             if end - t > beatDur * 0.15 {

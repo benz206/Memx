@@ -53,10 +53,15 @@ struct StoryboardView: View {
 struct StoryboardContentView: View {
     let plan: MontagePlan
     @Environment(WorkspaceViewModel.self) private var workspaceVM
-    @State private var selectedItem: MontageSequenceItem? = nil
+    @State private var selectedItemID: UUID? = nil
     @State private var showExportSheet = false
     @State private var showDeleteConfirm = false
     @State private var showReRenderConfirm = false
+
+    private var selectedItem: MontageSequenceItem? {
+        guard let id = selectedItemID else { return nil }
+        return plan.sequence.first(where: { $0.id == id })
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -117,15 +122,20 @@ struct StoryboardContentView: View {
 
             MSDivider()
 
-            List(selection: $selectedItem) {
-                ForEach(plan.sequence) { item in
-                    StoryboardSequenceRow(item: item, position: item.position + 1, isSelected: selectedItem?.id == item.id)
-                        .tag(item)
+            List(selection: $selectedItemID) {
+                ForEach(Array(plan.sequence.enumerated()), id: \.element.id) { idx, item in
+                    StoryboardSequenceRow(
+                        item: item,
+                        position: idx + 1,
+                        asset: workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                        isSelected: selectedItemID == item.id
+                    )
+                        .tag(item.id)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 workspaceVM.removeSequenceItem(item)
-                                if selectedItem?.id == item.id { selectedItem = nil }
+                                if selectedItemID == item.id { selectedItemID = nil }
                             } label: {
                                 Label("Remove", systemImage: "trash")
                             }
@@ -136,6 +146,11 @@ struct StoryboardContentView: View {
                 }
             }
             .listStyle(.plain)
+            .onChange(of: plan.sequence) { _, newSequence in
+                if let id = selectedItemID, !newSequence.contains(where: { $0.id == id }) {
+                    selectedItemID = nil
+                }
+            }
         }
     }
 
@@ -170,10 +185,11 @@ struct StoryboardContentView: View {
 
     @ViewBuilder
     private func itemDetailPanel(_ item: MontageSequenceItem) -> some View {
+        let displayPosition = (plan.sequence.firstIndex(where: { $0.id == item.id }) ?? item.position) + 1
         ScrollView {
             VStack(alignment: .leading, spacing: MS.Spacing.md) {
                 HStack {
-                    Text("Clip \(item.position + 1)")
+                    Text("Clip \(displayPosition)")
                         .font(MS.Font.title)
                     if let sectionType = item.sectionType {
                         MSBadge(text: sectionType.rawValue, size: .small)
@@ -330,6 +346,8 @@ struct StoryboardContentView: View {
         VStack(alignment: .leading, spacing: MS.Spacing.sm) {
             MSSectionHeader(title: "Render Pipeline", subtitle: "AVFoundation composition + audio mix")
 
+            songVolumeControl
+
             if workspaceVM.isRendering {
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     ProgressView(value: workspaceVM.renderProgress)
@@ -341,6 +359,7 @@ struct StoryboardContentView: View {
                         Text("\(Int(workspaceVM.renderProgress * 100))%")
                             .font(MS.Font.micro).foregroundStyle(.tertiary)
                     }
+                    renderLogView
                     if workspaceVM.isCancellable {
                         MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
                             workspaceVM.cancelPipeline()
@@ -375,6 +394,9 @@ struct StoryboardContentView: View {
                             NSWorkspace.shared.selectFile(videoURL.path, inFileViewerRootedAtPath: "")
                         }
                         Spacer()
+                    }
+                    if !workspaceVM.renderLog.isEmpty {
+                        renderLogView
                     }
                 }
                 .padding(MS.Spacing.sm)
@@ -435,6 +457,99 @@ struct StoryboardContentView: View {
             .disabled(workspaceVM.isRendering || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
         }
         .msCard()
+    }
+
+    // MARK: - Song Volume Control
+
+    @ViewBuilder
+    private var songVolumeControl: some View {
+        let volume = Binding<Double>(
+            get: { workspaceVM.project.settings.songVolume },
+            set: { workspaceVM.setSongVolume($0) }
+        )
+        VStack(alignment: .leading, spacing: MS.Spacing.xs) {
+            HStack(spacing: MS.Spacing.xs) {
+                Image(systemName: volume.wrappedValue == 0 ? "speaker.slash.fill"
+                                  : volume.wrappedValue < 0.4 ? "speaker.wave.1.fill"
+                                  : volume.wrappedValue < 0.75 ? "speaker.wave.2.fill"
+                                  : "speaker.wave.3.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                Text("Song Volume")
+                    .font(MS.Font.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(volume.wrappedValue * 100))%")
+                    .font(MS.Font.micro)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            Slider(value: volume, in: 0...1, step: 0.05)
+                .disabled(workspaceVM.isRendering)
+            Text("Defaults to 50% so voices from video clips can breathe.")
+                .font(MS.Font.micro)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, MS.Spacing.xs)
+    }
+
+    // MARK: - Render Log View
+
+    @ViewBuilder
+    private var renderLogView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Text("Pipeline log")
+                    .font(MS.Font.micro)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(workspaceVM.renderLog) { entry in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(formatLogTime(entry.timestamp))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 60, alignment: .leading)
+                                Text("\(Int(entry.progress * 100))%")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 34, alignment: .trailing)
+                                Text(entry.message)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.primary.opacity(0.85))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .id(entry.id)
+                        }
+                    }
+                    .padding(MS.Spacing.xs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 140)
+                .background(.quaternary.opacity(0.4),
+                            in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
+                .onChange(of: workspaceVM.renderLog.count) { _, _ in
+                    if let lastID = workspaceVM.renderLog.last?.id {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatLogTime(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
     }
 
     private struct RenderStep {
@@ -501,6 +616,7 @@ struct StoryboardContentView: View {
 struct StoryboardSequenceRow: View {
     let item: MontageSequenceItem
     let position: Int
+    let asset: MediaAsset?
     let isSelected: Bool
 
     var body: some View {
@@ -510,14 +626,42 @@ struct StoryboardSequenceRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .trailing)
 
-            RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                .fill(sectionColor(item.sectionType).opacity(0.15))
-                .frame(width: 52, height: 36)
-                .overlay(
-                    Image(systemName: item.sectionType?.icon ?? "photo.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(sectionColor(item.sectionType).opacity(0.7))
-                )
+            ZStack(alignment: .topTrailing) {
+                if let asset {
+                    AssetThumbnailView(
+                        asset: asset,
+                        size: 52,
+                        cornerRadius: MS.Radius.xs,
+                        isSelected: false,
+                        showOverlay: false
+                    )
+                    .frame(width: 52, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+                        .fill(sectionColor(item.sectionType).opacity(0.15))
+                        .frame(width: 52, height: 36)
+                        .overlay(
+                            Image(systemName: item.sectionType?.icon ?? "photo.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(sectionColor(item.sectionType).opacity(0.7))
+                        )
+                }
+
+                if asset?.isVideo == true {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(3)
+                        .background(.black.opacity(0.55), in: Circle())
+                        .padding(2)
+                }
+            }
+            .frame(width: 52, height: 36)
+            .overlay(
+                RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+                    .stroke(sectionColor(item.sectionType).opacity(0.45), lineWidth: 1)
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {

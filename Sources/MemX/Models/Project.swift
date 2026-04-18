@@ -59,17 +59,33 @@ struct MontageSettings: Codable, Hashable {
     var focus: MontageFocus
     var aspectRatio: AspectRatio
     var renderQuality: RenderQuality
+    var songVolume: Double
 
     init(
         vibe: MontageVibe = .cinematic,
         focus: MontageFocus = .everything,
         aspectRatio: AspectRatio = .widescreen,
-        renderQuality: RenderQuality = .parallax2D
+        renderQuality: RenderQuality = .parallax2D,
+        songVolume: Double = 0.5
     ) {
         self.vibe = vibe
         self.focus = focus
         self.aspectRatio = aspectRatio
         self.renderQuality = renderQuality
+        self.songVolume = songVolume
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case vibe, focus, aspectRatio, renderQuality, songVolume
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.vibe = try c.decode(MontageVibe.self, forKey: .vibe)
+        self.focus = try c.decode(MontageFocus.self, forKey: .focus)
+        self.aspectRatio = try c.decode(AspectRatio.self, forKey: .aspectRatio)
+        self.renderQuality = try c.decode(RenderQuality.self, forKey: .renderQuality)
+        self.songVolume = try c.decodeIfPresent(Double.self, forKey: .songVolume) ?? 0.5
     }
 }
 
