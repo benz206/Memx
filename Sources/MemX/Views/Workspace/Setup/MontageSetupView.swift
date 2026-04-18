@@ -379,6 +379,23 @@ struct SettingsSheet: View {
                 }
             }
 
+            settingCard(title: "Scoring Density", icon: "slider.horizontal.3") {
+                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                    HStack(spacing: MS.Spacing.xs) {
+                        ForEach(ScoringDensity.allCases, id: \.self) { density in
+                            densityChip(density)
+                        }
+                    }
+                    Text("Denser scoring picks stronger moments but takes longer. Balanced is recommended.")
+                        .font(MS.Font.micro)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(workspaceVM.project.settings.scoringDensity.description)
+                        .font(MS.Font.micro)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             MSSecondaryButton("Done") { dismiss() }
         }
         .padding(MS.Spacing.xl)
@@ -430,6 +447,36 @@ struct SettingsSheet: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, MS.Spacing.sm)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.08) : Color.clear,
+                in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func densityChip(_ density: ScoringDensity) -> some View {
+        let isSelected = workspaceVM.project.settings.scoringDensity == density
+        return Button {
+            var s = workspaceVM.project.settings
+            s.scoringDensity = density
+            workspaceVM.updateSettings(s)
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: density.icon).font(.system(size: 14))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                Text(density.rawValue).font(MS.Font.micro)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, MS.Spacing.sm)
+            .padding(.horizontal, 2)
             .background(
                 isSelected ? Color.accentColor.opacity(0.08) : Color.clear,
                 in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)

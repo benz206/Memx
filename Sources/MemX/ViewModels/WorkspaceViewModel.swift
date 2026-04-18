@@ -72,6 +72,10 @@ final class WorkspaceViewModel {
     var isGeneratingPlan: Bool = false
     var selectedSequenceItem: MontageSequenceItem? = nil
 
+    // MARK: Clip shortage
+    var clipShortfall: SequencerPreflight? = nil
+    var pendingShortfallAck: Bool = false
+
     // MARK: Title editing
     var isEditingTitle: Bool = false
 
@@ -207,7 +211,8 @@ final class WorkspaceViewModel {
         processingStatus.progress = 0.33
         processingStatus.message = "Scoring \(assets.count) photos (this may take a while for iCloud photos)…"
         processingStatus.error = nil
-        logger.info("Photo scoring started: \(self.assets.count) assets")
+        let density = project.settings.scoringDensity
+        logger.info("Photo scoring started: \(self.assets.count) assets, density=\(density.rawValue, privacy: .public)")
 
         let priorStatus = project.status
 
@@ -216,7 +221,8 @@ final class WorkspaceViewModel {
 
             let result = try await scoringService.scorePhotos(
                 for: project,
-                assets: assets
+                assets: assets,
+                density: density
             ) { [weak self] prog, msg in
                 guard let self else { return }
                 Task { @MainActor in
@@ -272,45 +278,113 @@ final class WorkspaceViewModel {
 
         let priorStatus = project.status
 
+        // Build work queue up front so per-prompt inputs (energy, section) are
+        // captured while we still hold the relevant beatmap state, then fan
+        // out with bounded concurrency — Claude round-trips dominate wall time,
+        // so serial iteration was leaving ~4x on the table.
+        struct PromptWork {
+            let index: Int
+            let asset: MediaAsset
+            let energy: Float
+            let section: SectionType?
+            let name: String
+        }
+
+        var work: [PromptWork] = []
         for i in motionPrompts.indices {
-            do {
-                try Task.checkCancellation()
-            } catch {
-                logger.info("Motion prompt generation cancelled")
-                project.status = priorStatus
-                appVM.updateProject(project)
-                cancelledNotice = "Pipeline cancelled"
-                isProcessing = false
-                return
-            }
-
-            guard let asset = assets.first(where: { $0.id == motionPrompts[i].assetID }) else { continue }
             guard motionPrompts[i].status != .edited else { continue }
-
-            motionPrompts[i].status = .generating
+            guard let asset = assets.first(where: { $0.id == motionPrompts[i].assetID }) else { continue }
             let energy = Float(beatmap?.energy(at: Double(i) / Double(max(assets.count, 1)) * (beatmap?.durationSeconds ?? 60)) ?? 0.5)
             let section = beatmap?.sections.first(where: { $0.energyAvg > Double(energy) - 0.1 })
-            let name = asset.filename ?? "photo \(i + 1)"
+            motionPrompts[i].status = .generating
+            work.append(PromptWork(
+                index: i,
+                asset: asset,
+                energy: energy,
+                section: section?.type,
+                name: asset.filename ?? "photo \(i + 1)"
+            ))
+        }
 
-            processingStatus.message = "Prompt \(i + 1)/\(total): \(name)"
-            logger.debug("Generating prompt \(i + 1)/\(total): \(name)")
+        let promptService = self.promptService
+        let maxConcurrent = 4
+        var completed = 0
+        var cancelled = false
 
-            do {
-                let prompt = try await promptService.generatePrompt(
-                    for: asset,
-                    songEnergy: energy,
-                    sectionType: section?.type
-                )
-                motionPrompts[i].prompt = prompt
-                motionPrompts[i].motionIntensity = energy
-                motionPrompts[i].status = .ready
-            } catch {
-                logger.warning("Prompt failed for \(name): \(error.localizedDescription)")
-                motionPrompts[i].status = .pending
+        await withTaskGroup(of: (PromptWork, Result<String, Error>).self) { group in
+            var nextIdx = 0
+
+            while nextIdx < work.count && nextIdx < maxConcurrent {
+                let item = work[nextIdx]
+                group.addTask {
+                    do {
+                        try Task.checkCancellation()
+                        let p = try await promptService.generatePrompt(
+                            for: item.asset,
+                            songEnergy: item.energy,
+                            sectionType: item.section
+                        )
+                        return (item, .success(p))
+                    } catch {
+                        return (item, .failure(error))
+                    }
+                }
+                nextIdx += 1
             }
 
-            let progress = Double(i + 1) / Double(total)
-            processingStatus.progress = 0.55 + progress * 0.22
+            while let (item, result) = await group.next() {
+                completed += 1
+                switch result {
+                case .success(let prompt):
+                    motionPrompts[item.index].prompt = prompt
+                    motionPrompts[item.index].motionIntensity = item.energy
+                    motionPrompts[item.index].status = .ready
+                case .failure(let error):
+                    if error is CancellationError {
+                        cancelled = true
+                    } else {
+                        logger.warning("Prompt failed for \(item.name): \(error.localizedDescription)")
+                    }
+                    motionPrompts[item.index].status = .pending
+                }
+
+                let progress = Double(completed) / Double(max(work.count, 1))
+                processingStatus.progress = 0.55 + progress * 0.22
+                processingStatus.message = "Prompt \(completed)/\(work.count): \(item.name)"
+
+                if cancelled || Task.isCancelled {
+                    cancelled = true
+                    group.cancelAll()
+                    continue
+                }
+
+                if nextIdx < work.count {
+                    let next = work[nextIdx]
+                    nextIdx += 1
+                    group.addTask {
+                        do {
+                            try Task.checkCancellation()
+                            let p = try await promptService.generatePrompt(
+                                for: next.asset,
+                                songEnergy: next.energy,
+                                sectionType: next.section
+                            )
+                            return (next, .success(p))
+                        } catch {
+                            return (next, .failure(error))
+                        }
+                    }
+                }
+            }
+        }
+
+        if cancelled {
+            logger.info("Motion prompt generation cancelled")
+            project.status = priorStatus
+            appVM.updateProject(project)
+            cancelledNotice = "Pipeline cancelled"
+            isProcessing = false
+            return
         }
 
         logger.info("Motion prompts complete: \(self.readyPromptCount)/\(total) ready")
@@ -330,10 +404,40 @@ final class WorkspaceViewModel {
                 processingStatus.error = "Song analysis is required before building the storyboard. Re-import the song."
                 return
             }
+            if !checkShortfall(bm: bm2) { return }
             await buildSequenceCore(bm: bm2)
             return
         }
+        if !checkShortfall(bm: bm) { return }
         await buildSequenceCore(bm: bm)
+    }
+
+    /// Returns true if building should proceed; false if the user needs to
+    /// acknowledge a clip shortfall first.
+    private func checkShortfall(bm: Beatmap) -> Bool {
+        let preflight = sequencerService.preflight(
+            settings: project.settings,
+            assets: assets,
+            beatmap: bm
+        )
+        if preflight.hasShortfall && !pendingShortfallAck {
+            logger.info("buildSequence: shortfall detected (\(preflight.estimatedShortfall) clips, \(preflight.estimatedShortfallSeconds, format: .fixed(precision: 1))s) — awaiting user ack")
+            clipShortfall = preflight
+            return false
+        }
+        clipShortfall = nil
+        return true
+    }
+
+    func acknowledgeShortfallAndBuild() async {
+        pendingShortfallAck = true
+        clipShortfall = nil
+        await buildSequence()
+        pendingShortfallAck = false
+    }
+
+    func dismissShortfall() {
+        clipShortfall = nil
     }
 
     private func buildSequenceCore(bm: Beatmap) async {
@@ -368,6 +472,7 @@ final class WorkspaceViewModel {
         processingStatus.completedAt = Date()
         appVM.updateProject(project)
         selectedTab = .storyboard
+        clipShortfall = nil
         isProcessing = false
         isGeneratingPlan = false
     }

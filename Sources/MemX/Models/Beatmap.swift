@@ -12,8 +12,15 @@ struct Beatmap: Codable, Hashable {
     var vocalPeaks: [BeatMoment]
     var phraseStarts: [Double] = []
     var beatStrengths: [Double] = []
+    var hooks: [HookMoment] = []
 
     var beatDuration: Double { 60.0 / max(bpm, 1) }
+
+    func hook(at time: Double) -> HookMoment? {
+        hooks.first { $0.startTime <= time && time < $0.endTime }
+    }
+
+    var finalHookStart: Double? { hooks.map(\.startTime).max() }
 
     func barStarts(beatsPerBar: Int = 4) -> [Double] {
         stride(from: 0, to: beats.count, by: beatsPerBar).map { beats[$0] }
@@ -87,7 +94,7 @@ struct Beatmap: Codable, Hashable {
 extension Beatmap {
     private enum CodingKeys: String, CodingKey {
         case bpm, durationSeconds, energyCurve, sections, beats, drops, vocalPeaks
-        case phraseStarts, beatStrengths
+        case phraseStarts, beatStrengths, hooks
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +108,7 @@ extension Beatmap {
         vocalPeaks = try c.decode([BeatMoment].self, forKey: .vocalPeaks)
         phraseStarts = try c.decodeIfPresent([Double].self, forKey: .phraseStarts) ?? []
         beatStrengths = try c.decodeIfPresent([Double].self, forKey: .beatStrengths) ?? []
+        hooks = try c.decodeIfPresent([HookMoment].self, forKey: .hooks) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -114,7 +122,18 @@ extension Beatmap {
         try c.encode(vocalPeaks, forKey: .vocalPeaks)
         try c.encode(phraseStarts, forKey: .phraseStarts)
         try c.encode(beatStrengths, forKey: .beatStrengths)
+        try c.encode(hooks, forKey: .hooks)
     }
+}
+
+// MARK: - HookMoment
+
+struct HookMoment: Codable, Hashable {
+    var startTime: Double
+    var endTime: Double
+    var repeatIndex: Int            // 0 for first encounter, 1 for second, etc.
+    var signatureBeats: [Double]    // strongest accented beats inside the hook window
+    var similarity: Double          // 0.0–1.0 cosine similarity to the prototype
 }
 
 // MARK: - EnergyPoint

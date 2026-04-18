@@ -38,6 +38,8 @@ struct VideoAnalysisResult {
     var motionVector: MotionVector?
     var colorTemperature: Double?
     var faceAreaFraction: Double?
+    var sceneLabels: [String]?
+    var sceneCaption: String?
 }
 
 // MARK: - VideoAnalysisService
@@ -47,10 +49,14 @@ final class VideoAnalysisService {
     static let shared = VideoAnalysisService()
     private init() {}
 
-    func analyzeVideo(assetID: String, targetDuration: TimeInterval) async -> VideoAnalysisResult {
-        videoLog("▶︎ analyzeVideo START assetID=\(assetID)")
+    func analyzeVideo(
+        assetID: String,
+        targetDuration: TimeInterval,
+        density: ScoringDensity = .balanced
+    ) async -> VideoAnalysisResult {
+        videoLog("▶︎ analyzeVideo START assetID=\(assetID) density=\(density.rawValue)")
         let result = await withTimeout(seconds: 90, fallback: fallback(), label: assetID) {
-            await self.performAnalyzeVideo(assetID: assetID, targetDuration: targetDuration)
+            await self.performAnalyzeVideo(assetID: assetID, targetDuration: targetDuration, density: density)
         }
         videoLog("■ analyzeVideo END   assetID=\(assetID)")
         return result
@@ -58,7 +64,11 @@ final class VideoAnalysisService {
 
     // MARK: - Internal analysis
 
-    private func performAnalyzeVideo(assetID: String, targetDuration: TimeInterval) async -> VideoAnalysisResult {
+    private func performAnalyzeVideo(
+        assetID: String,
+        targetDuration: TimeInterval,
+        density: ScoringDensity
+    ) async -> VideoAnalysisResult {
         guard let phAsset = await PHAssetCache.shared.phAsset(for: assetID),
               phAsset.mediaType == .video else {
             videoLog("   [\(assetID)] no PHAsset or not a video — fallback")
@@ -83,7 +93,7 @@ final class VideoAnalysisService {
         }
         guard totalSeconds > 0 else { return fallback() }
 
-        let maxSamples = 20
+        let maxSamples = density.videoFrameSamples
         let sampleInterval = max(totalSeconds / Double(maxSamples), 0.5)
         var sampleTimes: [CMTime] = []
         var t = 0.0
@@ -107,10 +117,18 @@ final class VideoAnalysisService {
             var saliencyConf: Double
             var saliencyBbox: CGRect
             var colorTemperature: Double
+            var sceneLabels: [String]
+            // CGImage is intentionally unkept here to bound memory; only the
+            // best-window midpoint frame is retained separately for captioning.
         }
 
         let totalExpected = sampleTimes.count
         var frames: [FrameScore] = []
+        // Parallel CGImage array so we can retrieve the best-window midpoint
+        // frame for captioning after windowing. Sampling is bounded by
+        // ScoringDensity.videoFrameSamples (≤ 48), and frames are already
+        // downscaled by the generator to 512×512 — a few tens of MB max.
+        var frameImages: [CGImage] = []
         var decoded = 0
         var failed = 0
         let logEvery = max(1, totalExpected / 4)
@@ -130,8 +148,10 @@ final class VideoAnalysisService {
                 time: CMTimeGetSeconds(result.requestedTime),
                 q: fs.quality, e: fs.emotion, n: fs.novelty, faces: fs.faces,
                 faceArea: fs.faceArea, saliencyConf: fs.saliencyConf,
-                saliencyBbox: fs.saliencyBbox, colorTemperature: fs.colorTemperature
+                saliencyBbox: fs.saliencyBbox, colorTemperature: fs.colorTemperature,
+                sceneLabels: fs.sceneLabels
             ))
+            frameImages.append(cgImage)
 
             if decoded % logEvery == 0 || decoded == totalExpected {
                 videoLog("   [\(assetID)] frame \(decoded)/\(totalExpected) scored")
@@ -199,11 +219,35 @@ final class VideoAnalysisService {
         let rawStart = frames[bestStart].time
         let safeStart = min(rawStart, max(0, totalSeconds - targetDuration))
 
+        // Dedup labels across the best-window frames, preserving the order
+        // they first appeared so higher-confidence early tags win ties.
+        let bestRange = bestStart..<min(bestStart + windowSize, frames.count)
+        var seen = Set<String>()
+        var dedupedLabels: [String] = []
+        for f in frames[bestRange] {
+            for label in f.sceneLabels where seen.insert(label).inserted {
+                dedupedLabels.append(label)
+            }
+        }
+        let sceneLabelsOut: [String]? = dedupedLabels.isEmpty ? nil : Array(dedupedLabels.prefix(5))
+
+        // Caption only the midpoint frame of the best window — one model call
+        // per video, not per frame. Timeout-guarded inside the service.
+        let midIdx = min(frames.count - 1, bestStart + (windowSize / 2))
+        let midImage: CGImage? = (midIdx >= 0 && midIdx < frameImages.count) ? frameImages[midIdx] : nil
+        let caption: String?
+        if let img = midImage, let labels = sceneLabelsOut, !labels.isEmpty {
+            caption = await SceneCaptionService.shared.caption(for: img, sceneLabels: labels)
+        } else {
+            caption = nil
+        }
+
         logger.info("[\(assetID)] Video analysis complete: \(frames.count) frames, duration \(String(format: "%.1f", totalSeconds))s")
         return VideoAnalysisResult(
             quality: avgQ, emotion: avgE, novelty: avgN, faces: maxF, bestStartTime: safeStart,
             shotType: shotType, motionVector: motionVector,
-            colorTemperature: colorTemperature, faceAreaFraction: faceAreaFraction
+            colorTemperature: colorTemperature, faceAreaFraction: faceAreaFraction,
+            sceneLabels: sceneLabelsOut, sceneCaption: caption
         )
     }
 
@@ -237,14 +281,14 @@ final class VideoAnalysisService {
 
     // MARK: - Per-Frame Vision Scoring
 
-    private func scoreFrame(_ cgImage: CGImage) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, faceArea: Double, saliencyConf: Double, saliencyBbox: CGRect, colorTemperature: Double) {
+    private func scoreFrame(_ cgImage: CGImage) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, faceArea: Double, saliencyConf: Double, saliencyBbox: CGRect, colorTemperature: Double, sceneLabels: [String]) {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let faceReq     = VNDetectFaceRectanglesRequest()
         let saliencyReq = VNGenerateAttentionBasedSaliencyImageRequest()
         let classifyReq = VNClassifyImageRequest()
 
         guard (try? handler.perform([faceReq, saliencyReq, classifyReq])) != nil else {
-            return (0.5, 0.4, 0.4, 0, 0.0, 0.5, CGRect(x: 0, y: 0, width: 1, height: 1), 0.5)
+            return (0.5, 0.4, 0.4, 0, 0.0, 0.5, CGRect(x: 0, y: 0, width: 1, height: 1), 0.5, [])
         }
 
         let faces = faceReq.results ?? []
@@ -257,7 +301,14 @@ final class VideoAnalysisService {
         let saliencyBbox: CGRect = saliencyObs?.salientObjects?.first?.boundingBox
             ?? CGRect(x: 0, y: 0, width: 1, height: 1)
 
-        let topConfSum   = (classifyReq.results ?? []).prefix(3).map { Float($0.confidence) }.reduce(0, +)
+        let classifyResults = classifyReq.results ?? []
+        let topConfSum = classifyResults.prefix(3).map { Float($0.confidence) }.reduce(0, +)
+        // Per-frame labels are kept small (top 2 above 0.15) so the later
+        // dedup across the best window is cheap and low-noise.
+        let sceneLabels = classifyResults
+            .prefix(2)
+            .filter { $0.confidence > 0.15 }
+            .map(\.identifier)
 
         let quality = min(1.0, Float(saliencyConf) * 0.65 + avgFaceConf * 0.2 + 0.15)
         let emotion = faceCount > 0
@@ -271,7 +322,7 @@ final class VideoAnalysisService {
 
         let colorTemperature = computeColorTemperature(from: cgImage)
 
-        return (quality, emotion, novelty, faceCount, faceArea, saliencyConf, saliencyBbox, colorTemperature)
+        return (quality, emotion, novelty, faceCount, faceArea, saliencyConf, saliencyBbox, colorTemperature, sceneLabels)
     }
 
     private func computeColorTemperature(from cgImage: CGImage) -> Double {
@@ -341,7 +392,9 @@ final class VideoAnalysisService {
             shotType:         nil,
             motionVector:     nil,
             colorTemperature: nil,
-            faceAreaFraction: nil
+            faceAreaFraction: nil,
+            sceneLabels:      nil,
+            sceneCaption:     nil
         )
     }
 }

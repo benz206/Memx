@@ -154,6 +154,15 @@ final class BeatmapService: BeatmapServiceProtocol {
             return isPhrase ? 1.0 : base
         }
 
+        onProgress(0.92, "Detecting hooks…")
+        let hooks = detectHooks(
+            envelope: envelope,
+            hopRate: hopRate,
+            sections: sections,
+            beats: beats,
+            beatStrengths: beatStrengths
+        )
+
         onProgress(1.0, "Beatmap complete")
 
         return Beatmap(
@@ -165,8 +174,153 @@ final class BeatmapService: BeatmapServiceProtocol {
             drops: Array(drops),
             vocalPeaks: Array(vocal),
             phraseStarts: phraseStarts,
-            beatStrengths: beatStrengths
+            beatStrengths: beatStrengths,
+            hooks: hooks
         )
+    }
+
+    // MARK: - Hook Detection (section-fingerprint cosine clustering)
+    // Simplified feature: per-section 8-dim fingerprint built from the energy
+    // envelope + its slope (spectral-centroid/FFT-free). Fingerprints are
+    // compared pairwise via cosine similarity; pairs > 0.75 are clustered.
+    // Sections in a cluster of size ≥ 2 are emitted as HookMoments ordered
+    // chronologically, with repeatIndex = chronological index in the cluster.
+
+    private func detectHooks(
+        envelope: [Float],
+        hopRate: Double,
+        sections: [BeatSection],
+        beats: [Double],
+        beatStrengths: [Double]
+    ) -> [HookMoment] {
+        let candidates = sections.enumerated().filter { _, s in
+            s.type == .chorus || s.type == .drop
+        }
+        guard candidates.count >= 2 else {
+            logger.info("Hooks detected: 0 moments (insufficient chorus/drop sections)")
+            return []
+        }
+
+        // Build per-section fingerprints.
+        let fingerprints = candidates.map { (idx, section) -> (Int, BeatSection, [Double]) in
+            (idx, section, sectionFingerprint(section: section, envelope: envelope, hopRate: hopRate))
+        }
+
+        // Union-find style clustering via pairwise cosine similarity.
+        let n = fingerprints.count
+        var parent = Array(0..<n)
+        func find(_ a: Int) -> Int {
+            var x = a
+            while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+        }
+        func union(_ a: Int, _ b: Int) {
+            let ra = find(a), rb = find(b)
+            if ra != rb { parent[ra] = rb }
+        }
+
+        // Store pairwise similarity for each pair; we'll use the max similarity
+        // each section has to any other cluster member as its "similarity" score.
+        var bestSimilarity = [Double](repeating: 0, count: n)
+        for i in 0..<n {
+            for j in (i + 1)..<n {
+                let sim = cosineSimilarity(fingerprints[i].2, fingerprints[j].2)
+                if sim > 0.75 {
+                    union(i, j)
+                    bestSimilarity[i] = max(bestSimilarity[i], sim)
+                    bestSimilarity[j] = max(bestSimilarity[j], sim)
+                }
+            }
+        }
+
+        // Group by root; drop clusters of size < 2.
+        var clusters = [Int: [Int]]()
+        for i in 0..<n { clusters[find(i), default: []].append(i) }
+        let validClusters = clusters.values.filter { $0.count >= 2 }
+        let clusterCount = validClusters.count
+
+        // Emit hooks in chronological order; repeatIndex is within-cluster.
+        var hooks = [HookMoment]()
+        for cluster in validClusters {
+            // Sort the cluster by section start time; repeatIndex = order in cluster.
+            let sorted = cluster.sorted { fingerprints[$0].1.start < fingerprints[$1].1.start }
+            for (k, memberIdx) in sorted.enumerated() {
+                let section = fingerprints[memberIdx].1
+                let sig = signatureBeats(
+                    in: section.start...section.end,
+                    beats: beats,
+                    beatStrengths: beatStrengths
+                )
+                hooks.append(HookMoment(
+                    startTime: section.start,
+                    endTime: section.end,
+                    repeatIndex: k,
+                    signatureBeats: sig,
+                    similarity: bestSimilarity[memberIdx]
+                ))
+            }
+        }
+        hooks.sort { $0.startTime < $1.startTime }
+
+        logger.info("Hooks detected: \(hooks.count) moments across \(clusterCount) clusters")
+        return hooks
+    }
+
+    /// 8-dim fingerprint = four equal-width envelope RMS bins + their forward
+    /// slopes. No FFT, but captures macro energy shape well enough to cluster
+    /// repeated choruses.
+    private func sectionFingerprint(
+        section: BeatSection,
+        envelope: [Float],
+        hopRate: Double
+    ) -> [Double] {
+        let i0 = max(0, Int(section.start * hopRate))
+        let i1 = min(envelope.count, Int(section.end * hopRate))
+        guard i1 > i0 + 8 else {
+            return Array(repeating: 0, count: 8)
+        }
+        let span  = i1 - i0
+        let bins  = 4
+        let step  = max(1, span / bins)
+        var rms   = [Double](repeating: 0, count: bins)
+        for b in 0..<bins {
+            let s = i0 + b * step
+            let e = min(i1, s + step)
+            guard e > s else { continue }
+            var sum = 0.0
+            for k in s..<e { sum += Double(envelope[k]) }
+            rms[b] = sum / Double(e - s)
+        }
+        var slopes = [Double](repeating: 0, count: bins)
+        for b in 0..<bins {
+            slopes[b] = b + 1 < bins ? rms[b + 1] - rms[b] : rms[b] - (b > 0 ? rms[b - 1] : rms[b])
+        }
+        return rms + slopes
+    }
+
+    private func cosineSimilarity(_ a: [Double], _ b: [Double]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return 0 }
+        var dot = 0.0, na = 0.0, nb = 0.0
+        for i in 0..<a.count {
+            dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]
+        }
+        let denom = sqrt(na) * sqrt(nb)
+        return denom > 1e-9 ? dot / denom : 0
+    }
+
+    /// Pick the 4 strongest beats within the range, ordered by time.
+    private func signatureBeats(
+        in range: ClosedRange<Double>,
+        beats: [Double],
+        beatStrengths: [Double]
+    ) -> [Double] {
+        let indexed = beats.enumerated().filter { range.contains($0.element) }
+        let ranked = indexed.sorted { a, b in
+            let sa = beatStrengths.indices.contains(a.offset) ? beatStrengths[a.offset] : 0.4
+            let sb = beatStrengths.indices.contains(b.offset) ? beatStrengths[b.offset] : 0.4
+            return sa > sb
+        }
+        return ranked.prefix(4).map(\.element).sorted()
     }
 
     // MARK: - Envelope + Energy Curve
@@ -207,7 +361,11 @@ final class BeatmapService: BeatmapServiceProtocol {
     // MARK: - BPM via Autocorrelation
 
     private func estimateBPM(envelope: [Float], hopRate: Double) -> Double {
-        let n = envelope.count
+        // Autocorrelation over the whole envelope is wasteful on long tracks —
+        // BPM is stable enough that the first ~90s resolves it. Cap the
+        // analysis window; per-lag vDSP_dotpr then runs over ≤9000 samples
+        // instead of tens of thousands.
+        let n = min(envelope.count, Int(hopRate * 90.0))
         guard n > 200 else { return 120 }
 
         let minLag = max(1, Int(hopRate * 60.0 / 200.0))

@@ -60,23 +60,26 @@ struct MontageSettings: Codable, Hashable {
     var aspectRatio: AspectRatio
     var renderQuality: RenderQuality
     var songVolume: Double
+    var scoringDensity: ScoringDensity
 
     init(
         vibe: MontageVibe = .cinematic,
         focus: MontageFocus = .everything,
         aspectRatio: AspectRatio = .widescreen,
         renderQuality: RenderQuality = .parallax2D,
-        songVolume: Double = 0.5
+        songVolume: Double = 0.5,
+        scoringDensity: ScoringDensity = .balanced
     ) {
         self.vibe = vibe
         self.focus = focus
         self.aspectRatio = aspectRatio
         self.renderQuality = renderQuality
         self.songVolume = songVolume
+        self.scoringDensity = scoringDensity
     }
 
     enum CodingKeys: String, CodingKey {
-        case vibe, focus, aspectRatio, renderQuality, songVolume
+        case vibe, focus, aspectRatio, renderQuality, songVolume, scoringDensity
     }
 
     init(from decoder: Decoder) throws {
@@ -86,6 +89,7 @@ struct MontageSettings: Codable, Hashable {
         self.aspectRatio = try c.decode(AspectRatio.self, forKey: .aspectRatio)
         self.renderQuality = try c.decode(RenderQuality.self, forKey: .renderQuality)
         self.songVolume = try c.decodeIfPresent(Double.self, forKey: .songVolume) ?? 0.5
+        self.scoringDensity = try c.decodeIfPresent(ScoringDensity.self, forKey: .scoringDensity) ?? .balanced
     }
 }
 
@@ -170,6 +174,47 @@ enum RenderQuality: String, Codable, CaseIterable, Hashable {
         case .parallax2D: return "square.stack.3d.up"
         case .hybrid:     return "sparkles.square.filled.on.square"
         case .generative: return "cpu.fill"
+        }
+    }
+}
+
+enum ScoringDensity: String, Codable, CaseIterable, Hashable {
+    case verySparse = "Very Sparse"
+    case sparse     = "Sparse"
+    case balanced   = "Balanced"
+    case dense      = "Dense"
+    case veryDense  = "Very Dense"
+
+    /// Target number of frame samples per video when scoring.
+    /// Photos score a single frame regardless, but density affects which
+    /// Vision requests are run.
+    var videoFrameSamples: Int {
+        switch self {
+        case .verySparse: return 8
+        case .sparse:     return 14
+        case .balanced:   return 20
+        case .dense:      return 30
+        case .veryDense:  return 48
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .verySparse: return "Fastest — may miss peak moments"
+        case .sparse:     return "Faster — light sampling"
+        case .balanced:   return "Recommended — good quality/speed balance"
+        case .dense:      return "Slower — stronger moment selection"
+        case .veryDense:  return "Slowest — finest-grained sampling"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .verySparse: return "hare.fill"
+        case .sparse:     return "hare"
+        case .balanced:   return "slider.horizontal.3"
+        case .dense:      return "tortoise"
+        case .veryDense:  return "tortoise.fill"
         }
     }
 }

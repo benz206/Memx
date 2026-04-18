@@ -65,8 +65,19 @@ final class MotionPromptService: MotionPromptServiceProtocol {
 
         let energyLabel = energy > 0.8 ? "very high energy" : energy > 0.55 ? "moderate energy" : "low energy"
         let sectionLabel = section?.rawValue ?? "verse"
+
+        // Weave in scene context when available so the motion direction can
+        // reference what's actually in the frame.
+        var sceneContext = ""
+        if let caption = asset.sceneCaption, !caption.isEmpty {
+            sceneContext += " Scene: \(caption)."
+        }
+        if let labels = asset.sceneLabels, !labels.isEmpty {
+            sceneContext += " Tags: \(labels.joined(separator: ", "))."
+        }
+
         let promptText = """
-        Generate a single cinematic camera motion direction (1–2 sentences) for this photo in a music video montage. \
+        Generate a single cinematic camera motion direction (1–2 sentences) for this photo in a music video montage.\(sceneContext) \
         The song is at \(energyLabel) in the \(sectionLabel) section. \
         Describe specific motion: zoom direction, pan, tilt, Ken Burns drift, or parallax. \
         Be precise and evocative. Reply with only the motion direction, no preamble.
@@ -198,36 +209,41 @@ final class MotionPromptService: MotionPromptServiceProtocol {
     // MARK: - Mock Generator (used when no API key or on API failure)
 
     private func mockPrompt(energy: Float, section: SectionType?, asset: MediaAsset) -> String {
+        let base: String
         if energy > 0.8 || section == .drop {
-            return [
+            base = [
                 "Fast zoom-in on the center of the frame. Motion blur trails at the edges.",
                 "Hard push-in with a slight shake on impact. Cut on peak.",
                 "Rapid parallax shift — foreground snaps left, background holds.",
             ].randomElement()!
+        } else if section == .buildup || section == .preChorus {
+            base = "Slow push-in accelerates as the section builds. Bokeh in the background expands."
+        } else if section == .breakdown || section == .bridge {
+            base = "Slow Ken Burns drift — wide pull-out. Hold for the full section. Subtle light flicker in the highlights."
+        } else if section == .intro {
+            base = "Fade in from black. Slow upward tilt as the frame reveals itself."
+        } else if section == .outro {
+            base = "Slow pull-out with a gentle fade to black. The scene lingers."
+        } else if asset.aspectRatio < 1.0 {
+            base = "Subtle parallax drift left-to-right. Slight background separation. Bokeh shimmers."
+        } else {
+            base = [
+                "Slow push-in toward the horizon. Morning mist drifts left across the water.",
+                "Gentle upward tilt. Clouds drift slowly. Warm light rakes across the surface.",
+                "Ken Burns zoom-out, starting tight on the faces. Background falls into soft focus.",
+                "Parallax depth: near branches drift left as sky holds steady behind.",
+                "Slow push-in with subtle light flicker. Candlelight dances in the corner of the frame.",
+                "Tilt up from foreground detail to open sky.",
+                "Tilt up from foreground detail to open sky.",
+            ].randomElement()!
         }
-        if section == .buildup || section == .preChorus {
-            return "Slow push-in accelerates as the section builds. Bokeh in the background expands."
+
+        // When scene context is present, reference it so tests / the UI can
+        // verify the mock is actually using analysis output.
+        if let caption = asset.sceneCaption, !caption.isEmpty {
+            return "\(base) Scene: \(caption)"
         }
-        if section == .breakdown || section == .bridge {
-            return "Slow Ken Burns drift — wide pull-out. Hold for the full section. Subtle light flicker in the highlights."
-        }
-        if section == .intro {
-            return "Fade in from black. Slow upward tilt as the frame reveals itself."
-        }
-        if section == .outro {
-            return "Slow pull-out with a gentle fade to black. The scene lingers."
-        }
-        if asset.aspectRatio < 1.0 {
-            return "Subtle parallax drift left-to-right. Slight background separation. Bokeh shimmers."
-        }
-        return [
-            "Slow push-in toward the horizon. Morning mist drifts left across the water.",
-            "Gentle upward tilt. Clouds drift slowly. Warm light rakes across the surface.",
-            "Ken Burns zoom-out, starting tight on the faces. Background falls into soft focus.",
-            "Parallax depth: near branches drift left as sky holds steady behind.",
-            "Slow push-in with subtle light flicker. Candlelight dances in the corner of the frame.",
-            "Tilt up from foreground detail to open sky.",
-        ].randomElement()!
+        return base
     }
 }
 

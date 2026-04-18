@@ -49,6 +49,10 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
     var selectionReason: String
     var clipOffset: TimeInterval        // start offset within source video (0 for photos)
     var peakTime: TimeInterval?
+    var isHookMoment: Bool = false          // the slot lands inside a detected hook
+    var isAnticipationHold: Bool = false    // the slot is the pre-final-chorus hold
+    var hookRepeatIndex: Int? = nil         // 0 = first time, 1 = second, ...
+    var gradingHint: GradingHint? = nil     // passthrough for future color grading
 
     var duration: TimeInterval { endTime - startTime }
 
@@ -67,7 +71,11 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         sectionType: SectionType? = nil,
         selectionReason: String = "",
         clipOffset: TimeInterval = 0,
-        peakTime: TimeInterval? = nil
+        peakTime: TimeInterval? = nil,
+        isHookMoment: Bool = false,
+        isAnticipationHold: Bool = false,
+        hookRepeatIndex: Int? = nil,
+        gradingHint: GradingHint? = nil
     ) {
         self.id = id
         self.position = position
@@ -84,7 +92,75 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         self.selectionReason = selectionReason
         self.clipOffset = clipOffset
         self.peakTime = peakTime
+        self.isHookMoment = isHookMoment
+        self.isAnticipationHold = isAnticipationHold
+        self.hookRepeatIndex = hookRepeatIndex
+        self.gradingHint = gradingHint
     }
+
+    // MARK: - Codable (decodeIfPresent for new fields so legacy plans still decode)
+
+    private enum CodingKeys: String, CodingKey {
+        case id, position, assetID, startTime, endTime
+        case transitionIn, transitionOut
+        case motionPrompt, motionIntensity
+        case beatAligned, confidenceScore
+        case sectionType, selectionReason
+        case clipOffset, peakTime
+        case isHookMoment, isAnticipationHold, hookRepeatIndex, gradingHint
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        position = try c.decode(Int.self, forKey: .position)
+        assetID = try c.decode(String.self, forKey: .assetID)
+        startTime = try c.decode(TimeInterval.self, forKey: .startTime)
+        endTime = try c.decode(TimeInterval.self, forKey: .endTime)
+        transitionIn = try c.decode(TransitionType.self, forKey: .transitionIn)
+        transitionOut = try c.decode(TransitionType.self, forKey: .transitionOut)
+        motionPrompt = try c.decode(String.self, forKey: .motionPrompt)
+        motionIntensity = try c.decode(Float.self, forKey: .motionIntensity)
+        beatAligned = try c.decode(Bool.self, forKey: .beatAligned)
+        confidenceScore = try c.decode(Float.self, forKey: .confidenceScore)
+        sectionType = try c.decodeIfPresent(SectionType.self, forKey: .sectionType)
+        selectionReason = try c.decode(String.self, forKey: .selectionReason)
+        clipOffset = try c.decode(TimeInterval.self, forKey: .clipOffset)
+        peakTime = try c.decodeIfPresent(TimeInterval.self, forKey: .peakTime)
+        isHookMoment = try c.decodeIfPresent(Bool.self, forKey: .isHookMoment) ?? false
+        isAnticipationHold = try c.decodeIfPresent(Bool.self, forKey: .isAnticipationHold) ?? false
+        hookRepeatIndex = try c.decodeIfPresent(Int.self, forKey: .hookRepeatIndex)
+        gradingHint = try c.decodeIfPresent(GradingHint.self, forKey: .gradingHint)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(position, forKey: .position)
+        try c.encode(assetID, forKey: .assetID)
+        try c.encode(startTime, forKey: .startTime)
+        try c.encode(endTime, forKey: .endTime)
+        try c.encode(transitionIn, forKey: .transitionIn)
+        try c.encode(transitionOut, forKey: .transitionOut)
+        try c.encode(motionPrompt, forKey: .motionPrompt)
+        try c.encode(motionIntensity, forKey: .motionIntensity)
+        try c.encode(beatAligned, forKey: .beatAligned)
+        try c.encode(confidenceScore, forKey: .confidenceScore)
+        try c.encodeIfPresent(sectionType, forKey: .sectionType)
+        try c.encode(selectionReason, forKey: .selectionReason)
+        try c.encode(clipOffset, forKey: .clipOffset)
+        try c.encodeIfPresent(peakTime, forKey: .peakTime)
+        try c.encode(isHookMoment, forKey: .isHookMoment)
+        try c.encode(isAnticipationHold, forKey: .isAnticipationHold)
+        try c.encodeIfPresent(hookRepeatIndex, forKey: .hookRepeatIndex)
+        try c.encodeIfPresent(gradingHint, forKey: .gradingHint)
+    }
+}
+
+// MARK: - GradingHint
+
+enum GradingHint: String, Codable, CaseIterable, Hashable {
+    case warm, cool, desaturated, contrasty, golden, nostalgic
 }
 
 // MARK: - TransitionType

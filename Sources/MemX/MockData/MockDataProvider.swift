@@ -124,6 +124,38 @@ enum MockDataProvider {
         )
     }
 
+    /// Variant of `mockBeatmap` with two synthetic hook occurrences on the two
+    /// chorus sections and a third occurrence mapped to the drop. The final
+    /// hook occurrence has the highest repeatIndex so the anticipation hold
+    /// has a well-defined target.
+    static func mockBeatmapWithHooks(duration: Double = 214) -> Beatmap {
+        var bm = mockBeatmap(duration: duration)
+
+        // bm.sections[3] is the first chorus (58..90), bm.sections[8] is the
+        // second chorus (168..196). Treat these as one hook cluster.
+        func sig(in range: ClosedRange<Double>) -> [Double] {
+            let step = (range.upperBound - range.lowerBound) / 5.0
+            return (1...4).map { Double($0) * step + range.lowerBound }
+        }
+
+        let hooks: [HookMoment] = [
+            HookMoment(
+                startTime: 58, endTime: 90,
+                repeatIndex: 0,
+                signatureBeats: sig(in: 58...90),
+                similarity: 0.82
+            ),
+            HookMoment(
+                startTime: 168, endTime: 196,
+                repeatIndex: 1,
+                signatureBeats: sig(in: 168...196),
+                similarity: 0.82
+            ),
+        ]
+        bm.hooks = hooks
+        return bm
+    }
+
     // MARK: - Motion Prompts
 
     static func mockMotionPrompts(for assets: [MediaAsset]) -> [MotionPrompt] {

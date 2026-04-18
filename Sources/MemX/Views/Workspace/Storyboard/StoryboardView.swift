@@ -6,24 +6,70 @@ struct StoryboardView: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
 
     var body: some View {
-        Group {
-            if let plan = workspaceVM.montagePlan {
-                StoryboardContentView(plan: plan)
-            } else if workspaceVM.isGeneratingPlan || workspaceVM.isProcessing {
-                generatingView
-            } else {
-                EmptyStateView(
-                    icon: "film.stack",
-                    title: "No Storyboard Yet",
-                    subtitle: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
-                        ? "Generate motion prompts first, then build the sequence."
-                        : "Import a song and photos to get started.",
-                    action: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
-                        ? ("Go to Motion", { workspaceVM.selectedTab = .motionPrompts })
-                        : nil
-                )
+        VStack(spacing: 0) {
+            if let shortfall = workspaceVM.clipShortfall {
+                clipShortfallBanner(shortfall)
+            }
+
+            Group {
+                if let plan = workspaceVM.montagePlan {
+                    StoryboardContentView(plan: plan)
+                } else if workspaceVM.isGeneratingPlan || workspaceVM.isProcessing {
+                    generatingView
+                } else {
+                    EmptyStateView(
+                        icon: "film.stack",
+                        title: "No Storyboard Yet",
+                        subtitle: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
+                            ? "Generate motion prompts first, then build the sequence."
+                            : "Import a song and photos to get started.",
+                        action: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
+                            ? ("Go to Motion", { workspaceVM.selectedTab = .motionPrompts })
+                            : nil
+                    )
+                }
             }
         }
+    }
+
+    // MARK: - Clip Shortfall Banner
+
+    private func clipShortfallBanner(_ shortfall: SequencerPreflight) -> some View {
+        let seconds = Int(shortfall.estimatedShortfallSeconds.rounded())
+        let mins = seconds / 60
+        let secs = seconds % 60
+        let timeStr = String(format: "%d:%02d", mins, secs)
+        return HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
+            Text("Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat).")
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Add Photos") {
+                workspaceVM.selectedTab = .photos
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            Button("Build Anyway") {
+                Task { await workspaceVM.acknowledgeShortfallAndBuild() }
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            Button {
+                workspaceVM.dismissShortfall()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     private var generatingView: some View {
@@ -61,6 +107,13 @@ struct StoryboardContentView: View {
     private var selectedItem: MontageSequenceItem? {
         guard let id = selectedItemID else { return nil }
         return plan.sequence.first(where: { $0.id == id })
+    }
+
+    /// Asset IDs that appear in more than one sequence item. Computed once.
+    private var repeatedAssetIDs: Set<String> {
+        var counts = [String: Int]()
+        for item in plan.sequence { counts[item.assetID, default: 0] += 1 }
+        return Set(counts.compactMap { $0.value > 1 ? $0.key : nil })
     }
 
     var body: some View {
@@ -123,12 +176,14 @@ struct StoryboardContentView: View {
             MSDivider()
 
             List(selection: $selectedItemID) {
+                let repeated = repeatedAssetIDs
                 ForEach(Array(plan.sequence.enumerated()), id: \.element.id) { idx, item in
                     StoryboardSequenceRow(
                         item: item,
                         position: idx + 1,
                         asset: workspaceVM.assets.first(where: { $0.id == item.assetID }),
-                        isSelected: selectedItemID == item.id
+                        isSelected: selectedItemID == item.id,
+                        isRepeatedClip: repeated.contains(item.assetID)
                     )
                         .tag(item.id)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
@@ -217,6 +272,29 @@ struct StoryboardContentView: View {
                 }
                 .msCard()
 
+                // Scene card — only shown when analysis populated caption or
+                // labels. Skipped entirely for assets that were never analyzed.
+                if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                   (asset.sceneCaption?.isEmpty == false) || (asset.sceneLabels?.isEmpty == false) {
+                    VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                        MSSectionHeader(title: "Scene")
+                        if let caption = asset.sceneCaption, !caption.isEmpty {
+                            Text(caption).font(MS.Font.body).foregroundStyle(.primary)
+                        } else if let labels = asset.sceneLabels, !labels.isEmpty {
+                            Text(labels.joined(separator: " · "))
+                                .font(MS.Font.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let caption = asset.sceneCaption, !caption.isEmpty,
+                           let labels = asset.sceneLabels, !labels.isEmpty {
+                            Text(labels.joined(separator: " · "))
+                                .font(MS.Font.micro)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .msCard()
+                }
+
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     MSSectionHeader(title: "Motion Direction")
                     if item.motionPrompt.isEmpty {
@@ -250,12 +328,19 @@ struct StoryboardContentView: View {
                 }
                 .msCard()
 
-                if !item.selectionReason.isEmpty {
+                if !item.selectionReason.isEmpty || item.gradingHint != nil {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                         MSSectionHeader(title: "Why Selected")
-                        Text(item.selectionReason)
-                            .font(MS.Font.body)
-                            .foregroundStyle(.secondary)
+                        if !item.selectionReason.isEmpty {
+                            Text(item.selectionReason)
+                                .font(MS.Font.body)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let hint = item.gradingHint {
+                            Text("Grading: \(hint.rawValue.capitalized)")
+                                .font(MS.Font.micro)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                     .msCard()
                 }
@@ -618,6 +703,7 @@ struct StoryboardSequenceRow: View {
     let position: Int
     let asset: MediaAsset?
     let isSelected: Bool
+    var isRepeatedClip: Bool = false
 
     var body: some View {
         HStack(spacing: MS.Spacing.sm) {
@@ -670,6 +756,26 @@ struct StoryboardSequenceRow: View {
                         .fontWeight(.medium)
                         .lineLimit(1)
                     if item.beatAligned { BeatAlignedBadge() }
+                    if item.isHookMoment {
+                        let label: String = {
+                            if let r = item.hookRepeatIndex, r > 0 { return "Hook ×\(r + 1)" }
+                            return "Hook"
+                        }()
+                        MSBadge(text: label, color: .indigo, size: .small)
+                    }
+                    if item.isAnticipationHold {
+                        MSBadge(text: "Hold", color: .purple, size: .small)
+                    }
+                    if isRepeatedClip {
+                        MSBadge(text: "⟲ Repeat", color: .orange, size: .small)
+                    }
+                    if let firstLabel = asset?.sceneLabels?.first, !firstLabel.isEmpty {
+                        MSBadge(
+                            text: String(firstLabel.prefix(10)),
+                            color: .secondary,
+                            size: .small
+                        )
+                    }
                 }
                 HStack(spacing: MS.Spacing.xs) {
                     Text(String(format: "%.1fs", item.duration))

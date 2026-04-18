@@ -8,6 +8,7 @@ struct WorkspaceView: View {
     @State private var showMissingAssetsBanner = false
     @State private var showLeaveConfirm = false
     @State private var isTitleHovered = false
+    @FocusState private var titleFieldFocused: Bool
 
     init(project: Project, appVM: AppViewModel) {
         self.project = project
@@ -272,11 +273,16 @@ struct WorkspaceView: View {
                     .font(MS.Font.heading)
                     .multilineTextAlignment(.center)
                     .frame(minWidth: 200)
+                    .focused($titleFieldFocused)
                     .onSubmit {
                         workspaceVM.updateTitle(workspaceVM.project.title)
                         workspaceVM.isEditingTitle = false
                     }
                     .onExitCommand { workspaceVM.isEditingTitle = false }
+                    .onAppear { titleFieldFocused = true }
+                    .onChange(of: workspaceVM.isEditingTitle) { _, editing in
+                        if editing { titleFieldFocused = true }
+                    }
             } else {
                 Button {
                     workspaceVM.isEditingTitle = true

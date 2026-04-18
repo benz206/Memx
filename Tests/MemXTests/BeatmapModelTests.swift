@@ -150,6 +150,75 @@ final class BeatmapModelTests: XCTestCase {
         XCTAssertEqual(CutStyle.onBeat.rawValue, "On Beat")
     }
 
+    // MARK: - HookMoment
+
+    func testHookAtTimeReturnsHookWhenInside() {
+        var beatmap = makeBeatmap()
+        beatmap.hooks = [
+            HookMoment(startTime: 10, endTime: 20, repeatIndex: 0, signatureBeats: [], similarity: 0.8),
+            HookMoment(startTime: 40, endTime: 55, repeatIndex: 1, signatureBeats: [], similarity: 0.8),
+        ]
+        XCTAssertEqual(beatmap.hook(at: 15)?.repeatIndex, 0)
+        XCTAssertEqual(beatmap.hook(at: 45)?.repeatIndex, 1)
+    }
+
+    func testHookAtTimeReturnsNilOutsideRange() {
+        var beatmap = makeBeatmap()
+        beatmap.hooks = [
+            HookMoment(startTime: 10, endTime: 20, repeatIndex: 0, signatureBeats: [], similarity: 0.8),
+        ]
+        XCTAssertNil(beatmap.hook(at: 5))
+        XCTAssertNil(beatmap.hook(at: 25))
+        // End is exclusive.
+        XCTAssertNil(beatmap.hook(at: 20))
+    }
+
+    func testFinalHookStartReturnsMaxStart() {
+        var beatmap = makeBeatmap()
+        beatmap.hooks = [
+            HookMoment(startTime: 10, endTime: 20, repeatIndex: 0, signatureBeats: [], similarity: 0.8),
+            HookMoment(startTime: 45, endTime: 60, repeatIndex: 1, signatureBeats: [], similarity: 0.8),
+            HookMoment(startTime: 30, endTime: 40, repeatIndex: 2, signatureBeats: [], similarity: 0.8),
+        ]
+        XCTAssertEqual(beatmap.finalHookStart ?? 0, 45, accuracy: 0.0001)
+    }
+
+    func testFinalHookStartNilWhenNoHooks() {
+        let beatmap = makeBeatmap()
+        XCTAssertNil(beatmap.finalHookStart)
+    }
+
+    func testBeatmapDecodesLegacyJSONWithoutHooks() throws {
+        let legacy = """
+        {
+            "bpm": 120,
+            "durationSeconds": 60,
+            "energyCurve": [],
+            "sections": [],
+            "beats": [],
+            "drops": [],
+            "vocalPeaks": []
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Beatmap.self, from: legacy)
+        XCTAssertEqual(decoded.hooks.count, 0)
+        XCTAssertNil(decoded.finalHookStart)
+    }
+
+    func testBeatmapHooksCodableRoundTrip() throws {
+        var beatmap = makeBeatmap()
+        beatmap.hooks = [
+            HookMoment(startTime: 10, endTime: 20, repeatIndex: 0,
+                       signatureBeats: [11, 13, 15, 17], similarity: 0.82),
+        ]
+        let data = try JSONEncoder().encode(beatmap)
+        let decoded = try JSONDecoder().decode(Beatmap.self, from: data)
+        XCTAssertEqual(decoded.hooks.count, 1)
+        XCTAssertEqual(decoded.hooks[0].repeatIndex, 0)
+        XCTAssertEqual(decoded.hooks[0].signatureBeats, [11, 13, 15, 17])
+        XCTAssertEqual(decoded.hooks[0].similarity, 0.82, accuracy: 0.001)
+    }
+
     // MARK: - EnergyPoint
 
     func testEnergyPointCodableRoundTrip() throws {

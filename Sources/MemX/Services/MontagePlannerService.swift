@@ -3,6 +3,16 @@ import OSLog
 
 private let logger = Logger(subsystem: "com.memx.app", category: "sequencer")
 
+// MARK: - SequencerPreflight
+
+struct SequencerPreflight: Hashable {
+    let requiredClipCount: Int        // slots we'll emit
+    let availableClipCount: Int       // eligible assets in the pool
+    let estimatedShortfall: Int       // max(0, required - available)
+    let estimatedShortfallSeconds: Double  // rough seconds that would repeat
+    var hasShortfall: Bool { estimatedShortfall > 0 }
+}
+
 // MARK: - SequencerServiceProtocol
 
 protocol SequencerServiceProtocol {
@@ -14,6 +24,12 @@ protocol SequencerServiceProtocol {
         beatmap: Beatmap,
         onProgress: @escaping (Double, String) -> Void
     ) async -> MontagePlan
+
+    func preflight(
+        settings: MontageSettings,
+        assets: [MediaAsset],
+        beatmap: Beatmap
+    ) -> SequencerPreflight
 }
 
 // MARK: - SequencerService
@@ -52,11 +68,14 @@ final class SequencerService: SequencerServiceProtocol {
         let arcIntensities = buildArcIntensities(sections: beatmap.sections)
 
         var timeSlots = buildTimeSlots(from: beatmap, beatDur: beatDur,
-                                       barStarts: barStarts, arcIntensities: arcIntensities)
+                                       barStarts: barStarts, arcIntensities: arcIntensities,
+                                       vibe: settings.vibe)
         applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
 
         onProgress(0.20, "Built \(timeSlots.count) time slots from \(beatmap.sections.count) sections...")
-        logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections")
+        logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections, \(beatmap.hooks.count) hooks")
 
         let pool          = candidates.isEmpty ? fallbackCandidates : candidates
         var usedKeys      = Set<String>()
@@ -66,6 +85,8 @@ final class SequencerService: SequencerServiceProtocol {
         var prevAsset: MediaAsset?   = nil
         var prevSection: BeatSection? = nil
         var prevSlotStart: Double?   = nil
+        // Déjà-vu: cluster key -> (signatureIndex -> asset) for forced reuse on repeats.
+        var hookAnchorAssets = [Double: [Int: MediaAsset]]()
 
         let sectionFirstIDs = buildSectionFirstSlotIDs(from: timeSlots)
         let totalSlots      = timeSlots.count
@@ -79,9 +100,35 @@ final class SequencerService: SequencerServiceProtocol {
             }
 
             let arcIntensity = arcIntensities[slot.section.id] ?? 0.9
-            guard let asset = selectAsset(for: slot, from: pool, used: usedKeys,
-                                          prev: prevAsset, arcIntensity: arcIntensity) else { continue }
+
+            // Déjà-vu: on hook repeats (repeatIndex > 0), force reuse of the
+            // asset picked for the same signature-beat position on the first
+            // occurrence, bypassing usedKeys.
+            let forcedAsset: MediaAsset? = {
+                guard let key = slot.hookClusterKey,
+                      let rIdx = slot.hookRepeatIndex, rIdx > 0,
+                      let sIdx = slot.hookSignatureIndex,
+                      let anchored = hookAnchorAssets[key]?[sIdx] else { return nil }
+                return anchored
+            }()
+
+            let asset: MediaAsset
+            if let forced = forcedAsset {
+                asset = forced
+            } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
+                                               prev: prevAsset, arcIntensity: arcIntensity) {
+                asset = picked
+            } else {
+                continue
+            }
             usedKeys.insert(clipKey(asset))
+
+            // Record the first-occurrence asset for later hook repeats to reuse.
+            if let key = slot.hookClusterKey,
+               let rIdx = slot.hookRepeatIndex, rIdx == 0,
+               let sIdx = slot.hookSignatureIndex {
+                hookAnchorAssets[key, default: [:]][sIdx] = asset
+            }
 
             let prompt  = promptMap[asset.id]
             let energy  = Float(beatmap.energy(at: slot.startTime))
@@ -91,7 +138,8 @@ final class SequencerService: SequencerServiceProtocol {
             let trans = transition(prev: prevAsset, prevSection: prevSection,
                                    prevSlotStart: prevSlotStart, next: asset,
                                    slot: slot, position: position,
-                                   isFirstOfSection: isFirst, beatmap: beatmap)
+                                   isFirstOfSection: isFirst, beatmap: beatmap,
+                                   vibe: settings.vibe)
 
             let microOffset = (position > 0 && !isHero
                                && trans != .fadeFromBlack && trans != .dissolve) ? 0.04 : 0.0
@@ -111,14 +159,20 @@ final class SequencerService: SequencerServiceProtocol {
             let isMatchCut = trans == .hardCut
                              && prevAsset?.motionVector != nil && asset.motionVector != nil
             let isArcPeak  = isHero && arcIntensity >= 0.95
+            let isHookSlot = slot.hookClusterKey != nil
+            let isHookReturn = isHookSlot && (slot.hookRepeatIndex ?? 0) > 0
+
+            // Anticipation hold uses its spec'd transition pair.
+            let transitionIn: TransitionType = slot.isAnticipationHold ? .dissolve : trans
+            let transitionOut: TransitionType = slot.isAnticipationHold ? .flashWhite : .hardCut
 
             let item = MontageSequenceItem(
                 position: position,
                 assetID: asset.id,
                 startTime: itemStart,
                 endTime: itemEnd,
-                transitionIn: trans,
-                transitionOut: .hardCut,
+                transitionIn: transitionIn,
+                transitionOut: transitionOut,
                 motionPrompt: prompt?.prompt ?? "",
                 motionIntensity: prompt?.motionIntensity ?? energy,
                 beatAligned: slot.beatAligned,
@@ -127,9 +181,15 @@ final class SequencerService: SequencerServiceProtocol {
                 selectionReason: selectionReason(for: asset, slot: slot,
                                                   isHero: isHero,
                                                   isMatchCut: isMatchCut,
-                                                  isArcPeak: isArcPeak),
+                                                  isArcPeak: isArcPeak,
+                                                  isHookSlot: isHookSlot,
+                                                  isHookReturn: isHookReturn),
                 clipOffset: clipOffset,
-                peakTime: peakBeat
+                peakTime: peakBeat,
+                isHookMoment: isHookSlot,
+                isAnticipationHold: slot.isAnticipationHold,
+                hookRepeatIndex: slot.hookRepeatIndex,
+                gradingHint: gradingHint(for: settings.vibe, sectionType: slot.section.type)
             )
             sequence.append(item)
             position      += 1
@@ -159,6 +219,56 @@ final class SequencerService: SequencerServiceProtocol {
         )
     }
 
+    // MARK: - Preflight
+
+    func preflight(
+        settings: MontageSettings,
+        assets: [MediaAsset],
+        beatmap: Beatmap
+    ) -> SequencerPreflight {
+        let beatDur        = beatmap.beatDuration
+        let barStarts      = beatmap.barStarts(beatsPerBar: 4)
+        let arcIntensities = buildArcIntensities(sections: beatmap.sections)
+
+        var timeSlots = buildTimeSlots(from: beatmap, beatDur: beatDur,
+                                       barStarts: barStarts, arcIntensities: arcIntensities,
+                                       vibe: settings.vibe)
+        applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+
+        let totalDuration = beatmap.durationSeconds
+        let validSlots    = timeSlots.filter { $0.startTime < totalDuration }
+        let requiredCount = validSlots.count
+
+        // Mirror buildSequence pool selection: scored > 0.3, else fallback to all assets.
+        let scored = assets.filter { ($0.analysisScore ?? 0) > 0.3 }
+        let pool   = scored.isEmpty ? assets : scored
+        let availableCount = pool.count
+
+        let shortfall = max(0, requiredCount - availableCount)
+
+        // Estimated seconds that would repeat: sum the trailing slot durations
+        // beyond the unique pool capacity.
+        let shortfallSeconds: Double
+        if shortfall > 0 && !validSlots.isEmpty {
+            let start = min(availableCount, validSlots.count)
+            shortfallSeconds = validSlots[start..<validSlots.count]
+                .reduce(0.0) { $0 + $1.duration }
+        } else {
+            shortfallSeconds = 0
+        }
+
+        logger.info("Preflight: required=\(requiredCount), available=\(availableCount), shortfall=\(shortfall), shortfallSec=\(shortfallSeconds, format: .fixed(precision: 1))")
+
+        return SequencerPreflight(
+            requiredClipCount: requiredCount,
+            availableClipCount: availableCount,
+            estimatedShortfall: shortfall,
+            estimatedShortfallSeconds: shortfallSeconds
+        )
+    }
+
     // MARK: - TimeSlot
 
     private struct TimeSlot {
@@ -170,11 +280,18 @@ final class SequencerService: SequencerServiceProtocol {
         var isFlash: Bool
         var peakBeat: Double?
         var isBreath: Bool
+        // Hook metadata — non-nil when the slot lands inside a detected hook.
+        var hookClusterKey: Double?      // prototype (first-occurrence) hook startTime, stable across repeats
+        var hookRepeatIndex: Int?        // 0, 1, 2… within-cluster chronological order
+        var hookSignatureIndex: Int?     // which signature-beat within the hook this slot sits on
+        var isAnticipationHold: Bool
         var duration: Double { endTime - startTime }
 
         init(startTime: Double, endTime: Double, section: BeatSection,
              beatAligned: Bool, isFlash: Bool = false,
-             peakBeat: Double? = nil, isBreath: Bool = false) {
+             peakBeat: Double? = nil, isBreath: Bool = false,
+             hookClusterKey: Double? = nil, hookRepeatIndex: Int? = nil,
+             hookSignatureIndex: Int? = nil, isAnticipationHold: Bool = false) {
             self.id          = UUID()
             self.startTime   = startTime
             self.endTime     = endTime
@@ -183,6 +300,10 @@ final class SequencerService: SequencerServiceProtocol {
             self.isFlash     = isFlash
             self.peakBeat    = peakBeat
             self.isBreath    = isBreath
+            self.hookClusterKey     = hookClusterKey
+            self.hookRepeatIndex    = hookRepeatIndex
+            self.hookSignatureIndex = hookSignatureIndex
+            self.isAnticipationHold = isAnticipationHold
         }
     }
 
@@ -233,30 +354,54 @@ final class SequencerService: SequencerServiceProtocol {
 
     // MARK: - Cut Patterns
 
-    private func baseCutPattern(for type: SectionType, leadsToDrop: Bool) -> CutPattern {
-        switch type {
-        case .intro:
-            return CutPattern(durationsInBeats: [8, 8, 4, 8],              isAnchoredToBar: true)
-        case .verse:
-            return CutPattern(durationsInBeats: [4, 4, 2, 2, 4],           isAnchoredToBar: true)
-        case .preChorus:
-            return CutPattern(durationsInBeats: [4, 2, 2, 1, 1],           isAnchoredToBar: true)
-        case .chorus:
-            return CutPattern(durationsInBeats: [8, 4, 4, 2, 2, 4],        isAnchoredToBar: true)
-        case .drop:
-            return CutPattern(durationsInBeats: [8, 4, 2, 2, 1, 1, 2, 4],  isAnchoredToBar: true)
-        case .breakdown:
-            return CutPattern(durationsInBeats: [16],                       isAnchoredToBar: true)
-        case .bridge:
-            return CutPattern(durationsInBeats: [8, 8, 16],                 isAnchoredToBar: true)
-        case .outro:
-            return CutPattern(durationsInBeats: [8, 16, 32],                isAnchoredToBar: true)
-        case .buildup:
-            let durs: [Double] = leadsToDrop
-                ? [4, 4, 2, 2, 1, 1, 0.5, 0.5, 0.25, 0.25]
-                : [4, 2, 2, 1]
-            return CutPattern(durationsInBeats: durs, isAnchoredToBar: leadsToDrop)
+    private func baseCutPattern(for type: SectionType, leadsToDrop: Bool, vibe: MontageVibe) -> CutPattern {
+        // Start with the canonical pattern, then layer vibe-specific mods.
+        var pattern: CutPattern = {
+            switch type {
+            case .intro:
+                return CutPattern(durationsInBeats: [8, 8, 4, 8],              isAnchoredToBar: true)
+            case .verse:
+                return CutPattern(durationsInBeats: [4, 4, 2, 2, 4],           isAnchoredToBar: true)
+            case .preChorus:
+                return CutPattern(durationsInBeats: [4, 2, 2, 1, 1],           isAnchoredToBar: true)
+            case .chorus:
+                return CutPattern(durationsInBeats: [8, 4, 4, 2, 2, 4],        isAnchoredToBar: true)
+            case .drop:
+                return CutPattern(durationsInBeats: [8, 4, 2, 2, 1, 1, 2, 4],  isAnchoredToBar: true)
+            case .breakdown:
+                return CutPattern(durationsInBeats: [16],                       isAnchoredToBar: true)
+            case .bridge:
+                return CutPattern(durationsInBeats: [8, 8, 16],                 isAnchoredToBar: true)
+            case .outro:
+                return CutPattern(durationsInBeats: [8, 16, 32],                isAnchoredToBar: true)
+            case .buildup:
+                let durs: [Double] = leadsToDrop
+                    ? [4, 4, 2, 2, 1, 1, 0.5, 0.5, 0.25, 0.25]
+                    : [4, 2, 2, 1]
+                return CutPattern(durationsInBeats: durs, isAnchoredToBar: leadsToDrop)
+            }
+        }()
+
+        switch vibe {
+        case .nostalgic:
+            // Slow everything down ~40%.
+            pattern = CutPattern(
+                durationsInBeats: pattern.durationsInBeats.map { $0 * 1.4 },
+                isAnchoredToBar: pattern.isAnchoredToBar
+            )
+        case .hype:
+            // Sub-beat cuts mid-drop: insert a [0.5, 0.5] burst into the drop pattern.
+            if type == .drop, pattern.durationsInBeats.count >= 3 {
+                var durs = pattern.durationsInBeats
+                let insertAt = durs.count / 2
+                durs.insert(contentsOf: [0.5, 0.5], at: insertAt)
+                pattern = CutPattern(durationsInBeats: durs, isAnchoredToBar: pattern.isAnchoredToBar)
+            }
+        case .cinematic, .wholesome, .funny, .travel:
+            break
         }
+
+        return pattern
     }
 
     private func adjustedPattern(base: CutPattern, sectionType: SectionType,
@@ -307,7 +452,8 @@ final class SequencerService: SequencerServiceProtocol {
     // MARK: - Time Slot Building
 
     private func buildTimeSlots(from beatmap: Beatmap, beatDur: Double,
-                                 barStarts: [Double], arcIntensities: [UUID: Double]) -> [TimeSlot] {
+                                 barStarts: [Double], arcIntensities: [UUID: Double],
+                                 vibe: MontageVibe) -> [TimeSlot] {
         var slots     = [TimeSlot]()
         var chorusIdx = 0
         var dropIdx   = 0
@@ -330,7 +476,7 @@ final class SequencerService: SequencerServiceProtocol {
             }
 
             let arcIntensity = arcIntensities[section.id] ?? 0.9
-            let base    = baseCutPattern(for: section.type, leadsToDrop: leadsToDrop)
+            let base    = baseCutPattern(for: section.type, leadsToDrop: leadsToDrop, vibe: vibe)
             let pattern = adjustedPattern(base: base, sectionType: section.type,
                                           arcIntensity: arcIntensity,
                                           encounterIndex: k, totalEncounters: n,
@@ -442,6 +588,215 @@ final class SequencerService: SequencerServiceProtocol {
         }
     }
 
+    // MARK: - Hook Slots
+    // Replace in-range time slots with signature-beat-aligned slots. Each
+    // consecutive signature beat gets one slot; duration = gap to next
+    // signature beat (or bar length if only one signature beat). If the
+    // cluster has only a single repetition this still runs (hooks array
+    // enforces cluster size ≥ 2 at detection time).
+
+    private func applyHookSlots(to slots: inout [TimeSlot], beatmap: Beatmap, beatDur: Double) {
+        guard !beatmap.hooks.isEmpty else { return }
+        let barDur = beatDur * 4
+
+        // Cluster key: for repeatIndex == 0, use the section's own startTime as
+        // the stable key; later occurrences in the same cluster need the same
+        // key, so we walk hooks in chronological order and map each
+        // (rounded-signature fingerprint) to its prototype key.
+        // A simpler stable key: repeatIndex == 0 → self.startTime, else use the
+        // most recent earlier hook's startTime as prototype. Since hooks are
+        // sorted chronologically and repeatIndex is cluster-local, the
+        // prototype is the nearest earlier hook with repeatIndex == 0 that
+        // hasn't been "closed" by another repeatIndex == 0 of a different
+        // cluster. Because BeatmapService emits hooks cluster-by-cluster
+        // already sorted, we just track the last seen rIdx == 0 start per
+        // sort order — but clusters can interleave in pathological cases.
+        // Good enough: use (startTime rounded) of the nearest earlier rIdx==0
+        // hook that shares the cluster. We approximate by grouping hooks
+        // whose endTime-startTime "shape" matches.
+        // Pragmatic approach: hooks arrive sorted by startTime; for each hook,
+        // find the prototype = nearest earlier hook with repeatIndex == 0
+        // and matching duration (within 30%). If none, self is prototype.
+        func prototypeKey(for hook: HookMoment, among all: [HookMoment]) -> Double {
+            if hook.repeatIndex == 0 { return hook.startTime }
+            let dur = hook.endTime - hook.startTime
+            let earlier = all.filter {
+                $0.startTime < hook.startTime
+                    && $0.repeatIndex == 0
+                    && abs(($0.endTime - $0.startTime) - dur) < dur * 0.3
+            }
+            return earlier.last?.startTime ?? hook.startTime
+        }
+
+        for hook in beatmap.hooks {
+            let clusterKey = prototypeKey(for: hook, among: beatmap.hooks)
+            let start = hook.startTime
+            let end   = hook.endTime
+            guard end > start + beatDur else { continue }
+
+            // Build signature-beat slot boundaries. If no signature beats,
+            // fall back to a single bar-length slot.
+            let sigs = hook.signatureBeats.filter { $0 >= start && $0 < end }.sorted()
+            let boundaries: [Double]
+            if sigs.isEmpty {
+                boundaries = [start]
+            } else {
+                boundaries = sigs
+            }
+
+            // Find section that contains the hook (use nearest).
+            guard let section = beatmap.sections.first(where: {
+                $0.start <= start && start < $0.end
+            }) ?? beatmap.sections.last else { continue }
+
+            var hookSlots = [TimeSlot]()
+            for (sIdx, b) in boundaries.enumerated() {
+                let nextBoundary = sIdx + 1 < boundaries.count ? boundaries[sIdx + 1] : end
+                let slotEnd = min(nextBoundary, end)
+                // Guard against too-short leading stub if signature beats don't
+                // cover the very start of the hook.
+                let slotStart = max(start, b)
+                guard slotEnd > slotStart + 0.05 else { continue }
+
+                // If there's a gap between the hook start and the first sig
+                // beat, swallow it into the first sig-beat's slot (so we don't
+                // leave a naked leading chunk un-styled).
+                let finalStart = (sIdx == 0) ? start : slotStart
+
+                let aligned = true
+                let peak    = beatmap.strongestBeat(in: finalStart...slotEnd)
+
+                hookSlots.append(TimeSlot(
+                    startTime: finalStart,
+                    endTime: slotEnd,
+                    section: section,
+                    beatAligned: aligned,
+                    isFlash: (slotEnd - finalStart) < beatDur,
+                    peakBeat: peak,
+                    isBreath: false,
+                    hookClusterKey: clusterKey,
+                    hookRepeatIndex: hook.repeatIndex,
+                    hookSignatureIndex: sIdx
+                ))
+            }
+
+            // Single-signature-beat fallback: expand to bar length.
+            if hookSlots.count == 1, let only = hookSlots.first {
+                let bumpedEnd = min(only.startTime + barDur, end)
+                hookSlots[0] = TimeSlot(
+                    startTime: only.startTime,
+                    endTime: bumpedEnd,
+                    section: only.section,
+                    beatAligned: only.beatAligned,
+                    isFlash: only.isFlash,
+                    peakBeat: only.peakBeat,
+                    isBreath: false,
+                    hookClusterKey: clusterKey,
+                    hookRepeatIndex: hook.repeatIndex,
+                    hookSignatureIndex: 0
+                )
+            }
+            guard !hookSlots.isEmpty else { continue }
+
+            // Remove any existing slots that overlap this hook's range, then
+            // insert hook slots in order, preserving chronological sort.
+            slots.removeAll { $0.startTime >= start && $0.startTime < end }
+            slots.append(contentsOf: hookSlots)
+            slots.sort { $0.startTime < $1.startTime }
+        }
+    }
+
+    // MARK: - Anticipation Hold
+    // Before the final hook (if chorus/drop), replace the last non-hook slot
+    // in that interval with a 1-bar hold marked isAnticipationHold. The
+    // emission loop will pair it with .dissolve in / .flashWhite out.
+
+    private func applyAnticipationHold(to slots: inout [TimeSlot], beatmap: Beatmap, beatDur: Double) {
+        guard let finalStart = beatmap.finalHookStart else { return }
+        // Validate the final hook lives in a chorus/drop section.
+        guard let finalSection = beatmap.sections.first(where: {
+            $0.start <= finalStart && finalStart < $0.end
+        }), (finalSection.type == .chorus || finalSection.type == .drop) else { return }
+
+        let barDur = beatDur * 4
+        let holdStart = finalStart - barDur
+        guard holdStart > 0 else { return }
+        let holdEnd   = finalStart
+
+        // Find the last slot whose startTime is in [holdStart - barDur, finalStart)
+        // and is not itself a hook slot. If none, prepend a new slot.
+        let priorIdx = slots.lastIndex(where: {
+            $0.hookClusterKey == nil && $0.startTime < holdEnd && $0.endTime > holdStart - barDur
+        })
+
+        // Find the section the hold sits in (prefer the slot's own section if found).
+        let sectionForHold: BeatSection = {
+            if let i = priorIdx { return slots[i].section }
+            return beatmap.sections.first(where: { $0.start <= holdStart && holdStart < $0.end })
+                ?? finalSection
+        }()
+
+        let peak = beatmap.strongestBeat(in: holdStart...holdEnd)
+        let hold = TimeSlot(
+            startTime: holdStart,
+            endTime: holdEnd,
+            section: sectionForHold,
+            beatAligned: true,
+            isFlash: false,
+            peakBeat: peak,
+            isBreath: false,
+            isAnticipationHold: true
+        )
+
+        if let i = priorIdx {
+            // Replace overlapping prior (non-hook) slots in the hold window.
+            var removeUpper = i + 1
+            while removeUpper > 0,
+                  slots[removeUpper - 1].hookClusterKey == nil,
+                  slots[removeUpper - 1].endTime > holdStart {
+                if removeUpper - 2 < 0 { break }
+                if slots[removeUpper - 2].endTime <= holdStart { break }
+                removeUpper -= 1
+            }
+            var removeLower = i
+            while removeLower >= 0,
+                  slots[removeLower].hookClusterKey == nil,
+                  slots[removeLower].startTime >= holdStart - 0.01,
+                  slots[removeLower].startTime < holdEnd {
+                removeLower -= 1
+            }
+            let lo = removeLower + 1
+            let hi = min(slots.count, i + 1)
+            if lo <= hi, lo < slots.count {
+                slots.replaceSubrange(lo..<hi, with: [hold])
+            } else {
+                slots.append(hold)
+                slots.sort { $0.startTime < $1.startTime }
+            }
+        } else {
+            slots.append(hold)
+            slots.sort { $0.startTime < $1.startTime }
+        }
+    }
+
+    // MARK: - Grading Hint
+
+    private func gradingHint(for vibe: MontageVibe, sectionType: SectionType?) -> GradingHint? {
+        guard let t = sectionType else { return nil }
+        switch vibe {
+        case .nostalgic:
+            return (t == .chorus || t == .drop) ? .golden : .nostalgic
+        case .cinematic:
+            if t == .breakdown || t == .bridge { return .desaturated }
+            if t == .drop || t == .chorus       { return .contrasty }
+            return nil
+        case .hype:
+            return t == .drop ? .contrasty : nil
+        case .wholesome, .funny, .travel:
+            return nil
+        }
+    }
+
     // MARK: - Section First Slot IDs
 
     private func buildSectionFirstSlotIDs(from slots: [TimeSlot]) -> Set<UUID> {
@@ -472,8 +827,18 @@ final class SequencerService: SequencerServiceProtocol {
     private func transition(prev: MediaAsset?, prevSection: BeatSection?, prevSlotStart: Double?,
                             next: MediaAsset, slot: TimeSlot,
                             position: Int, isFirstOfSection: Bool,
-                            beatmap: Beatmap) -> TransitionType {
+                            beatmap: Beatmap, vibe: MontageVibe) -> TransitionType {
         if position == 0 { return .fadeFromBlack }
+
+        // Vibe: .hype flashes on every hook repeat entry (signature-beat 0).
+        if vibe == .hype, slot.hookClusterKey != nil, slot.hookSignatureIndex == 0 {
+            return .flashWhite
+        }
+
+        // Vibe: .nostalgic prefers kenBurnsDrift on section boundaries.
+        if vibe == .nostalgic, isFirstOfSection, position > 0 {
+            return .kenBurnsDrift
+        }
 
         if isFirstOfSection && slot.section.type == .drop { return .flashWhite }
 
@@ -606,7 +971,8 @@ final class SequencerService: SequencerServiceProtocol {
     // MARK: - Selection Reason
 
     private func selectionReason(for asset: MediaAsset, slot: TimeSlot,
-                                  isHero: Bool, isMatchCut: Bool, isArcPeak: Bool) -> String {
+                                  isHero: Bool, isMatchCut: Bool, isArcPeak: Bool,
+                                  isHookSlot: Bool = false, isHookReturn: Bool = false) -> String {
         var reasons = [String]()
         if let q = asset.qualityScore, q > 0.8  { reasons.append("sharp & well-exposed") }
         if let e = asset.emotionScore, e > 0.75 { reasons.append("strong emotional valence") }
@@ -614,6 +980,9 @@ final class SequencerService: SequencerServiceProtocol {
         if isHero                               { reasons.append("hero hold") }
         if isArcPeak                            { reasons.append("arc peak") }
         if isMatchCut                           { reasons.append("match cut") }
+        if slot.isAnticipationHold              { reasons.append("anticipation hold") }
+        if isHookReturn                         { reasons.append("hook return") }
+        else if isHookSlot                      { reasons.append("hook signature") }
         if slot.isBreath                        { reasons.append("breath") }
         if asset.isVideo                        { reasons.append("video") }
         if slot.isFlash                         { reasons.append("buildup flash") }

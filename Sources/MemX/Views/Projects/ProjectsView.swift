@@ -120,6 +120,7 @@ private struct NewProjectSheet: View {
     @Environment(AppViewModel.self) private var appVM
     @Binding var isPresented: Bool
     @State private var title = ""
+    @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: MS.Spacing.lg) {
@@ -133,6 +134,11 @@ private struct NewProjectSheet: View {
                 TextField("e.g. Summer in Lisbon", text: $title)
                     .textFieldStyle(.roundedBorder)
                     .font(MS.Font.body)
+                    .focused($titleFieldFocused)
+                    .onSubmit {
+                        appVM.createProject(title: title.isEmpty ? "New Project" : title)
+                        isPresented = false
+                    }
             }
 
             HStack(spacing: MS.Spacing.sm) {
@@ -145,6 +151,7 @@ private struct NewProjectSheet: View {
         }
         .padding(MS.Spacing.xl)
         .frame(width: 360)
+        .onAppear { titleFieldFocused = true }
     }
 }
 

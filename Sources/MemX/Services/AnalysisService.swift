@@ -31,8 +31,19 @@ protocol PhotoScoringServiceProtocol {
     func scorePhotos(
         for project: Project,
         assets: [MediaAsset],
+        density: ScoringDensity,
         onProgress: @escaping (Double, String) -> Void
     ) async throws -> PhotoScoringResult
+}
+
+extension PhotoScoringServiceProtocol {
+    func scorePhotos(
+        for project: Project,
+        assets: [MediaAsset],
+        onProgress: @escaping (Double, String) -> Void
+    ) async throws -> PhotoScoringResult {
+        try await scorePhotos(for: project, assets: assets, density: .balanced, onProgress: onProgress)
+    }
 }
 
 // MARK: - PhotoScoringService (Vision-powered: face detection + saliency + classification)
@@ -43,16 +54,30 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
     private init() {}
 
     private static let perAssetTimeoutSeconds: TimeInterval = 30
-    private static let photoConcurrencyLimit = 6
-    private static let videoConcurrencyLimit = 2
+
+    /// Concurrency caps derived from density. Cheaper-per-asset densities can
+    /// parallelize more; heavier densities run fewer concurrently to avoid
+    /// overcommitting the CPU/GPU.
+    private static func concurrencyLimits(for density: ScoringDensity) -> (photo: Int, video: Int) {
+        switch density {
+        case .verySparse, .sparse: return (8, 3)
+        case .balanced:            return (6, 2)
+        case .dense, .veryDense:   return (4, 1)
+        }
+    }
 
     func scorePhotos(
         for project: Project,
         assets: [MediaAsset],
+        density: ScoringDensity = .balanced,
         onProgress: @escaping (Double, String) -> Void
     ) async throws -> PhotoScoringResult {
 
-        scoringLog("▶︎ scorePhotos START — \(assets.count) assets, photoConcurrency=\(Self.photoConcurrencyLimit), videoConcurrency=\(Self.videoConcurrencyLimit), perPhotoTimeout=\(Int(Self.perAssetTimeoutSeconds))s")
+        let limits = Self.concurrencyLimits(for: density)
+        let photoConcurrencyLimit = limits.photo
+        let videoConcurrencyLimit = limits.video
+
+        scoringLog("▶︎ scorePhotos START — \(assets.count) assets, density=\(density.rawValue), photoConcurrency=\(photoConcurrencyLimit), videoConcurrency=\(videoConcurrencyLimit), perPhotoTimeout=\(Int(Self.perAssetTimeoutSeconds))s")
         onProgress(0.05, "Preparing \(assets.count) photos for analysis...")
 
         let total = assets.count
@@ -69,6 +94,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             let motionVector: MotionVector?
             let colorTemperature: Double?
             let faceAreaFraction: Double?
+            let sceneLabels: [String]?
+            let sceneCaption: String?
         }
 
         var results = [IndexedResult?](repeating: nil, count: total)
@@ -85,8 +112,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 while nextIndex < total {
                     let asset = assets[nextIndex]
                     let canLaunch = asset.isVideo
-                        ? inFlightVideos < Self.videoConcurrencyLimit
-                        : inFlightPhotos < Self.photoConcurrencyLimit
+                        ? inFlightVideos < videoConcurrencyLimit
+                        : inFlightPhotos < photoConcurrencyLimit
                     guard canLaunch else { break }
 
                     let i = nextIndex
@@ -95,13 +122,14 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                     scoringLog("   → launch [\(i + 1)/\(total)] \(label) (isVideo=\(isVideo), \(isVideo ? "videos" : "photos") in flight now \(isVideo ? inFlightVideos + 1 : inFlightPhotos + 1))")
                     group.addTask {
                         let startedAt = Date()
-                        let r = await self.analyzeAsset(asset)
+                        let r = await self.analyzeAsset(asset, density: density)
                         let elapsed = Date().timeIntervalSince(startedAt)
                         scoringLog("   ✓ done   [\(i + 1)/\(total)] \(label) in \(String(format: "%.1f", elapsed))s — q=\(String(format: "%.2f", r.quality)) e=\(String(format: "%.2f", r.emotion)) n=\(String(format: "%.2f", r.novelty)) faces=\(r.faces)")
                         return IndexedResult(index: i, quality: r.quality, emotion: r.emotion,
                                             novelty: r.novelty, faces: r.faces, clipStart: r.clipStartTime,
                                             isVideo: isVideo, shotType: r.shotType, motionVector: r.motionVector,
-                                            colorTemperature: r.colorTemperature, faceAreaFraction: r.faceAreaFraction)
+                                            colorTemperature: r.colorTemperature, faceAreaFraction: r.faceAreaFraction,
+                                            sceneLabels: r.sceneLabels, sceneCaption: r.sceneCaption)
                     }
                     onProgress(0.05 + Double(nextIndex) / Double(total) * 0.04,
                                "Starting \(nextIndex + 1)/\(total)…")
@@ -135,6 +163,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[r.index].motionVector     = r.motionVector
             scoredAssets[r.index].colorTemperature = r.colorTemperature
             scoredAssets[r.index].faceAreaFraction = r.faceAreaFraction
+            scoredAssets[r.index].sceneLabels      = r.sceneLabels
+            scoredAssets[r.index].sceneCaption     = r.sceneCaption
             faceCounts[r.index] = r.faces
         }
 
@@ -159,14 +189,16 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     // MARK: - Per-Asset Vision Analysis
 
-    private func analyzeAsset(_ asset: MediaAsset) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, clipStartTime: TimeInterval?, shotType: ShotType?, motionVector: MotionVector?, colorTemperature: Double?, faceAreaFraction: Double?) {
+    private func analyzeAsset(_ asset: MediaAsset, density: ScoringDensity) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, clipStartTime: TimeInterval?, shotType: ShotType?, motionVector: MotionVector?, colorTemperature: Double?, faceAreaFraction: Double?, sceneLabels: [String]?, sceneCaption: String?) {
         if asset.isVideo {
             let result = await VideoAnalysisService.shared.analyzeVideo(
                 assetID: asset.id,
-                targetDuration: 3.0
+                targetDuration: 3.0,
+                density: density
             )
             return (result.quality, result.emotion, result.novelty, result.faces, result.bestStartTime,
-                    result.shotType, result.motionVector, result.colorTemperature, result.faceAreaFraction)
+                    result.shotType, result.motionVector, result.colorTemperature, result.faceAreaFraction,
+                    result.sceneLabels, result.sceneCaption)
         }
 
         let label = asset.filename ?? asset.id
@@ -181,31 +213,60 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             }
 
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            let faceRequest     = VNDetectFaceRectanglesRequest()
-            let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
-            let classifyRequest = VNClassifyImageRequest()
+
+            // Density-tuned Vision request set:
+            //   verySparse/sparse → skip VNClassifyImageRequest (it's the slowest).
+            //   dense/veryDense   → run face rectangles AND face landmarks (heavier, better emotion signal).
+            //   balanced          → rectangles + saliency + classify (original behavior).
+            let faceRectRequest    = VNDetectFaceRectanglesRequest()
+            let faceLandmarksReq   = VNDetectFaceLandmarksRequest()
+            let saliencyRequest    = VNGenerateAttentionBasedSaliencyImageRequest()
+            let classifyRequest    = VNClassifyImageRequest()
+
+            let runClassify = (density == .balanced || density == .dense || density == .veryDense)
+            let runLandmarks = (density == .dense || density == .veryDense)
+
+            var requests: [VNRequest] = [faceRectRequest, saliencyRequest]
+            if runClassify { requests.append(classifyRequest) }
+            if runLandmarks { requests.append(faceLandmarksReq) }
 
             do {
-                try handler.perform([faceRequest, saliencyRequest, classifyRequest])
+                try handler.perform(requests)
             } catch {
                 scoringLog("     [\(label)] Vision perform failed: \(error.localizedDescription) — fallback scores")
                 return self.fallbackScores()
             }
 
-            let faces = faceRequest.results ?? []
+            let rectFaces = faceRectRequest.results ?? []
+            let landmarkFaces = runLandmarks ? (faceLandmarksReq.results ?? []) : []
+            // Prefer landmark observations when available (carry richer confidence).
+            let faces: [VNFaceObservation] = landmarkFaces.isEmpty ? rectFaces : landmarkFaces
             let faceCount = faces.count
             let avgFaceConf: Float = faceCount > 0
                 ? faces.map(\.confidence).reduce(0, +) / Float(faceCount) : 0
 
             let saliencyConf = Float((saliencyRequest.results?.first)?.confidence ?? 0.5)
-            let topLabels    = (classifyRequest.results ?? []).prefix(3)
-            let topConfSum   = topLabels.map { Float($0.confidence) }.reduce(0, +)
+            let classifyResults = runClassify ? (classifyRequest.results ?? []) : []
+            let topConfSum: Float = runClassify
+                ? classifyResults.prefix(3).map { Float($0.confidence) }.reduce(0, +)
+                : 0
+            // Keep the top N labels as human-readable tags for the UI and
+            // for downstream prompt context. We only surface labels whose
+            // confidence clears a floor so we don't leak noise.
+            let sceneLabels: [String] = classifyResults
+                .prefix(5)
+                .filter { $0.confidence > 0.15 }
+                .map(\.identifier)
 
             let quality = min(1.0, saliencyConf * 0.65 + avgFaceConf * 0.2 + 0.15)
             let emotion = faceCount > 0
                 ? min(1.0, 0.45 + Float(faceCount) * 0.15 + avgFaceConf * 0.3)
                 : min(0.72, saliencyConf * 0.5 + 0.2)
-            let novelty = min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
+            // When classify is skipped, default to a neutral novelty so we don't
+            // punish the asset for the missing signal.
+            let novelty: Float = runClassify
+                ? min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
+                : 0.5
 
             let faceAreaFraction: Double? = faces
                 .map { Double($0.boundingBox.width * $0.boundingBox.height) }
@@ -234,7 +295,16 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
 
             let colorTemperature = self.computeColorTemperature(from: cgImage)
 
-            return (quality, emotion, novelty, faceCount, nil, shotType, MotionVector(dx: 0, dy: 0, magnitude: 0), colorTemperature, faceAreaFraction)
+            // Generate a caption via Apple Intelligence if available. The
+            // service is guarded by an 8 s internal timeout and returns nil
+            // gracefully if FoundationModels is unavailable.
+            let sceneCaption: String? = !sceneLabels.isEmpty
+                ? await SceneCaptionService.shared.caption(for: cgImage, sceneLabels: sceneLabels)
+                : nil
+
+            return (quality, emotion, novelty, faceCount, nil, shotType,
+                    MotionVector(dx: 0, dy: 0, magnitude: 0), colorTemperature, faceAreaFraction,
+                    sceneLabels.isEmpty ? nil : sceneLabels, sceneCaption)
         }
     }
 
@@ -261,13 +331,13 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         return min(1.0, max(0.0, 0.5 + (totalR / count - totalB / count) / 255.0))
     }
 
-    private func fallbackScores() -> (Float, Float, Float, Int, TimeInterval?, ShotType?, MotionVector?, Double?, Double?) {
+    private func fallbackScores() -> (Float, Float, Float, Int, TimeInterval?, ShotType?, MotionVector?, Double?, Double?, [String]?, String?) {
         (
             Float.random(in: 0.50...0.88),
             Float.random(in: 0.35...0.78),
             Float.random(in: 0.30...0.75),
             0,
-            nil, nil, nil, nil, nil
+            nil, nil, nil, nil, nil, nil, nil
         )
     }
 

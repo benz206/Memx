@@ -86,6 +86,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var motionVector: MotionVector?
     var colorTemperature: Double?
     var faceAreaFraction: Double?
+    var sceneLabels: [String]?          // Vision VNClassifyImage top-N labels above confidence threshold
+    var sceneCaption: String?           // Natural-language caption from Foundation Models (nil if unavailable)
     var isSelected: Bool = false
 
     // Derived
@@ -130,7 +132,9 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         shotType: ShotType? = nil,
         motionVector: MotionVector? = nil,
         colorTemperature: Double? = nil,
-        faceAreaFraction: Double? = nil
+        faceAreaFraction: Double? = nil,
+        sceneLabels: [String]? = nil,
+        sceneCaption: String? = nil
     ) {
         self.id = id
         self.mediaType = mediaType
@@ -145,6 +149,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         self.motionVector = motionVector
         self.colorTemperature = colorTemperature
         self.faceAreaFraction = faceAreaFraction
+        self.sceneLabels = sceneLabels
+        self.sceneCaption = sceneCaption
     }
 }
 

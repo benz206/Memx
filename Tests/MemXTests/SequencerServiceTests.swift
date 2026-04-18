@@ -338,6 +338,183 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(progressValues.last ?? 0, 0.9)
     }
 
+    // MARK: - preflight
+
+    func testPreflight_returnsShortfall_whenAssetsAreFewerThanSlots() {
+        // Long beatmap with many slots, but only 2 assets → shortfall guaranteed.
+        let beatmap = MockDataProvider.mockBeatmap(duration: 214)
+        var assets = Array(MockDataProvider.mockAssets().prefix(2))
+        for i in assets.indices { assets[i].analysisScore = 0.9 }
+
+        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+
+        XCTAssertTrue(result.hasShortfall, "Expected shortfall with 2 assets and long beatmap")
+        XCTAssertEqual(result.availableClipCount, 2)
+        XCTAssertGreaterThan(result.requiredClipCount, result.availableClipCount)
+        XCTAssertEqual(result.estimatedShortfall, result.requiredClipCount - result.availableClipCount)
+        XCTAssertGreaterThan(result.estimatedShortfallSeconds, 0)
+    }
+
+    func testPreflight_returnsZeroShortfall_whenAssetsExceedSlots() {
+        // Very short beatmap with few slots, 20 assets → no shortfall.
+        let beatmap = MockDataProvider.mockBeatmap(duration: 30)
+        var assets = MockDataProvider.mockAssets()
+        for i in assets.indices { assets[i].analysisScore = 0.9 }
+
+        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+
+        XCTAssertFalse(result.hasShortfall, "Expected no shortfall with 20 assets and 30s beatmap")
+        XCTAssertEqual(result.estimatedShortfall, 0)
+        XCTAssertEqual(result.estimatedShortfallSeconds, 0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(result.availableClipCount, result.requiredClipCount)
+    }
+
+    func testPreflight_fallsBackToAllAssets_whenNoneScoreAboveThreshold() {
+        let beatmap = MockDataProvider.mockBeatmap(duration: 60)
+        var assets = MockDataProvider.mockAssets()
+        for i in assets.indices { assets[i].analysisScore = 0.1 } // all below 0.3
+
+        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+
+        // Pool falls back to all assets when none pass threshold.
+        XCTAssertEqual(result.availableClipCount, assets.count)
+    }
+
+    // MARK: - Hook-aware sequencing
+
+    func testBuildSequenceEmitsHookMomentsWhenBeatmapHasHooks() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+
+        let plan = await sequencer.buildSequence(
+            title: "Hooked",
+            settings: MontageSettings(),
+            assets: assets,
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        let hookItems = plan.sequence.filter(\.isHookMoment)
+        XCTAssertFalse(hookItems.isEmpty, "Expected at least one hook-marked clip")
+    }
+
+    func testBuildSequenceHookReturnReusesFirstOccurrenceAsset() async {
+        // Reproducibility: give every asset a distinct passing score.
+        var assets = MockDataProvider.mockAssets()
+        for i in assets.indices { assets[i].analysisScore = 0.5 + Float(i) * 0.02 }
+
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+        let plan = await sequencer.buildSequence(
+            title: "Dejavu",
+            settings: MontageSettings(),
+            assets: assets,
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        // Collect hook items keyed by (repeatIndex, hookSignatureIndex-from-position).
+        // hookSignatureIndex isn't on the public item but hook items within a
+        // single repeatIndex are emitted in signature order, so we can match
+        // by their ordinal position within each repeatIndex grouping.
+        let byIndex = Dictionary(grouping: plan.sequence.filter(\.isHookMoment)) {
+            $0.hookRepeatIndex ?? -1
+        }
+        guard let first = byIndex[0]?.sorted(by: { $0.startTime < $1.startTime }),
+              let second = byIndex[1]?.sorted(by: { $0.startTime < $1.startTime }),
+              !first.isEmpty, !second.isEmpty else {
+            XCTFail("Expected two hook occurrences in emitted sequence")
+            return
+        }
+
+        // At least one signature-beat position must reuse the same asset ID
+        // between the first and second hook occurrence. (Déjà-vu check.)
+        let minCount = min(first.count, second.count)
+        var matchedAny = false
+        for i in 0..<minCount where first[i].assetID == second[i].assetID {
+            matchedAny = true
+            break
+        }
+        XCTAssertTrue(matchedAny, "Expected the same asset at the same signature-beat position across hook repeats")
+    }
+
+    func testNostalgicVibeProducesLongerClipsThanCinematic() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+
+        let cinematicPlan = await sequencer.buildSequence(
+            title: "C",
+            settings: MontageSettings(vibe: .cinematic),
+            assets: assets,
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+        let nostalgicPlan = await sequencer.buildSequence(
+            title: "N",
+            settings: MontageSettings(vibe: .nostalgic),
+            assets: assets,
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        let cinAvg = cinematicPlan.sequence.map(\.duration).reduce(0, +) / Double(max(cinematicPlan.sequence.count, 1))
+        let nosAvg = nostalgicPlan.sequence.map(\.duration).reduce(0, +) / Double(max(nostalgicPlan.sequence.count, 1))
+        XCTAssertGreaterThan(nosAvg, cinAvg, "Nostalgic avg clip length should exceed cinematic's")
+    }
+
+    // MARK: - MontageSequenceItem Codable (new fields + legacy)
+
+    func testMontageSequenceItemRoundTripsNewFields() throws {
+        let item = MontageSequenceItem(
+            position: 3,
+            assetID: "mock-42",
+            startTime: 10,
+            endTime: 14,
+            transitionIn: .dissolve,
+            transitionOut: .flashWhite,
+            isHookMoment: true,
+            isAnticipationHold: true,
+            hookRepeatIndex: 2,
+            gradingHint: .golden
+        )
+        let data = try JSONEncoder().encode(item)
+        let decoded = try JSONDecoder().decode(MontageSequenceItem.self, from: data)
+        XCTAssertTrue(decoded.isHookMoment)
+        XCTAssertTrue(decoded.isAnticipationHold)
+        XCTAssertEqual(decoded.hookRepeatIndex, 2)
+        XCTAssertEqual(decoded.gradingHint, .golden)
+    }
+
+    func testMontageSequenceItemDecodesLegacyJSON() throws {
+        // Legacy storyboard without any of the new fields.
+        let legacy = """
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "position": 0,
+            "assetID": "legacy-asset",
+            "startTime": 0,
+            "endTime": 3,
+            "transitionIn": "Crossfade",
+            "transitionOut": "Hard Cut",
+            "motionPrompt": "",
+            "motionIntensity": 0.5,
+            "beatAligned": false,
+            "confidenceScore": 0.8,
+            "selectionReason": "",
+            "clipOffset": 0
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(MontageSequenceItem.self, from: legacy)
+        XCTAssertEqual(decoded.assetID, "legacy-asset")
+        XCTAssertFalse(decoded.isHookMoment)
+        XCTAssertFalse(decoded.isAnticipationHold)
+        XCTAssertNil(decoded.hookRepeatIndex)
+        XCTAssertNil(decoded.gradingHint)
+    }
+
     // MARK: - buildSequence: confidence scores
 
     func testBuildSequenceConfidenceScoresAreSet() async {

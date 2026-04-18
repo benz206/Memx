@@ -1,9 +1,9 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "MemX",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     targets: [
         .target(
             name: "MemXCore",
@@ -20,5 +20,6 @@ let package = Package(
             dependencies: ["MemXCore"],
             path: "Tests/MemXTests"
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
