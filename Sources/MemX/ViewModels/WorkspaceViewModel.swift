@@ -98,6 +98,11 @@ final class WorkspaceViewModel {
         self.processingStatus = ProcessingStatus(projectID: project.id)
         self.songTrack = project.songTrack
 
+        // Restore exported video URL if the file still exists on disk
+        if let url = project.exportedVideoURL, FileManager.default.fileExists(atPath: url.path) {
+            self.renderedVideoURL = url
+        }
+
         // Hydrate existing plan if present
         if let plan = project.montagePlan {
             self.montagePlan = plan
@@ -112,10 +117,13 @@ final class WorkspaceViewModel {
         let filename = url.deletingPathExtension().lastPathComponent
         let format = url.pathExtension.lowercased()
 
+        // Copy song into App Support so the reference stays valid if the original is moved
+        let resolvedURL = copySongToAppSupport(from: url) ?? url
+
         let track = SongTrack(
             title: filename,
             artist: nil,
-            fileURL: url,
+            fileURL: resolvedURL,
             durationSeconds: 0,  // filled by beatmap analysis
             fileFormat: format
         )
@@ -207,6 +215,15 @@ final class WorkspaceViewModel {
     }
 
     func generateAllMotionPrompts() async {
+        guard !assets.isEmpty, !isProcessing else { return }
+
+        // Score photos first if none have been scored yet (required for energy-mapped prompts
+        // and to populate clipStartTime on video assets before prompt generation).
+        if !hasScoredAssets {
+            await scorePhotos()
+            guard !isProcessing else { return }  // guard against error leaving isProcessing = true
+        }
+
         guard !assets.isEmpty, !isProcessing else { return }
         isProcessing = true
         processingStatus.phase = .generatingPrompts
@@ -324,7 +341,7 @@ final class WorkspaceViewModel {
         logger.info("Render started: \(plan.sequence.count) clips, song=\(song.fileURL.lastPathComponent)")
 
         do {
-            let url = try await renderService.render(
+            let tempURL = try await renderService.render(
                 plan: plan,
                 songURL: song.fileURL,
                 assets: assets
@@ -334,10 +351,13 @@ final class WorkspaceViewModel {
                     self?.renderProgressMessage = msg
                 }
             }
-            renderedVideoURL = url
+            // Move from temp to a persistent App Support location
+            let persistentURL = persistExport(from: tempURL)
+            renderedVideoURL = persistentURL
+            project.exportedVideoURL = persistentURL
             project.status = .exported
             appVM.updateProject(project)
-            logger.info("Render complete: \(url.lastPathComponent)")
+            logger.info("Render complete: \(persistentURL.lastPathComponent)")
         } catch {
             logger.error("Render failed: \(error.localizedDescription)")
             renderError = error.localizedDescription
@@ -417,6 +437,59 @@ final class WorkspaceViewModel {
         if let t = transitionOut { montagePlan?.sequence[idx].transitionOut = t }
     }
 
+    // MARK: - Export Management
+
+    func deleteExport() {
+        if let url = renderedVideoURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        renderedVideoURL = nil
+        project.exportedVideoURL = nil
+        if project.status == .exported { project.status = .ready }
+        appVM.updateProject(project)
+    }
+
+    // MARK: - File Helpers (App Support)
+
+    private func appSupportDirectory() -> URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return dir.appendingPathComponent("MemX", isDirectory: true)
+    }
+
+    private func copySongToAppSupport(from url: URL) -> URL? {
+        guard let base = appSupportDirectory() else { return nil }
+        let dest = base.appendingPathComponent("Songs/\(project.id.uuidString)", isDirectory: true)
+        let destFile = dest.appendingPathComponent(url.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destFile.path) {
+                try FileManager.default.removeItem(at: destFile)
+            }
+            try FileManager.default.copyItem(at: url, to: destFile)
+            return destFile
+        } catch {
+            logger.warning("Could not copy song to App Support: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func persistExport(from tempURL: URL) -> URL {
+        guard let base = appSupportDirectory() else { return tempURL }
+        let dest = base.appendingPathComponent("Exports", isDirectory: true)
+        let destFile = dest.appendingPathComponent("\(project.id.uuidString).mp4")
+        do {
+            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destFile.path) {
+                try FileManager.default.removeItem(at: destFile)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destFile)
+            return destFile
+        } catch {
+            logger.warning("Could not persist export to App Support: \(error.localizedDescription)")
+            return tempURL
+        }
+    }
+
     // MARK: - Computed
 
     var totalAssetCount: Int { assets.count }
@@ -426,6 +499,7 @@ final class WorkspaceViewModel {
     var hasBeatmap: Bool { beatmap != nil }
     var hasMotionPrompts: Bool { motionPrompts.contains { $0.status == .ready || $0.status == .edited } }
     var readyPromptCount: Int { motionPrompts.filter { $0.status == .ready || $0.status == .edited }.count }
+    var hasScoredAssets: Bool { assets.contains { $0.analysisScore != nil } }
     var canRunPipeline: Bool { !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
 }

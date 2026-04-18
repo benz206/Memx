@@ -58,12 +58,9 @@ struct LandingView: View {
                     }
                     .scaleEffect(appeared ? 1 : 0.9)
 
-                    Button("View Projects") {
+                    MSSecondaryButton("View Projects", icon: "folder") {
                         appVM.showProjects()
                     }
-                    .buttonStyle(.plain)
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
                 }
                 .opacity(appeared ? 1 : 0)
 

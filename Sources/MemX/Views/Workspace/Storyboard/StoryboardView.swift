@@ -318,16 +318,26 @@ struct StoryboardContentView: View {
                     }
                 }
             } else if let videoURL = workspaceVM.renderedVideoURL {
-                HStack(spacing: MS.Spacing.sm) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Render complete").font(MS.Font.caption).fontWeight(.semibold)
-                        Text(videoURL.lastPathComponent).font(MS.Font.micro).foregroundStyle(.secondary).lineLimit(1)
+                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                    HStack(spacing: MS.Spacing.sm) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Export ready").font(MS.Font.caption).fontWeight(.semibold)
+                            Text(videoURL.lastPathComponent).font(MS.Font.micro).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        MSPrimaryButton("Delete", icon: "trash", isDestructive: true) {
+                            workspaceVM.deleteExport()
+                        }
                     }
-                    Spacer()
-                    MSSecondaryButton("Show in Finder", icon: "folder") {
-                        NSWorkspace.shared.selectFile(videoURL.path, inFileViewerRootedAtPath: "")
+                    HStack(spacing: MS.Spacing.sm) {
+                        MSSecondaryButton("Open", icon: "play.circle") {
+                            NSWorkspace.shared.open(videoURL)
+                        }
+                        MSSecondaryButton("Show in Finder", icon: "folder") {
+                            NSWorkspace.shared.selectFile(videoURL.path, inFileViewerRootedAtPath: "")
+                        }
+                        Spacer()
                     }
                 }
                 .padding(MS.Spacing.sm)

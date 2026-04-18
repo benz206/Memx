@@ -54,42 +54,70 @@ struct ImportView: View {
                 .padding(.top, MS.Spacing.md)
                 .padding(.bottom, MS.Spacing.xs)
 
-            List(selection: $selectedAlbum) {
-                // Recents
-                Label("Recents", systemImage: "clock.fill")
-                    .font(MS.Font.body)
-                    .tag(Optional<MSAlbum>.none)
+            List {
+                // Recents row
+                albumRow(
+                    label: "Recents",
+                    icon: "clock.fill",
+                    count: importVM.recentAssets.count,
+                    isSelected: selectedAlbum == nil
+                ) {
+                    selectAlbum(nil)
+                }
 
                 if importVM.isLoadingAlbums {
                     ForEach(0..<5, id: \.self) { _ in
-                        MSSkeletonBlock(height: 14)
-                            .padding(.leading, 8)
+                        MSSkeletonBlock(height: 14).padding(.leading, 8)
                     }
                 } else {
                     ForEach(importVM.albums) { album in
-                        Label {
-                            HStack {
-                                Text(album.title)
-                                    .lineLimit(1)
-                                Spacer()
-                                Text("\(album.count)")
-                                    .font(MS.Font.micro)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: album.type.icon)
+                        albumRow(
+                            label: album.title,
+                            icon: album.type.icon,
+                            count: album.count,
+                            isSelected: selectedAlbum == album
+                        ) {
+                            selectAlbum(album)
                         }
-                        .font(MS.Font.body)
-                        .tag(Optional(album))
                     }
                 }
             }
             .listStyle(.sidebar)
         }
         .frame(width: 200)
-        .onChange(of: selectedAlbum) { _, album in
-            Task { await importVM.selectAlbum(album) }
+    }
+
+    private func selectAlbum(_ album: MSAlbum?) {
+        selectedAlbum = album
+        Task { await importVM.selectAlbum(album) }
+    }
+
+    private func albumRow(label: String, icon: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .frame(width: 16)
+            Text(label)
+                .font(MS.Font.body)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .lineLimit(1)
+            Spacer()
+            Text("\(count)")
+                .font(MS.Font.micro)
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, MS.Spacing.sm)
+        .padding(.vertical, 5)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { action() }
+        .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     // MARK: - Toolbar
@@ -148,16 +176,8 @@ struct ImportView: View {
                 Text("\(importVM.selectionCount) selected")
                     .font(MS.Font.caption)
                     .foregroundStyle(.secondary)
-
-                Button("Select All") { importVM.selectAll() }
-                    .buttonStyle(.plain)
-                    .font(MS.Font.caption)
-                    .foregroundStyle(Color.accentColor)
-
-                Button("Deselect All") { importVM.deselectAll() }
-                    .buttonStyle(.plain)
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
+                MSSecondaryButton("All") { importVM.selectAll() }
+                MSSecondaryButton("None") { importVM.deselectAll() }
             }
         }
         .padding(.horizontal, MS.Spacing.md)

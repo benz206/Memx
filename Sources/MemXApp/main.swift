@@ -1,0 +1,2 @@
+import MemXCore
+MemXApp.main()

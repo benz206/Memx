@@ -99,15 +99,22 @@ struct MotionPromptsView: View {
                 .padding(.bottom, MS.Spacing.xs)
             }
 
-            // Generate all button
+            // Generate all button — label reflects actual processing phase
+            let phaseLabel: String = {
+                if workspaceVM.processingStatus.phase == .scoringPhotos { return "Scoring photos..." }
+                if workspaceVM.processingStatus.phase == .generatingPrompts { return "Generating..." }
+                if workspaceVM.isProcessing { return "Processing..." }
+                if !workspaceVM.hasBeatmap { return "Import a song first" }
+                return "Generate All Prompts"
+            }()
             MSPrimaryButton(
-                workspaceVM.isProcessing ? "Generating..." : "Generate All Prompts",
+                phaseLabel,
                 icon: workspaceVM.isProcessing ? nil : "sparkles",
                 isLoading: workspaceVM.isProcessing
             ) {
                 Task { await workspaceVM.generateAllMotionPrompts() }
             }
-            .disabled(workspaceVM.assets.isEmpty || workspaceVM.isProcessing)
+            .disabled(workspaceVM.assets.isEmpty || workspaceVM.isProcessing || !workspaceVM.hasBeatmap)
             .padding(MS.Spacing.md)
         }
         .background(.regularMaterial)
@@ -136,7 +143,7 @@ struct MotionPromptsView: View {
                 MSPrimaryButton("Build Storyboard", icon: "film.stack.fill") {
                     Task { await workspaceVM.buildSequence() }
                 }
-                .disabled(workspaceVM.isProcessing || workspaceVM.isGeneratingPlan)
+                .disabled(workspaceVM.isProcessing || workspaceVM.isGeneratingPlan || !workspaceVM.hasBeatmap)
             }
         }
         .padding(.horizontal, MS.Spacing.md)
@@ -184,7 +191,7 @@ struct MotionPromptsView: View {
             MSPrimaryButton("Generate All Prompts", icon: "sparkles") {
                 Task { await workspaceVM.generateAllMotionPrompts() }
             }
-            .disabled(workspaceVM.isProcessing)
+            .disabled(workspaceVM.isProcessing || !workspaceVM.hasBeatmap)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(MS.Spacing.xl)
@@ -293,16 +300,9 @@ struct MotionPromptCard: View {
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
 
                     HStack(spacing: MS.Spacing.sm) {
-                        Button("Cancel") {
-                            isEditing = false
-                        }
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-
+                        MSSecondaryButton("Cancel") { isEditing = false }
                         Spacer()
-
-                        MSSecondaryButton("Save") {
+                        MSPrimaryButton("Save") {
                             if let p = prompt {
                                 workspaceVM.setMotionPromptEdited(id: p.id, text: editText)
                             }
@@ -317,13 +317,10 @@ struct MotionPromptCard: View {
                     .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button("Edit") {
+                MSSecondaryButton("Edit", icon: "pencil") {
                     editText = prompt?.prompt ?? ""
                     isEditing = true
                 }
-                .font(MS.Font.micro)
-                .foregroundStyle(Color.accentColor)
-                .buttonStyle(.plain)
             }
         }
         .msCard()

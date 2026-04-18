@@ -11,6 +11,14 @@ struct Beatmap: Codable, Hashable {
     var drops: [BeatMoment]
     var vocalPeaks: [BeatMoment]
 
+    /// Duration of one beat in seconds
+    var beatDuration: Double { 60.0 / max(bpm, 1) }
+
+    /// Bar start timestamps, assuming 4/4 time (every 4 beats)
+    func barStarts(beatsPerBar: Int = 4) -> [Double] {
+        stride(from: 0, to: beats.count, by: beatsPerBar).map { beats[$0] }
+    }
+
     /// Nearest beat timestamp to a given time
     func nearestBeat(to time: Double) -> Double {
         beats.min(by: { abs($0 - time) < abs($1 - time) }) ?? time

@@ -58,10 +58,25 @@ final class AppViewModel {
     }
 
     func deleteProject(_ project: Project) {
+        cleanUpProjectFiles(project)
         projects.removeAll { $0.id == project.id }
         saveProjects()
         if case .workspace(let current) = navigationState, current.id == project.id {
             navigationState = .projects
+        }
+    }
+
+    private func cleanUpProjectFiles(_ project: Project) {
+        let fm = FileManager.default
+        // Exported video
+        if let videoURL = project.exportedVideoURL {
+            try? fm.removeItem(at: videoURL)
+        }
+        // Copied song + any other project files under App Support/MemX/Songs/{id}/
+        if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let memxBase = base.appendingPathComponent("MemX")
+            let songDir = memxBase.appendingPathComponent("Songs/\(project.id.uuidString)")
+            try? fm.removeItem(at: songDir)
         }
     }
 

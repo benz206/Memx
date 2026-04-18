@@ -29,6 +29,7 @@ enum MS {
         static var displayMedium: SwiftUI.Font { .system(size: 30, weight: .bold, design: .rounded) }
         static var title: SwiftUI.Font         { .system(size: 22, weight: .semibold, design: .rounded) }
         static var heading: SwiftUI.Font       { .system(size: 17, weight: .semibold, design: .rounded) }
+        static var button: SwiftUI.Font        { .system(size: 13, weight: .semibold, design: .rounded) }
         static var body: SwiftUI.Font          { .system(size: 14, weight: .regular, design: .default) }
         static var caption: SwiftUI.Font       { .system(size: 12, weight: .regular, design: .default) }
         static var micro: SwiftUI.Font         { .system(size: 10, weight: .medium, design: .monospaced) }
@@ -98,19 +99,19 @@ struct MSPrimaryButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 if isLoading {
                     ProgressView().controlSize(.small).tint(.white)
                 } else if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 Text(title)
-                    .font(MS.Font.heading)
+                    .font(MS.Font.button)
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, MS.Spacing.lg)
-            .padding(.vertical, MS.Spacing.sm + 2)
+            .padding(.horizontal, MS.Spacing.md)
+            .padding(.vertical, 7)
             .background(
                 isDestructive
                     ? Color.red.gradient
@@ -138,17 +139,17 @@ struct MSSecondaryButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                 }
                 Text(title)
-                    .font(MS.Font.heading)
+                    .font(MS.Font.button)
             }
             .foregroundStyle(.primary)
-            .padding(.horizontal, MS.Spacing.md)
-            .padding(.vertical, MS.Spacing.sm + 2)
+            .padding(.horizontal, MS.Spacing.sm + 4)
+            .padding(.vertical, 7)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous))
         }
         .buttonStyle(.plain)

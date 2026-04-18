@@ -5,12 +5,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Run
 
 ```bash
-swift build                    # Build the package
-swift run MemX                 # Run the app
-swift test                     # Run tests (none yet)
+swift build                                          # Build the package
+swift run MemX                                       # Run the app
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # Run tests
 ```
 
+`swift test` must be prefixed with `DEVELOPER_DIR` because XCTest is only available from Xcode, not Command Line Tools.
+
 The app is opened in Xcode via the `.swiftpm` wrapper. No external dependencies — only Apple frameworks (Photos, PhotosUI, AVFoundation, AppKit, SwiftUI).
+
+## Package Structure
+
+The package has three targets:
+- **`MemXCore`** (`Sources/MemX/`) — library with all models, services, views, and ViewModels
+- **`MemX`** (`Sources/MemXApp/`) — thin executable that calls `MemXApp.main()`
+- **`MemXTests`** (`Tests/MemXTests/`) — XCTest suite (192 tests)
 
 ## What This Is
 

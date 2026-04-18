@@ -1,11 +1,12 @@
 import SwiftUI
 import Photos
 
-@main
-struct MemXApp: App {
+public struct MemXApp: App {
     @State private var appViewModel = AppViewModel()
 
-    var body: some Scene {
+    public init() {}
+
+    public var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appViewModel)

@@ -12,6 +12,7 @@ struct Project: Identifiable, Codable, Hashable {
     var status: ProjectStatus
     var songTrack: SongTrack?
     var montagePlan: MontagePlan?
+    var exportedVideoURL: URL?
 
     init(
         id: UUID = UUID(),

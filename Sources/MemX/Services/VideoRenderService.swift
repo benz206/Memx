@@ -50,9 +50,13 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             let clipDuration = CMTime(seconds: item.duration, preferredTimescale: timescale)
 
             let url: URL
-            if let asset = assetMap[item.assetID], asset.isVideo,
-               let videoURL = try? await exportVideoClip(assetID: item.assetID, startTime: item.clipOffset, duration: item.duration) {
-                url = videoURL
+            if let asset = assetMap[item.assetID], asset.isVideo {
+                do {
+                    url = try await exportVideoClip(assetID: item.assetID, startTime: item.clipOffset, duration: item.duration)
+                } catch {
+                    logger.warning("Video export failed for \(item.assetID), falling back to thumbnail: \(error)")
+                    url = try await exportPhotoClip(assetID: item.assetID, duration: clipDuration)
+                }
             } else {
                 url = try await exportPhotoClip(assetID: item.assetID, duration: clipDuration)
             }
@@ -79,10 +83,18 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         for (clipURL, item) in zip(clipURLs, sequence) {
             let clipAsset   = AVURLAsset(url: clipURL)
             let clipDuration = CMTime(seconds: item.duration, preferredTimescale: timescale)
-            guard let srcTrack = try? await clipAsset.loadTracks(withMediaType: .video).first else { continue }
+            guard let srcTrack = try? await clipAsset.loadTracks(withMediaType: .video).first else {
+                logger.error("No video track in exported clip for asset \(item.assetID) — inserting gap")
+                insertTime = CMTimeAdd(insertTime, clipDuration)
+                continue
+            }
             let assetDur = (try? await clipAsset.load(.duration)) ?? clipDuration
             let range = CMTimeRange(start: .zero, duration: min(clipDuration, assetDur))
-            try? videoTrack.insertTimeRange(range, of: srcTrack, at: insertTime)
+            do {
+                try videoTrack.insertTimeRange(range, of: srcTrack, at: insertTime)
+            } catch {
+                logger.error("insertTimeRange failed for asset \(item.assetID): \(error)")
+            }
             insertTime = CMTimeAdd(insertTime, min(clipDuration, assetDur))
         }
 
@@ -237,7 +249,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
     private func fetchCGImageFromPhotos(assetID: String) async -> CGImage? {
         let results = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-        guard let phAsset = results.firstObject, phAsset.mediaType == .image else { return nil }
+        guard let phAsset = results.firstObject else { return nil }
 
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat

@@ -3,7 +3,6 @@ import SwiftUI
 struct ProjectsView: View {
     @Environment(AppViewModel.self) private var appVM
     @State private var showNewProjectSheet = false
-    @State private var newProjectTitle = ""
     @State private var searchText = ""
     @State private var projectToDelete: Project? = nil
 
@@ -41,7 +40,6 @@ struct ProjectsView: View {
                         .help("Back to Home")
 
                         MSPrimaryButton("New Project", icon: "plus") {
-                            newProjectTitle = ""
                             showNewProjectSheet = true
                         }
                     }
@@ -92,13 +90,25 @@ struct ProjectsView: View {
                     }
                 }
             }
+
+            if showNewProjectSheet {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture { showNewProjectSheet = false }
+
+                NewProjectSheet(isPresented: $showNewProjectSheet)
+                    .msCard()
+                    .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
         }
-        .sheet(isPresented: $showNewProjectSheet) {
-            newProjectSheet
-        }
+        .animation(.easeOut(duration: 0.18), value: showNewProjectSheet)
         .confirmationDialog(
             "Delete \"\(projectToDelete?.title ?? "")\"?",
-            isPresented: .constant(projectToDelete != nil),
+            isPresented: Binding(
+                get: { projectToDelete != nil },
+                set: { if !$0 { projectToDelete = nil } }
+            ),
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
@@ -111,9 +121,16 @@ struct ProjectsView: View {
         }
     }
 
-    // MARK: - New Project Sheet
+}
 
-    private var newProjectSheet: some View {
+// MARK: - New Project Sheet
+
+private struct NewProjectSheet: View {
+    @Environment(AppViewModel.self) private var appVM
+    @Binding var isPresented: Bool
+    @State private var title = ""
+
+    var body: some View {
         VStack(spacing: MS.Spacing.lg) {
             Text("New Project")
                 .font(MS.Font.title)
@@ -122,16 +139,16 @@ struct ProjectsView: View {
                 Text("Project Title")
                     .font(MS.Font.caption)
                     .foregroundStyle(.secondary)
-                TextField("e.g. Summer in Lisbon", text: $newProjectTitle)
+                TextField("e.g. Summer in Lisbon", text: $title)
                     .textFieldStyle(.roundedBorder)
                     .font(MS.Font.body)
             }
 
             HStack(spacing: MS.Spacing.sm) {
-                MSSecondaryButton("Cancel") { showNewProjectSheet = false }
+                MSSecondaryButton("Cancel") { isPresented = false }
                 MSPrimaryButton("Create", icon: "sparkles") {
-                    appVM.createProject(title: newProjectTitle.isEmpty ? "New Project" : newProjectTitle)
-                    showNewProjectSheet = false
+                    appVM.createProject(title: title.isEmpty ? "New Project" : title)
+                    isPresented = false
                 }
             }
         }

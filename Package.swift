@@ -5,9 +5,19 @@ let package = Package(
     name: "MemX",
     platforms: [.macOS(.v14)],
     targets: [
+        .target(
+            name: "MemXCore",
+            path: "Sources/MemX"
+        ),
         .executableTarget(
             name: "MemX",
-            path: "Sources/MemX"
+            dependencies: ["MemXCore"],
+            path: "Sources/MemXApp"
+        ),
+        .testTarget(
+            name: "MemXTests",
+            dependencies: ["MemXCore"],
+            path: "Tests/MemXTests"
         )
     ]
 )
