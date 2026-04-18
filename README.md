@@ -1,31 +1,27 @@
 # MemX
 
-A macOS 14+ SwiftUI app that turns your Photos library into a cinematic memory montage. All processing runs on-device — no cloud, no subscriptions.
+A macOS 14+ SwiftUI app that turns your Photos library into a cinematic memory montage, beat-synced to a song. Analysis, scoring, motion planning, and render all run on-device by default. Optional AI motion prompts via Anthropic Claude are strictly opt-in and off out of the box.
 
-Import photos and videos, let the AI pipeline analyze and cluster them into narrative events, then get a scored storyboard with transitions and a matched soundtrack. The AI layer is fully mocked today and ready to be wired to real on-device models.
+The pipeline is four tabs, in order: **Song → Photos → Motion → Storyboard**. Drop in an audio file, pick your photos, run the pipeline, render an MP4.
 
 ---
 
-## Status
+## Highlights
 
-| Layer | Status |
-|---|---|
-| Photos import + album browsing | Working |
-| Mock analysis pipeline (8 phases) | Working |
-| Storyboard assembly + mood arc | Working |
-| Song matching (mock catalog) | Working |
-| Core ML scene detection | Not yet — see [AI Setup](#ai-setup) |
-| Vision embeddings + clustering | Not yet — see [AI Setup](#ai-setup) |
-| MusicKit integration | Not yet — see [AI Setup](#ai-setup) |
-| AVFoundation render + export | Not yet — see [AI Setup](#ai-setup) |
+- **Real on-device analysis** — Vision face/saliency/classify, `vDSP` autocorrelation BPM, AVFoundation frame scoring. No mock fallbacks behind the hood.
+- **Beat-synced sequencing** — song energy arc, section detection, onset grid, and mood arc drive clip duration, ordering, and transition choice.
+- **Real render** — `AVMutableComposition` + `AVAssetExportSession` produces an actual MP4 at the end. Song is mixed in; clips are exported, stitched, and persisted.
+- **Privacy first** — nothing leaves your Mac unless you flip the "Enable Anthropic motion prompts" toggle in Privacy Settings. The API key lives in Keychain, not `UserDefaults`.
+- **Non-blocking UI** — every service is `nonisolated` (no default `@MainActor` isolation) and heavy work runs in bounded `TaskGroup`s. You can cancel mid-pipeline and mid-render.
+- **Project persistence** — projects are JSON-serialized to `~/Library/Application Support/MemX/projects.json` with atomic writes, and `PHAsset` references are restored when you reopen a project.
 
 ---
 
 ## Requirements
 
 - macOS 14.0 (Sonoma) or later
-- Xcode 15.2 or later
-- Swift 5.9+
+- Xcode 15.2+ / Swift 5.9+
+- Photos library access (the app runs with mock data if denied, for simulator/dev work)
 
 ---
 
@@ -38,9 +34,122 @@ swift build
 swift run MemX
 ```
 
-Or open `Package.swift` directly in Xcode — it auto-generates the `.swiftpm` workspace. Press `Cmd+R`.
+Or open `Package.swift` directly in Xcode and press `Cmd+R`. `swift test` requires `DEVELOPER_DIR` so XCTest resolves:
 
-On first launch the app requests Photos access and falls back to mock data if denied, so it works in the simulator or without a real library.
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # 192 tests
+```
+
+---
+
+## The Pipeline
+
+```
+   Song import            Photo import           Motion prompts        Storyboard + render
+┌──────────────────┐   ┌──────────────────┐   ┌───────────────────┐  ┌─────────────────────┐
+│ AVAudioFile      │   │ PhotosPicker +   │   │ Per-asset prompt  │  │ SequencerService    │
+│ stream → mono    │   │ PHCachingImage-  │   │ (local heuristic  │  │ builds beat-aligned │
+│ 22.05 kHz        │   │ Manager          │   │ or Claude opt-in) │  │ sequence            │
+│                  │   │                  │   │                   │  │                     │
+│ vDSP autocorr    │   │ Vision: face,    │   │ energy-aware text │  │ AVMutableComposition│
+│ BPM detection    │   │ saliency,        │   │ describing motion │  │ + AVAssetExport-    │
+│                  │   │ classify         │   │ per clip          │  │ Session → .mp4      │
+│ Onset + section  │   │                  │   │                   │  │                     │
+│ detection        │   │ Bounded Task-    │   │ Exponential       │  │ Mood arc drives     │
+│                  │   │ Group (6-way)    │   │ backoff on 429    │  │ transitions + dur.  │
+└──────────────────┘   └──────────────────┘   └───────────────────┘  └─────────────────────┘
+   BeatmapService         PhotoScoringService    MotionPromptService   SequencerService +
+                          VideoAnalysisService                         VideoRenderService
+```
+
+Every phase reports progress through a callback, and every long-running phase is cancellable via a "Cancel" button in the sidebar footer.
+
+---
+
+## What's Under the Hood
+
+### Audio analysis (`BeatmapService`)
+
+- Streams source audio in **5-second windows** into an `AVAudioConverter` retargeted to **mono 22.05 kHz** — no more loading whole 10-minute tracks into RAM.
+- `@preconcurrency import AVFoundation` so `AVAudioPCMBuffer` can cross the converter's `@Sendable` callback without warnings.
+- BPM via `vDSP_vadd`/`vDSP_vsdiv` + autocorrelation on the mel-energy envelope.
+- Onset detection, section clustering, and mood arc built in a **single O(n) two-pointer sweep** (previously O(n²) per-block filter).
+
+### Photo scoring (`PhotoScoringService`)
+
+- Vision requests per asset: `VNDetectFaceRectanglesRequest`, `VNGenerateAttentionBasedSaliencyImageRequest`, `VNClassifyImageRequest`.
+- Runs in a **`withThrowingTaskGroup` bounded at 6 concurrent** per-asset analyses; preserves input order via an indexed result struct.
+- Per-task "Starting N/total…" progress ticks so the bar never looks stuck while iCloud photos fetch.
+- Fetches at **384 px `.opportunistic`** with a `resumed` guard that resolves on the non-degraded callback — fast enough for Vision, cheap enough for iCloud.
+
+### Video analysis (`VideoAnalysisService`)
+
+- Replaces deprecated `copyCGImage(at:actualTime:)` with `AVAssetImageGenerator.images(for:)` (AsyncSequence).
+- Frames batched 6-wide, each batch runs the 3 Vision requests with `async let`.
+
+### Motion prompts (`MotionPromptService`)
+
+- Local heuristic prompt generator runs on-device by default.
+- Optional Anthropic Claude path is **guarded by `PrivacyPreferences.allowAnthropicUploads`** — off by default. If the guard trips it throws `MotionPromptError.networkUploadsDisabled` before any data leaves the machine.
+- When enabled: images are pre-scaled to ≤512 px, base64-encoded, and sent with **exponential backoff (1s → 30s, max 4 retries)** that honors `Retry-After` headers on 429/5xx.
+- API key is stored in the **Keychain** (`kSecClassGenericPassword`, service `com.memx.anthropic`). Any legacy key in `UserDefaults` is migrated to Keychain on first access.
+
+### Sequencer + render (`SequencerService`, `VideoRenderService`)
+
+- Sequencer groups candidates by event, picks top-3 per event to preserve the emotional arc, and adjusts clip durations against pacing + score (`>0.85` → +40%, `<0.55` → −30%).
+- Render uses `AVMutableComposition.insertTimeRange` for each clip, attaches the audio track, and exports through `AVAssetExportSession`.
+- Clip exports run in a **`TaskGroup` capped at 3 concurrent** (memory pressure from H.264 encoders is the real constraint).
+
+### PhotoKit layer (`PhotosLibraryService`)
+
+- `actor PHAssetCache` dedupes `PHAsset.fetchAssets(withLocalIdentifiers:)` calls across the app. A 300-asset project used to issue ~1500 PhotoKit fetches; now it's roughly one per distinct ID.
+- `resolveAssets(for:)` batch-rehydrates a project's saved `assetIDs` back into `MediaAsset`s on workspace open — your photos come back when you reopen a project.
+- `NSCache<NSString, NSImage>` thumbnail cache with a **256 MB `totalCostLimit`** (cost = `width × height × 4`). Was previously unbounded, could hit ~1.3 GB on a large library.
+- Thumbnail fetch uses `.highQualityFormat` + `.exact` for crisp grid tiles; scoring uses `.opportunistic` + `.fast` for speed.
+- All temp files are prefixed `memx-<uuid>.<ext>` and reaped by `cleanupTemporaryFiles()` on app launch and project close.
+
+### Persistence (`ProjectStore`)
+
+- Projects live as JSON at `~/Library/Application Support/MemX/projects.json` with atomic writes and ISO-8601 dates.
+- One-shot migration on first launch: any legacy `UserDefaults.standard.data(forKey: "ms_projects")` is decoded, saved to disk, and the key is removed.
+- `UserDefaults` is documented for <1 MB — a project with 300 clips + mood arc is well past that, so file-based storage is the right home.
+
+### Concurrency model
+
+- `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is **off**. Every service is `final class` with no implicit main-actor isolation, so Vision/AV/vDSP work never blocks the main thread.
+- `ThumbnailCache` is the one `@MainActor` type, because it's UI-adjacent.
+- Pipeline and render each own a `Task` handle; `cancelPipeline()` propagates through `Task.checkCancellation()` in every inner loop.
+
+---
+
+## UX & Flow
+
+- **Privacy Settings** — a Toggle + `SecureField` (Keychain-backed) lives behind a gear icon on the Landing view and in the app menu. Documents exactly what is transmitted.
+- **Step gating** — sidebar shows `checkmark.circle.fill` for completed steps, `circle.dotted` for the active one, `lock.fill` for unreachable. Navigating is never blocked; the lock is a cue, not a barrier.
+- **Persistent pipeline runner** — "Run Pipeline" lives in the sidebar footer on every tab once `hasSong && !assets.isEmpty`, with a matching "Cancel" when a task is in flight.
+- **Honest render steps** — the progress list shows what actually runs (clip stitch, audio attach, `AVAssetExportSession`). Planned items are tagged "Coming soon" instead of lying.
+- **Confirmations** — "Replace existing render?" for re-render, "Leave project? Current pipeline will be cancelled." for back-nav during work, destructive delete moved behind a `⋯` menu with confirmationDialog.
+- **Banners** — Photos-denied banner if authorization is missing; missing-assets banner if a reopened project's `PHAsset`s no longer exist; picker-error notice if a PhotosPicker ID can't be resolved.
+- **Asset restore** — reopening a project re-hydrates all `PHAsset`s via a single batched fetch. If some are genuinely gone, the banner surfaces; we never silently swap in mock photos.
+
+---
+
+## Security & Sandbox
+
+Entitlements (`Resources/MemX.entitlements`):
+
+```
+com.apple.security.app-sandbox                               true
+com.apple.security.network.client                            true   # Claude (opt-in)
+com.apple.security.files.user-selected.read-write            true   # NSSavePanel + drag-drop
+com.apple.security.personal-information.photos-library       true
+com.apple.security.device.audio-input                        true   # future mic support
+```
+
+- API keys in **Keychain**, never `UserDefaults`.
+- Claude calls **throw before the network request** unless the user has opted in.
+- Drag-dropped audio files wrap their `FileManager.copyItem` with `startAccessingSecurityScopedResource()` / `stop…`.
+- App Sandbox + Hardened Runtime are both on for the Xcode target. (The `swift run` CLI binary is unsigned and dev-only; use Xcode for signed builds.)
 
 ---
 
@@ -49,51 +158,25 @@ On first launch the app requests Photos access and falls back to mock data if de
 ```
 MemXApp  →  ContentView
               ↓
-         AppViewModel          (global nav, project list, persistence)
+         AppViewModel         (global nav, project list, ProjectStore)
               ↓
-         WorkspaceViewModel    (per-project: assets, analysis, storyboard)
-         ImportViewModel       (album picker, PhotosPicker integration)
+         WorkspaceViewModel   (per-project: assets, pipeline, render, cancellation)
+         ImportViewModel      (album picker, PhotosPicker, filtered grid)
               ↓
-         AnalysisService       ← plug Core ML here
-         MontagePlannerService ← storyboard assembly logic
-         MusicSuggestionService← plug MusicKit here
-         PhotosLibraryService  ← real PhotoKit (exportAssetForProcessing ready)
+         PhotosLibraryService    PhotoKit + PHAssetCache actor + ThumbnailCache NSCache
+         BeatmapService          Streamed mono 22 kHz + vDSP BPM + onset/section
+         PhotoScoringService     Vision face/saliency/classify (6-way TaskGroup)
+         VideoAnalysisService    AsyncSequence frames + parallel Vision
+         MotionPromptService     Local + opt-in Claude with Keychain + backoff
+         SequencerService        Event-aware storyboard builder
+         VideoRenderService      AVMutableComposition + AVAssetExportSession (3-way)
+              ↓
+         ProjectStore         ~/Library/Application Support/MemX/projects.json
+         PrivacyPreferences   UserDefaults-backed opt-in flag
+         KeychainHelper       SecItem* wrapper (service = "com.memx.anthropic")
 ```
 
-All services are protocol-based. Swap in real implementations without touching view code.
-
----
-
-## AI Setup
-
-All AI hooks are in place with `// TODO:` comments. The pipeline runs end-to-end with mock data today. Below is how to wire each real model.
-
-See [SETUP.md](SETUP.md) for full step-by-step instructions.
-
-### Pipeline overview
-
-```
-Photos assets
-    ↓  PhotosLibraryService.exportAssetForProcessing()   → temp file URLs
-    ↓  AnalysisService — Phase 2: scene detection        → SceneSegment[]
-    ↓  AnalysisService — Phase 3: embeddings             → SceneSegment.embedding [Float]
-    ↓  AnalysisService — Phase 4: event clustering       → MemoryEvent[]
-    ↓  AnalysisService — Phase 5: moment scoring         → MediaAsset.analysisScore
-    ↓  MontagePlannerService                             → MontagePlan
-    ↓  MusicSuggestionService                            → SongSuggestion[]
-    ↓  (future) AVMutableComposition render              → exported .mov
-```
-
-### Quick-reference: what to replace
-
-| File | Method | Replace with |
-|---|---|---|
-| `AnalysisService.swift` | `generateMockScenes()` | `VNGenerateImageAestheticsScoresRequest` + `VNRecognizeObjectsRequest` |
-| `AnalysisService.swift` | Phase `.extractingEmb` | Core ML CLIP model or `VNGenerateImageFeaturePrintRequest` |
-| `AnalysisService.swift` | `generateMockEvents()` | K-Means or DBSCAN over `SceneSegment.embedding` vectors |
-| `AnalysisService.swift` | `scoreAssets()` | Dot-product similarity against a query embedding |
-| `MusicSuggestionService.swift` | `suggestSongs()` | `MusicKit.MusicCatalogSearchRequest` |
-| `StoryboardView.swift` | render placeholder | `AVMutableComposition` + `AVAssetExportSession` |
+All services are protocol-based singletons and can be swapped under the `WorkspaceViewModel.init` defaults — the 192-test suite exercises this via mock implementations.
 
 ---
 
@@ -102,24 +185,41 @@ Photos assets
 ```
 Sources/MemX/
 ├── App/                   MemXApp.swift, ContentView.swift
-├── Models/                Project, MediaAsset, MontagePlan, AnalysisModels
-├── Services/              PhotosLibraryService, AnalysisService,
-│                          MontagePlannerService, MusicSuggestionService
+├── Models/                Project, MediaAsset, MontagePlan, AnalysisModels, Beatmap, MotionPrompt, SongTrack
+├── Services/              PhotosLibraryService, AnalysisService (PhotoScoringService),
+│                          BeatmapService, VideoAnalysisService, VideoRenderService,
+│                          MotionPromptService, MontagePlannerService (SequencerService),
+│                          MusicSuggestionService
 ├── ViewModels/            AppViewModel, WorkspaceViewModel, ImportViewModel
+├── Persistence/           ProjectStore
+├── Utilities/             KeychainHelper, PrivacyPreferences
 ├── Views/
-│   ├── Landing/
-│   ├── Projects/
-│   ├── Workspace/         Import, Media, Setup, Analysis, Storyboard tabs
-│   └── Components/        MSDesignSystem, AssetThumbnailView, ConfidenceBadge
-└── MockData/              MockDataProvider
+│   ├── Landing/           LandingView (gear → Privacy)
+│   ├── Projects/          ProjectsView
+│   ├── Settings/          PrivacySettingsView
+│   └── Workspace/         Import, Media, Setup, Analysis, Storyboard + WorkspaceView
+├── Components/            MSDesignSystem, MSVerticalDivider, AssetThumbnailView, ConfidenceBadge
+└── MockData/              MockDataProvider (tests only; not seeded for new users)
 ```
 
 ---
 
-## Entitlements required
+## Tests
 
-- App Sandbox
-- Photos Library (read-write)
-- File Access → Downloads Folder (read-write, for export temp files)
+192 XCTest cases covering models, persistence, scoring, sequencing, beatmap shape, and mock fixtures.
 
-Add these in Xcode: Target → Signing & Capabilities → `+`.
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+---
+
+## Roadmap
+
+- 2.5D parallax / Ken Burns motion on stills
+- Core Image transitions between clips (the render step list tags these "Coming soon")
+- MusicKit integration for the mock song catalog
+- EDL and PDF shot-list exports (UI is wired, formats TBD)
+- Renamed status lifecycle (`draft → configuring → analyzing → ready → rendered`)
+
+See `CLAUDE.md` for contributor notes.
