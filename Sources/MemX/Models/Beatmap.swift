@@ -7,19 +7,18 @@ struct Beatmap: Codable, Hashable {
     var durationSeconds: TimeInterval
     var energyCurve: [EnergyPoint]
     var sections: [BeatSection]
-    var beats: [Double]             // timestamps in seconds
+    var beats: [Double]
     var drops: [BeatMoment]
     var vocalPeaks: [BeatMoment]
+    var phraseStarts: [Double] = []
+    var beatStrengths: [Double] = []
 
-    /// Duration of one beat in seconds
     var beatDuration: Double { 60.0 / max(bpm, 1) }
 
-    /// Bar start timestamps, assuming 4/4 time (every 4 beats)
     func barStarts(beatsPerBar: Int = 4) -> [Double] {
         stride(from: 0, to: beats.count, by: beatsPerBar).map { beats[$0] }
     }
 
-    /// Nearest beat timestamp to a given time
     func nearestBeat(to time: Double) -> Double {
         beats.min(by: { abs($0 - time) < abs($1 - time) }) ?? time
     }
@@ -39,6 +38,82 @@ struct Beatmap: Codable, Hashable {
             }
         }
         return sorted.last?.energy ?? 0.5
+    }
+
+    func phraseStart(before time: Double) -> Double? {
+        phraseStarts.filter { $0 <= time }.max()
+    }
+
+    func phraseStart(after time: Double) -> Double? {
+        phraseStarts.filter { $0 > time }.min()
+    }
+
+    func beatStrength(at time: Double) -> Double {
+        guard !beats.isEmpty,
+              let idx = beats.indices.min(by: { abs(beats[$0] - time) < abs(beats[$1] - time) })
+        else { return 0.35 }
+        return strengthFor(index: idx)
+    }
+
+    func strongestBeat(in range: ClosedRange<Double>) -> Double? {
+        let candidates = beats.enumerated().filter { range.contains($0.element) }
+        guard !candidates.isEmpty else { return nil }
+        return candidates.max(by: { a, b in
+            let sa = strengthFor(index: a.offset)
+            let sb = strengthFor(index: b.offset)
+            if sa != sb { return sa < sb }
+            return a.element > b.element
+        })?.element
+    }
+
+    private func strengthFor(index i: Int) -> Double {
+        if !beatStrengths.isEmpty, beatStrengths.indices.contains(i) {
+            return beatStrengths[i]
+        }
+        return synthesizedStrength(beatIndex: i)
+    }
+
+    private func synthesizedStrength(beatIndex i: Int) -> Double {
+        let pos = i % 4
+        let base: Double = pos == 0 ? 0.75 : pos == 2 ? 0.5 : 0.35
+        let beatTime = i < beats.count ? beats[i] : Double(i) * beatDuration
+        let half = beatDuration * 0.5
+        return phraseStarts.contains(where: { abs($0 - beatTime) < half }) ? 1.0 : base
+    }
+}
+
+// MARK: - Beatmap Codable
+
+extension Beatmap {
+    private enum CodingKeys: String, CodingKey {
+        case bpm, durationSeconds, energyCurve, sections, beats, drops, vocalPeaks
+        case phraseStarts, beatStrengths
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bpm = try c.decode(Double.self, forKey: .bpm)
+        durationSeconds = try c.decode(TimeInterval.self, forKey: .durationSeconds)
+        energyCurve = try c.decode([EnergyPoint].self, forKey: .energyCurve)
+        sections = try c.decode([BeatSection].self, forKey: .sections)
+        beats = try c.decode([Double].self, forKey: .beats)
+        drops = try c.decode([BeatMoment].self, forKey: .drops)
+        vocalPeaks = try c.decode([BeatMoment].self, forKey: .vocalPeaks)
+        phraseStarts = try c.decodeIfPresent([Double].self, forKey: .phraseStarts) ?? []
+        beatStrengths = try c.decodeIfPresent([Double].self, forKey: .beatStrengths) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(bpm, forKey: .bpm)
+        try c.encode(durationSeconds, forKey: .durationSeconds)
+        try c.encode(energyCurve, forKey: .energyCurve)
+        try c.encode(sections, forKey: .sections)
+        try c.encode(beats, forKey: .beats)
+        try c.encode(drops, forKey: .drops)
+        try c.encode(vocalPeaks, forKey: .vocalPeaks)
+        try c.encode(phraseStarts, forKey: .phraseStarts)
+        try c.encode(beatStrengths, forKey: .beatStrengths)
     }
 }
 

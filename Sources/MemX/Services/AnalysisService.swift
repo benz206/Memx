@@ -65,6 +65,10 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             let faces: Int
             let clipStart: TimeInterval?
             let isVideo: Bool
+            let shotType: ShotType?
+            let motionVector: MotionVector?
+            let colorTemperature: Double?
+            let faceAreaFraction: Double?
         }
 
         var results = [IndexedResult?](repeating: nil, count: total)
@@ -91,11 +95,13 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                     scoringLog("   → launch [\(i + 1)/\(total)] \(label) (isVideo=\(isVideo), \(isVideo ? "videos" : "photos") in flight now \(isVideo ? inFlightVideos + 1 : inFlightPhotos + 1))")
                     group.addTask {
                         let startedAt = Date()
-                        let (quality, emotion, novelty, faces, clipStart) = await self.analyzeAsset(asset)
+                        let r = await self.analyzeAsset(asset)
                         let elapsed = Date().timeIntervalSince(startedAt)
-                        scoringLog("   ✓ done   [\(i + 1)/\(total)] \(label) in \(String(format: "%.1f", elapsed))s — q=\(String(format: "%.2f", quality)) e=\(String(format: "%.2f", emotion)) n=\(String(format: "%.2f", novelty)) faces=\(faces)")
-                        return IndexedResult(index: i, quality: quality, emotion: emotion,
-                                            novelty: novelty, faces: faces, clipStart: clipStart, isVideo: isVideo)
+                        scoringLog("   ✓ done   [\(i + 1)/\(total)] \(label) in \(String(format: "%.1f", elapsed))s — q=\(String(format: "%.2f", r.quality)) e=\(String(format: "%.2f", r.emotion)) n=\(String(format: "%.2f", r.novelty)) faces=\(r.faces)")
+                        return IndexedResult(index: i, quality: r.quality, emotion: r.emotion,
+                                            novelty: r.novelty, faces: r.faces, clipStart: r.clipStartTime,
+                                            isVideo: isVideo, shotType: r.shotType, motionVector: r.motionVector,
+                                            colorTemperature: r.colorTemperature, faceAreaFraction: r.faceAreaFraction)
                     }
                     onProgress(0.05 + Double(nextIndex) / Double(total) * 0.04,
                                "Starting \(nextIndex + 1)/\(total)…")
@@ -120,11 +126,15 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         var faceCounts = [Int](repeating: 0, count: total)
         for r in results.compactMap({ $0 }) {
             let overall = r.quality * 0.4 + r.emotion * 0.35 + r.novelty * 0.25
-            scoredAssets[r.index].qualityScore  = r.quality
-            scoredAssets[r.index].emotionScore  = r.emotion
-            scoredAssets[r.index].noveltyScore  = r.novelty
-            scoredAssets[r.index].analysisScore = overall
-            scoredAssets[r.index].clipStartTime = r.clipStart
+            scoredAssets[r.index].qualityScore     = r.quality
+            scoredAssets[r.index].emotionScore     = r.emotion
+            scoredAssets[r.index].noveltyScore     = r.novelty
+            scoredAssets[r.index].analysisScore    = overall
+            scoredAssets[r.index].clipStartTime    = r.clipStart
+            scoredAssets[r.index].shotType         = r.shotType
+            scoredAssets[r.index].motionVector     = r.motionVector
+            scoredAssets[r.index].colorTemperature = r.colorTemperature
+            scoredAssets[r.index].faceAreaFraction = r.faceAreaFraction
             faceCounts[r.index] = r.faces
         }
 
@@ -149,13 +159,14 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     // MARK: - Per-Asset Vision Analysis
 
-    private func analyzeAsset(_ asset: MediaAsset) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, clipStartTime: TimeInterval?) {
+    private func analyzeAsset(_ asset: MediaAsset) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, clipStartTime: TimeInterval?, shotType: ShotType?, motionVector: MotionVector?, colorTemperature: Double?, faceAreaFraction: Double?) {
         if asset.isVideo {
             let result = await VideoAnalysisService.shared.analyzeVideo(
                 assetID: asset.id,
                 targetDuration: 3.0
             )
-            return (result.quality, result.emotion, result.novelty, result.faces, result.bestStartTime)
+            return (result.quality, result.emotion, result.novelty, result.faces, result.bestStartTime,
+                    result.shotType, result.motionVector, result.colorTemperature, result.faceAreaFraction)
         }
 
         let label = asset.filename ?? asset.id
@@ -196,17 +207,67 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 : min(0.72, saliencyConf * 0.5 + 0.2)
             let novelty = min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
 
-            return (quality, emotion, novelty, faceCount, nil)
+            let faceAreaFraction: Double? = faces
+                .map { Double($0.boundingBox.width * $0.boundingBox.height) }
+                .max()
+                .flatMap { $0 > 0 ? $0 : nil }
+
+            let saliencyBboxArea: Double = {
+                if let bbox = (saliencyRequest.results?.first)?.salientObjects?.first?.boundingBox {
+                    return Double(bbox.width * bbox.height)
+                }
+                return 1.0
+            }()
+
+            let shotType: ShotType
+            if let fa = faceAreaFraction, fa > 0.30 {
+                shotType = .closeUp
+            } else if faceCount >= 3 {
+                shotType = .group
+            } else if faceCount >= 1 {
+                shotType = .medium
+            } else if Double(saliencyConf) > 0.7 && saliencyBboxArea < 0.25 {
+                shotType = .detail
+            } else {
+                shotType = .wide
+            }
+
+            let colorTemperature = self.computeColorTemperature(from: cgImage)
+
+            return (quality, emotion, novelty, faceCount, nil, shotType, MotionVector(dx: 0, dy: 0, magnitude: 0), colorTemperature, faceAreaFraction)
         }
     }
 
-    private func fallbackScores() -> (Float, Float, Float, Int, TimeInterval?) {
+    private func computeColorTemperature(from cgImage: CGImage) -> Double {
+        let size = 32
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        guard let context = CGContext(
+            data: &pixels,
+            width: size, height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: size * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 0.5 }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: size, height: size))
+        var totalR: Double = 0
+        var totalB: Double = 0
+        for i in 0..<(size * size) {
+            totalR += Double(pixels[i * 4])
+            totalB += Double(pixels[i * 4 + 2])
+        }
+        let count = Double(size * size)
+        return min(1.0, max(0.0, 0.5 + (totalR / count - totalB / count) / 255.0))
+    }
+
+    private func fallbackScores() -> (Float, Float, Float, Int, TimeInterval?, ShotType?, MotionVector?, Double?, Double?) {
         (
             Float.random(in: 0.50...0.88),
             Float.random(in: 0.35...0.78),
             Float.random(in: 0.30...0.75),
             0,
-            nil
+            nil, nil, nil, nil, nil
         )
     }
 

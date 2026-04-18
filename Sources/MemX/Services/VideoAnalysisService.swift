@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Vision
 import Photos
+import CoreGraphics
 import OSLog
 
 private let logger = Logger(subsystem: "com.memx.app", category: "video-analysis")
@@ -33,6 +34,10 @@ struct VideoAnalysisResult {
     var novelty: Float
     var faces: Int
     var bestStartTime: TimeInterval
+    var shotType: ShotType?
+    var motionVector: MotionVector?
+    var colorTemperature: Double?
+    var faceAreaFraction: Double?
 }
 
 // MARK: - VideoAnalysisService
@@ -94,7 +99,15 @@ final class VideoAnalysisService {
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter  = CMTime(seconds: 0.25, preferredTimescale: 600)
 
-        struct FrameScore { var time: TimeInterval; var q: Float; var e: Float; var n: Float; var faces: Int }
+        struct FrameScore {
+            var time: TimeInterval
+            var q: Float; var e: Float; var n: Float
+            var faces: Int
+            var faceArea: Double
+            var saliencyConf: Double
+            var saliencyBbox: CGRect
+            var colorTemperature: Double
+        }
 
         let totalExpected = sampleTimes.count
         var frames: [FrameScore] = []
@@ -112,8 +125,13 @@ final class VideoAnalysisService {
                 continue
             }
             decoded += 1
-            let (q, e, n, f) = await scoreFrame(cgImage)
-            frames.append(FrameScore(time: CMTimeGetSeconds(result.requestedTime), q: q, e: e, n: n, faces: f))
+            let fs = await scoreFrame(cgImage)
+            frames.append(FrameScore(
+                time: CMTimeGetSeconds(result.requestedTime),
+                q: fs.quality, e: fs.emotion, n: fs.novelty, faces: fs.faces,
+                faceArea: fs.faceArea, saliencyConf: fs.saliencyConf,
+                saliencyBbox: fs.saliencyBbox, colorTemperature: fs.colorTemperature
+            ))
 
             if decoded % logEvery == 0 || decoded == totalExpected {
                 videoLog("   [\(assetID)] frame \(decoded)/\(totalExpected) scored")
@@ -142,11 +160,51 @@ final class VideoAnalysisService {
         let avgN = best.map(\.n).reduce(0, +) / c
         let maxF = best.map(\.faces).max() ?? 0
 
+        let faceAreaFraction: Double? = {
+            let maxArea = frames.map(\.faceArea).max() ?? 0.0
+            return maxArea > 0 ? maxArea : nil
+        }()
+
+        let colorTemperature: Double = frames.map(\.colorTemperature).reduce(0, +) / Double(frames.count)
+
+        let avgFaceArea = best.map(\.faceArea).reduce(0.0, +) / Double(best.count)
+        let avgFaceCount = Double(best.map(\.faces).reduce(0, +)) / Double(best.count)
+        let avgSaliencyConf = best.map(\.saliencyConf).reduce(0.0, +) / Double(best.count)
+        let avgSaliencyBboxArea = best.map { Double($0.saliencyBbox.width * $0.saliencyBbox.height) }.reduce(0.0, +) / Double(best.count)
+
+        let shotType: ShotType
+        if avgFaceArea > 0.30 {
+            shotType = .closeUp
+        } else if avgFaceCount >= 3 {
+            shotType = .group
+        } else if avgFaceCount >= 1 {
+            shotType = .medium
+        } else if avgSaliencyConf > 0.7 && avgSaliencyBboxArea < 0.25 {
+            shotType = .detail
+        } else {
+            shotType = .wide
+        }
+
+        let motionVector: MotionVector
+        if best.count <= 1 {
+            motionVector = MotionVector(dx: 0, dy: 0, magnitude: 0)
+        } else {
+            let firstBbox = best.first!.saliencyBbox
+            let lastBbox  = best.last!.saliencyBbox
+            let dx = Double(lastBbox.midX - firstBbox.midX)
+            let dy = Double(lastBbox.midY - firstBbox.midY)
+            motionVector = MotionVector(dx: dx, dy: dy, magnitude: min(1.0, hypot(dx, dy)))
+        }
+
         let rawStart = frames[bestStart].time
         let safeStart = min(rawStart, max(0, totalSeconds - targetDuration))
 
         logger.info("[\(assetID)] Video analysis complete: \(frames.count) frames, duration \(String(format: "%.1f", totalSeconds))s")
-        return VideoAnalysisResult(quality: avgQ, emotion: avgE, novelty: avgN, faces: maxF, bestStartTime: safeStart)
+        return VideoAnalysisResult(
+            quality: avgQ, emotion: avgE, novelty: avgN, faces: maxF, bestStartTime: safeStart,
+            shotType: shotType, motionVector: motionVector,
+            colorTemperature: colorTemperature, faceAreaFraction: faceAreaFraction
+        )
     }
 
     // MARK: - Timeout helper (does NOT await a hung op — returns promptly on timeout)
@@ -179,14 +237,14 @@ final class VideoAnalysisService {
 
     // MARK: - Per-Frame Vision Scoring
 
-    private func scoreFrame(_ cgImage: CGImage) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int) {
+    private func scoreFrame(_ cgImage: CGImage) async -> (quality: Float, emotion: Float, novelty: Float, faces: Int, faceArea: Double, saliencyConf: Double, saliencyBbox: CGRect, colorTemperature: Double) {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let faceReq     = VNDetectFaceRectanglesRequest()
         let saliencyReq = VNGenerateAttentionBasedSaliencyImageRequest()
         let classifyReq = VNClassifyImageRequest()
 
         guard (try? handler.perform([faceReq, saliencyReq, classifyReq])) != nil else {
-            return (0.5, 0.4, 0.4, 0)
+            return (0.5, 0.4, 0.4, 0, 0.0, 0.5, CGRect(x: 0, y: 0, width: 1, height: 1), 0.5)
         }
 
         let faces = faceReq.results ?? []
@@ -194,16 +252,49 @@ final class VideoAnalysisService {
         let avgFaceConf: Float = faceCount > 0
             ? faces.map(\.confidence).reduce(0, +) / Float(faceCount) : 0
 
-        let saliencyConf = Float((saliencyReq.results?.first)?.confidence ?? 0.5)
+        let saliencyObs  = saliencyReq.results?.first
+        let saliencyConf = Double(saliencyObs?.confidence ?? 0.5)
+        let saliencyBbox: CGRect = saliencyObs?.salientObjects?.first?.boundingBox
+            ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+
         let topConfSum   = (classifyReq.results ?? []).prefix(3).map { Float($0.confidence) }.reduce(0, +)
 
-        let quality = min(1.0, saliencyConf * 0.65 + avgFaceConf * 0.2 + 0.15)
+        let quality = min(1.0, Float(saliencyConf) * 0.65 + avgFaceConf * 0.2 + 0.15)
         let emotion = faceCount > 0
             ? min(1.0, 0.45 + Float(faceCount) * 0.15 + avgFaceConf * 0.3)
-            : min(0.72, saliencyConf * 0.5 + 0.2)
+            : min(0.72, Float(saliencyConf) * 0.5 + 0.2)
         let novelty = min(1.0, max(0.2, 1.0 - topConfSum * 0.55))
 
-        return (quality, emotion, novelty, faceCount)
+        let faceArea = faces
+            .map { Double($0.boundingBox.width * $0.boundingBox.height) }
+            .max() ?? 0.0
+
+        let colorTemperature = computeColorTemperature(from: cgImage)
+
+        return (quality, emotion, novelty, faceCount, faceArea, saliencyConf, saliencyBbox, colorTemperature)
+    }
+
+    private func computeColorTemperature(from cgImage: CGImage) -> Double {
+        let size = 32
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        guard let context = CGContext(
+            data: &pixels,
+            width: size, height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: size * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 0.5 }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: size, height: size))
+        var totalR: Double = 0
+        var totalB: Double = 0
+        for i in 0..<(size * size) {
+            totalR += Double(pixels[i * 4])
+            totalB += Double(pixels[i * 4 + 2])
+        }
+        let count = Double(size * size)
+        return min(1.0, max(0.0, 0.5 + (totalR / count - totalB / count) / 255.0))
     }
 
     // MARK: - PHAsset → AVAsset
@@ -242,11 +333,15 @@ final class VideoAnalysisService {
 
     private func fallback() -> VideoAnalysisResult {
         VideoAnalysisResult(
-            quality:       Float.random(in: 0.50...0.85),
-            emotion:       Float.random(in: 0.35...0.75),
-            novelty:       Float.random(in: 0.30...0.70),
-            faces:         0,
-            bestStartTime: 0
+            quality:          Float.random(in: 0.50...0.85),
+            emotion:          Float.random(in: 0.35...0.75),
+            novelty:          Float.random(in: 0.30...0.70),
+            faces:            0,
+            bestStartTime:    0,
+            shotType:         nil,
+            motionVector:     nil,
+            colorTemperature: nil,
+            faceAreaFraction: nil
         )
     }
 }

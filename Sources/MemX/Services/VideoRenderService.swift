@@ -60,6 +60,10 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                     let i = nextIndex
                     let item = sequence[i]
                     group.addTask {
+                        let peakFraction: Double = {
+                            guard let pk = item.peakTime, item.duration > 0 else { return 0.5 }
+                            return min(1, max(0, (pk - item.startTime) / item.duration))
+                        }()
                         let url: URL
                         if let asset = assetMap[item.assetID], asset.isVideo {
                             do {
@@ -70,13 +74,15 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                                 url = try await self.exportPhotoClip(
                                     assetID: item.assetID,
                                     duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale),
-                                    renderSize: renderSize)
+                                    renderSize: renderSize,
+                                    peakFraction: peakFraction)
                             }
                         } else {
                             url = try await self.exportPhotoClip(
                                 assetID: item.assetID,
                                 duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale),
-                                renderSize: renderSize)
+                                renderSize: renderSize,
+                                peakFraction: peakFraction)
                         }
                         return (i, url)
                     }
@@ -312,15 +318,18 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
     // MARK: - Photo → Video Clip
 
-    private func exportPhotoClip(assetID: String, duration: CMTime, renderSize: CGSize) async throws -> URL {
+    private func exportPhotoClip(
+        assetID: String,
+        duration: CMTime,
+        renderSize: CGSize,
+        peakFraction: Double
+    ) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("memx-\(UUID().uuidString).mp4")
 
         let cgImage = await fetchCGImageFromPhotos(assetID: assetID, renderSize: renderSize)
             ?? createPlaceholderImage(assetID: assetID, renderSize: renderSize)
         guard let image = cgImage else { throw RenderError.assetNotFound(assetID) }
-
-        let pixelBuffer = try createPixelBuffer(from: image, renderSize: renderSize)
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -345,16 +354,26 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
         writer.startSession(atSourceTime: .zero)
 
+        _ = peakFraction
+
+        let pixelBuffer = try createPixelBuffer(from: image, renderSize: renderSize)
+
+        while !input.isReadyForMoreMediaData {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
         adaptor.append(pixelBuffer, withPresentationTime: .zero)
 
-        let lastFrameTime = CMTimeSubtract(duration, CMTime(value: 1, timescale: CMTimeScale(fps)))
-        let safeEnd = CMTimeCompare(lastFrameTime, .zero) > 0
-            ? lastFrameTime
-            : CMTime(value: 1, timescale: CMTimeScale(fps))
-        adaptor.append(pixelBuffer, withPresentationTime: safeEnd)
+        let frameStep = CMTime(value: 1, timescale: CMTimeScale(fps))
+        let endTime = CMTimeCompare(duration, frameStep) > 0
+            ? CMTimeSubtract(duration, frameStep)
+            : frameStep
+
+        while !input.isReadyForMoreMediaData {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        adaptor.append(pixelBuffer, withPresentationTime: endTime)
 
         input.markAsFinished()
-
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             writer.finishWriting { c.resume() }
         }

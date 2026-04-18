@@ -45,6 +45,25 @@ enum MSMediaType: String, Codable, Hashable {
     }
 }
 
+// MARK: - ShotType
+
+enum ShotType: String, Codable, Hashable, CaseIterable {
+    case wide
+    case medium
+    case closeUp
+    case group
+    case detail
+    case motion
+}
+
+// MARK: - MotionVector
+
+struct MotionVector: Codable, Hashable {
+    var dx: Double
+    var dy: Double
+    var magnitude: Double
+}
+
 // MARK: - MediaAsset (concrete, Codable for persistence)
 
 struct MediaAsset: MediaAssetProtocol, Codable {
@@ -63,6 +82,10 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var emotionScore: Float?
     var noveltyScore: Float?
     var clipStartTime: TimeInterval?    // best segment start offset within video (nil for photos)
+    var shotType: ShotType?
+    var motionVector: MotionVector?
+    var colorTemperature: Double?
+    var faceAreaFraction: Double?
     var isSelected: Bool = false
 
     // Derived
@@ -103,7 +126,11 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         pixelHeight: Int = 1080,
         isFavorite: Bool = false,
         duration: TimeInterval = 0,
-        location: AssetLocation? = nil
+        location: AssetLocation? = nil,
+        shotType: ShotType? = nil,
+        motionVector: MotionVector? = nil,
+        colorTemperature: Double? = nil,
+        faceAreaFraction: Double? = nil
     ) {
         self.id = id
         self.mediaType = mediaType
@@ -114,6 +141,10 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         self.isFavorite = isFavorite
         self.duration = duration
         self.location = location
+        self.shotType = shotType
+        self.motionVector = motionVector
+        self.colorTemperature = colorTemperature
+        self.faceAreaFraction = faceAreaFraction
     }
 }
 
