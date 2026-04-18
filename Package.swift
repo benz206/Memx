@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .target(
             name: "MemXCore",
-            path: "Sources/MemX"
+            path: "Sources/MemX",
+            exclude: ["Resources/Info.plist"]
         ),
         .executableTarget(
             name: "MemX",

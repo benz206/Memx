@@ -121,27 +121,23 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
 
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.deliveryMode = .fastFormat
-        options.resizeMode = .fast
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
+        options.isSynchronous = false
 
         return await withCheckedContinuation { continuation in
-            var resumed = false
             imageManager.requestImage(
                 for: asset,
                 targetSize: size,
                 contentMode: .aspectFill,
                 options: options
-            ) { image, info in
-                let isFinal = (info?[PHImageResultIsDegradedKey] as? Bool) != true
-                guard isFinal, !resumed else { return }
-                resumed = true
-                let result = image
+            ) { image, _ in
                 Task { @MainActor in
-                    if let img = result {
+                    if let img = image {
                         ThumbnailCache.shared.store(img, for: assetID)
                     }
                 }
-                continuation.resume(returning: result)
+                continuation.resume(returning: image)
             }
         }
     }
