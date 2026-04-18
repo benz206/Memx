@@ -14,6 +14,7 @@ protocol PhotosLibraryServiceProtocol {
     func fetchThumbnail(for assetID: String, size: CGSize) async -> NSImage?
     func exportAssetForProcessing(_ assetID: String) async throws -> URL
     func fetchAsset(for id: String) -> PHAsset?
+    func resolveAssets(for localIdentifiers: [String]) async -> [MediaAsset]
 }
 
 // MARK: - PHAssetCache (serial-queue-protected)
@@ -29,6 +30,10 @@ actor PHAssetCache {
         guard let asset = result.firstObject else { return nil }
         store[localIdentifier] = asset
         return asset
+    }
+
+    func prime(_ phAsset: PHAsset) {
+        store[phAsset.localIdentifier] = phAsset
     }
 
     func invalidate(_ localIdentifier: String) {
@@ -108,6 +113,20 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
 
         let result = PHAsset.fetchAssets(in: collection, options: options)
         return extractAssets(from: result)
+    }
+
+    func resolveAssets(for localIdentifiers: [String]) async -> [MediaAsset] {
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers, options: nil)
+        var map: [String: MediaAsset] = [:]
+        var phAssets: [PHAsset] = []
+        fetchResult.enumerateObjects { phAsset, _, _ in
+            map[phAsset.localIdentifier] = MediaAsset(phAsset: phAsset)
+            phAssets.append(phAsset)
+        }
+        for phAsset in phAssets {
+            await PHAssetCache.shared.prime(phAsset)
+        }
+        return localIdentifiers.compactMap { map[$0] }
     }
 
     // MARK: - Thumbnail

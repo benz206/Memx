@@ -48,6 +48,8 @@ final class WorkspaceViewModel {
 
     // MARK: Assets
     var assets: [MediaAsset] = []
+    var isRestoringAssets: Bool = false
+    var assetsFullyRestored: Bool = true
 
     // MARK: Motion Prompts
     var motionPrompts: [MotionPrompt] = []
@@ -193,7 +195,7 @@ final class WorkspaceViewModel {
         isProcessing = true
         processingStatus.phase = .scoringPhotos
         processingStatus.progress = 0.33
-        processingStatus.message = "Scoring \(assets.count) photos..."
+        processingStatus.message = "Scoring \(assets.count) photos (this may take a while for iCloud photos)…"
         processingStatus.error = nil
         logger.info("Photo scoring started: \(self.assets.count) assets")
 
@@ -430,6 +432,15 @@ final class WorkspaceViewModel {
     var isCancellable: Bool { pipelineTask != nil || renderTask != nil }
 
     // MARK: - Asset Management
+
+    func restoreAssets() async {
+        guard assets.isEmpty, !project.assetIDs.isEmpty else { return }
+        isRestoringAssets = true
+        let restored = await PhotosLibraryService.shared.resolveAssets(for: project.assetIDs)
+        assets = restored
+        assetsFullyRestored = restored.count == project.assetIDs.count
+        isRestoringAssets = false
+    }
 
     func addAssets(_ newAssets: [MediaAsset]) {
         let existingIDs = Set(assets.map(\.id))

@@ -61,8 +61,11 @@ struct WorkspaceView: View {
         }
         .environment(workspaceVM)
         .onAppear {
-            if workspaceVM.assets.isEmpty && !project.assetIDs.isEmpty {
-                showMissingAssetsBanner = true
+            Task { await workspaceVM.restoreAssets() }
+        }
+        .onChange(of: workspaceVM.isRestoringAssets) { _, isRestoring in
+            if !isRestoring {
+                showMissingAssetsBanner = !workspaceVM.assetsFullyRestored
             }
         }
     }
@@ -174,6 +177,20 @@ struct WorkspaceView: View {
             if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .denied
                 || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .restricted {
                 photosAccessBanner
+            }
+
+            if workspaceVM.isRestoringAssets {
+                HStack(spacing: MS.Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading media…")
+                        .font(MS.Font.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, MS.Spacing.md)
+                .padding(.vertical, MS.Spacing.sm)
+                .background(.regularMaterial)
+                .overlay(alignment: .bottom) { MSDivider() }
             }
 
             if showMissingAssetsBanner {

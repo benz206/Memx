@@ -23,7 +23,7 @@ final class ImportViewModel {
     var importProgress: Double = 0
 
     // MARK: PhotosPicker
-    var importedPickerAssets: [MediaAsset] = []
+    var importedPickerAssets: [MediaAsset] = [] { didSet { refreshFilter() } }
     var isImportingFromPicker: Bool = false
     var pickerError: String? = nil
 
@@ -34,6 +34,11 @@ final class ImportViewModel {
 
     private func refreshFilter() {
         var assets = selectedAlbum != nil ? albumAssets : recentAssets
+        if !importedPickerAssets.isEmpty {
+            let existing = Set(assets.map(\.id))
+            let extras = importedPickerAssets.filter { !existing.contains($0.id) }
+            assets = extras + assets
+        }
         if !searchText.isEmpty {
             assets = assets.filter {
                 $0.filename?.localizedCaseInsensitiveContains(searchText) == true ||
@@ -132,13 +137,12 @@ final class ImportViewModel {
         for (i, assetID) in assetIDs.enumerated() {
             defer { importProgress = Double(i + 1) / Double(assetIDs.count) }
 
-            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-            guard fetchResult.count > 0 else {
+            let resolved = await PhotosLibraryService.shared.resolveAssets(for: [assetID])
+            guard let asset = resolved.first else {
                 pickerError = "Photos full-library access is required to import selected items."
                 continue
             }
 
-            let asset = MediaAsset(id: assetID, filename: "Imported \(i+1)")
             importedPickerAssets.append(asset)
             selectedAssetIDs.insert(assetID)
         }

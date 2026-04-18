@@ -60,6 +60,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                         return IndexedResult(index: i, quality: quality, emotion: emotion,
                                             novelty: novelty, faces: faces, clipStart: clipStart)
                     }
+                    onProgress(0.05 + Double(nextIndex) / Double(total) * 0.04,
+                               "Starting \(nextIndex + 1)/\(total)…")
                     inFlight += 1
                     nextIndex += 1
                 }
@@ -170,17 +172,27 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
               phAsset.mediaType == .image else { return nil }
 
         let options = PHImageRequestOptions()
-        options.deliveryMode   = .highQualityFormat
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
 
         return await withCheckedContinuation { continuation in
+            var resumed = false
+            let resume: (CGImage?) -> Void = { img in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: img)
+            }
             PHImageManager.default().requestImage(
                 for: phAsset,
-                targetSize: CGSize(width: 512, height: 512),
+                targetSize: CGSize(width: 384, height: 384),
                 contentMode: .aspectFit,
                 options: options
-            ) { image, _ in
-                continuation.resume(returning: image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+            ) { image, info in
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if !isDegraded {
+                    resume(image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                }
             }
         }
     }
