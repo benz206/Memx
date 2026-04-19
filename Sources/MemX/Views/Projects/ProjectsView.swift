@@ -135,23 +135,29 @@ private struct NewProjectSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .font(MS.Font.body)
                     .focused($titleFieldFocused)
-                    .onSubmit {
-                        appVM.createProject(title: title.isEmpty ? "New Project" : title)
-                        isPresented = false
-                    }
+                    .submitLabel(.go)
+                    .onSubmit(create)
             }
 
             HStack(spacing: MS.Spacing.sm) {
                 MSSecondaryButton("Cancel") { isPresented = false }
-                MSPrimaryButton("Create", icon: "sparkles") {
-                    appVM.createProject(title: title.isEmpty ? "New Project" : title)
-                    isPresented = false
-                }
+                MSPrimaryButton("Create", icon: "sparkles", action: create)
             }
         }
         .padding(MS.Spacing.xl)
         .frame(width: 360)
-        .onAppear { titleFieldFocused = true }
+        .task {
+            // Defer by one runloop tick + small delay so the sheet window is
+            // fully key before focusing; otherwise macOS silently drops
+            // keyboard events targeting the TextField.
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            titleFieldFocused = true
+        }
+    }
+
+    private func create() {
+        appVM.createProject(title: title.isEmpty ? "New Project" : title)
+        isPresented = false
     }
 }
 

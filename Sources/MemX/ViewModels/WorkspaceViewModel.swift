@@ -481,6 +481,31 @@ final class WorkspaceViewModel {
         guard !isProcessing else { return }
         logger.info("Full pipeline started: \(self.assets.count) assets")
 
+        // Reset stale pipeline outputs so a re-run starts clean.
+        motionPrompts = []
+        montagePlan = nil
+        selectedSequenceItem = nil
+        clipShortfall = nil
+        pendingShortfallAck = false
+        processingStatus = ProcessingStatus(projectID: project.id)
+        photosScoredSuccessfully = false
+
+        // Advance UI to the pipeline panel immediately so the user sees phases.
+        selectedTab = .motionPrompts
+
+        // Preflight early if we already have a beatmap — surface shortfall banner
+        // right away instead of waiting for buildSequence.
+        if let bm = beatmap {
+            let preflight = sequencerService.preflight(
+                settings: project.settings,
+                assets: assets,
+                beatmap: bm
+            )
+            if preflight.hasShortfall {
+                clipShortfall = preflight
+            }
+        }
+
         let task = Task { [weak self] in
             guard let self else { return }
             do {
@@ -511,10 +536,19 @@ final class WorkspaceViewModel {
             return
         }
 
+        // Clear any prior render on disk before starting a new one — avoids
+        // leaving both old and new files around if the re-render is cancelled.
+        if let existing = renderedVideoURL {
+            try? FileManager.default.removeItem(at: existing)
+        }
+        renderedVideoURL = nil
+        project.exportedVideoURL = nil
+        if project.status == .exported { project.status = .ready }
+        appVM.updateProject(project)
+
         isRendering = true
         renderProgress = 0
         renderProgressMessage = "Starting render…"
-        renderedVideoURL = nil
         renderError = nil
         renderLog = []
         appendRenderLog(progress: 0, message: "Starting render — \(plan.sequence.count) clips, song volume \(Int(plan.settings.songVolume * 100))%")

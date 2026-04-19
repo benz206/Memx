@@ -73,14 +73,23 @@ struct MotionPromptsView: View {
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(.quaternary).frame(height: 5)
+                        Capsule().fill(.quaternary).frame(height: 6)
                         Capsule()
                             .fill(Color.accentColor.gradient)
-                            .frame(width: geo.size.width * workspaceVM.processingStatus.progress, height: 5)
+                            .frame(width: geo.size.width * workspaceVM.processingStatus.progress, height: 6)
+                            .shadow(color: Color.accentColor.opacity(workspaceVM.isProcessing ? 0.3 : 0), radius: 4)
                             .animation(.spring(), value: workspaceVM.processingStatus.progress)
                     }
                 }
-                .frame(height: 5)
+                .frame(height: 6)
+
+                // Three tiny segmented sub-bars — score / prompts / sequence.
+                HStack(spacing: 4) {
+                    phaseSegment(phase: .scoringPhotos)
+                    phaseSegment(phase: .generatingPrompts)
+                    phaseSegment(phase: .sequencing)
+                }
+                .frame(height: 3)
             }
             .padding(MS.Spacing.md)
 
@@ -126,6 +135,15 @@ struct MotionPromptsView: View {
             .padding(MS.Spacing.md)
         }
         .background(.regularMaterial)
+    }
+
+    private func phaseSegment(phase: ProcessingPhase) -> some View {
+        let isActive = workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing
+        let isComplete = phaseIsComplete(phase)
+        let color: Color = isComplete ? .green : (isActive ? .orange : Color.secondary.opacity(0.25))
+        return Capsule()
+            .fill(color)
+            .frame(height: 3)
     }
 
     private func phaseIsComplete(_ phase: ProcessingPhase) -> Bool {

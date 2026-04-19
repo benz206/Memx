@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # Run tests
 
 `swift test` must be prefixed with `DEVELOPER_DIR` because XCTest is only available from Xcode, not Command Line Tools. Build and run benefit from the same `DEVELOPER_DIR` prefix when the Xcode 26 toolchain isn't selected system-wide (`xcode-select -s /Applications/Xcode.app/Contents/Developer`).
 
-The app is opened in Xcode via the `.swiftpm` wrapper. No third-party dependencies — only Apple frameworks (Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, FoundationModels).
+The app is opened in Xcode via the `.swiftpm` wrapper. Third-party SPM dependencies: **mlx-swift** and **mlx-swift-lm** (Apple ML Research, MIT-licensed; on-device VLM inference), **swift-huggingface** and **swift-transformers** (Hugging Face, Apache-2.0; model download and tokenisation). Apple frameworks: Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, FoundationModels. All AI inference runs on-device — the only network use is a one-time download of the MLX VLM weights from Hugging Face on first launch (cached to `~/Library/Caches/huggingface`).
 
 ## Platform
 
@@ -54,7 +54,7 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 - **`BeatmapService`** — real `AVAudioFile` + `vDSP` audio analysis. Downsamples to mono 22 kHz, builds an RMS envelope, estimates BPM via autocorrelation (capped at the first ~90s of envelope for speed), detects onsets via positive spectral flux, segments the track into sections (intro / verse / preChorus / chorus / drop / buildup / bridge / breakdown / outro), and clusters repeating chorus/drop sections into `HookMoment`s using an 8-dim envelope fingerprint + cosine similarity.
 - **`PhotoScoringService`** (in `AnalysisService.swift`) — Vision-powered: face rectangles, attention-based saliency, and `VNClassifyImageRequest` labels. Emits `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, plus scene labels on each `MediaAsset`. Concurrency scales with `ScoringDensity`.
 - **`VideoAnalysisService`** — samples N frames per video (N = `ScoringDensity.videoFrameSamples`, 8/14/20/30/48), scores each, and returns best-segment metadata.
-- **`SceneCaptionService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) running locally on macOS 26. Falls back to joining scene labels into a text caption if the model is unavailable or times out (8s).
+- **`SceneCaptionService`** — Generates one-sentence evocative captions using `LocalVLMService`, which runs **Qwen2-VL-2B-Instruct (4-bit)** via MLX on Apple Silicon. The actual `CGImage` pixels are fed to the model; `sceneLabels` from Vision are appended as supplementary hint text. Times out at 20 s. Returns `nil` on error or timeout so the pipeline degrades gracefully.
 - **`MotionPromptService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) for one-to-two-sentence cinematographer directions. Weaves `asset.sceneCaption` + `sceneLabels` into a text prompt. Falls back to a deterministic mock when the model is unavailable or times out (6s).
 - **`SequencerService`** (in `MontagePlannerService.swift`) — builds the `MontagePlan` from beatmap + scored assets. Hook-aware (see below). Exposes a `preflight(...)` call so the UI can warn before building.
 - **`MusicSuggestionService`** — matches songs to mood arc via vibe/genre/energy scoring; uses a hardcoded mock catalog.
@@ -103,5 +103,5 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 ## Known Integration Gaps
 
 - **MusicKit**: `MusicSuggestionService` still uses a hardcoded mock catalog. Real MusicKit integration is a follow-up.
-- **Foundation Models image input**: the shipped macOS 26 SDK doesn't yet accept image content on `LanguageModelSession.respond(to:)` — `SceneCaptionService` currently falls back to text-only captions built from Vision's scene labels. Revisit once Apple ships a vision-capable prompt API.
+- **Foundation Models image input**: resolved — `SceneCaptionService` now routes actual image pixels through `LocalVLMService` (MLX + Qwen2-VL-2B-Instruct-4bit) instead of the text-only `LanguageModelSession` path.
 - **AVFoundation deprecations**: `AVMutableVideoCompositionInstruction` / `AVMutableVideoCompositionLayerInstruction` are deprecated in macOS 26 in favor of the `*.Configuration` types. The render pipeline still uses the old types (functional, with warnings). Migrating is cosmetic cleanup.

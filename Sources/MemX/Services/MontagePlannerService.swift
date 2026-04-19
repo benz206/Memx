@@ -73,6 +73,7 @@ final class SequencerService: SequencerServiceProtocol {
         applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap)
 
         onProgress(0.20, "Built \(timeSlots.count) time slots from \(beatmap.sections.count) sections...")
         logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections, \(beatmap.hooks.count) hooks")
@@ -236,6 +237,7 @@ final class SequencerService: SequencerServiceProtocol {
         applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
+        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap)
 
         let totalDuration = beatmap.durationSeconds
         let validSlots    = timeSlots.filter { $0.startTime < totalDuration }
@@ -359,24 +361,24 @@ final class SequencerService: SequencerServiceProtocol {
         var pattern: CutPattern = {
             switch type {
             case .intro:
-                return CutPattern(durationsInBeats: [8, 8, 4, 8],              isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [8, 8],                        isAnchoredToBar: true)
             case .verse:
-                return CutPattern(durationsInBeats: [4, 4, 2, 2, 4],           isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [4, 4, 2, 2, 2, 2, 4],         isAnchoredToBar: true)
             case .preChorus:
-                return CutPattern(durationsInBeats: [4, 2, 2, 1, 1],           isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [4, 2, 2, 1, 1, 0.5, 0.5],     isAnchoredToBar: true)
             case .chorus:
-                return CutPattern(durationsInBeats: [8, 4, 4, 2, 2, 4],        isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [8, 2, 2, 1, 1, 1, 1, 2],      isAnchoredToBar: true)
             case .drop:
-                return CutPattern(durationsInBeats: [8, 4, 2, 2, 1, 1, 2, 4],  isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [8, 1, 1, 1, 1, 0.5, 0.5, 1, 1, 2], isAnchoredToBar: true)
             case .breakdown:
-                return CutPattern(durationsInBeats: [16],                       isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [16, 16],                      isAnchoredToBar: true)
             case .bridge:
-                return CutPattern(durationsInBeats: [8, 8, 16],                 isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [8, 8, 4, 4],                  isAnchoredToBar: true)
             case .outro:
-                return CutPattern(durationsInBeats: [8, 16, 32],                isAnchoredToBar: true)
+                return CutPattern(durationsInBeats: [16, 16, 32],                  isAnchoredToBar: true)
             case .buildup:
                 let durs: [Double] = leadsToDrop
-                    ? [4, 4, 2, 2, 1, 1, 0.5, 0.5, 0.25, 0.25]
+                    ? [4, 4, 2, 2, 1, 1, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25]
                     : [4, 2, 2, 1]
                 return CutPattern(durationsInBeats: durs, isAnchoredToBar: leadsToDrop)
             }
@@ -508,24 +510,34 @@ final class SequencerService: SequencerServiceProtocol {
             guard t < section.end else { break }
             let computedEnd = min(rawEnd, section.end)
 
-            let nearStart   = beatmap.nearestBeat(to: t)
-            let actualStart = abs(nearStart - t) <= 0.5 * beatDur ? nearStart : t
+            let isAccel = dBeats < 1.0
 
-            let nearEnd     = beatmap.nearestBeat(to: computedEnd)
-            let snappedEnd  = abs(nearEnd - computedEnd) <= 0.5 * beatDur ? nearEnd : computedEnd
-            let actualEnd   = min(snappedEnd, section.end)
+            let actualStart: Double
+            let actualEnd: Double
+            if isAccel {
+                actualStart = t
+                actualEnd   = min(computedEnd, section.end)
+            } else {
+                let snappedStart = beatmap.nearestBeat(to: t)
+                let snappedEnd   = beatmap.nearestBeat(to: computedEnd)
+                actualStart = snappedStart
+                actualEnd   = min(snappedEnd, section.end)
+            }
 
-            guard actualEnd > actualStart + 0.01 else { t = rawEnd; continue }
+            guard actualEnd > actualStart + 0.01 else {
+                t = isAccel ? rawEnd : max(rawEnd, actualStart + beatDur)
+                continue
+            }
 
             let dur      = actualEnd - actualStart
-            let isFlash  = dur < beatDur
-            let aligned  = abs(nearStart - t) <= 0.5 * beatDur
+            let isFlash  = isAccel && dur < beatDur
+            let aligned  = !isAccel
             let peakBeat = beatmap.strongestBeat(in: actualStart...actualEnd)
 
             slots.append(TimeSlot(startTime: actualStart, endTime: actualEnd,
                                   section: section, beatAligned: aligned,
                                   isFlash: isFlash, peakBeat: peakBeat))
-            t = rawEnd
+            t = isAccel ? rawEnd : actualEnd
         }
     }
 
@@ -777,6 +789,126 @@ final class SequencerService: SequencerServiceProtocol {
             slots.append(hold)
             slots.sort { $0.startTime < $1.startTime }
         }
+    }
+
+    // MARK: - Split Long Slots For Photos
+    // Product invariant: photos should hold roughly 1.2–1.8 s so the edit
+    // feels alive without flickering. The target snaps to a musical beat count
+    // (1 / 2 / 4) based on tempo so cuts always land on strong beats. Hero
+    // holds, breath shots, anticipation holds, hook openers, and sustained
+    // section types (outro/breakdown/bridge) are exempt so the dramatic shape
+    // survives. Do not change the target without discussing pacing with product.
+
+    /// Target musical length for a non-hero photo hold, snapped to {1, 2, 4} beats.
+    /// Aims for ~1.4 s of screen time — slow enough to read, fast enough to feel.
+    private func photoHoldTargetBeats(beatDur: Double, section: SectionType) -> Double {
+        let targetSeconds: Double
+        switch section {
+        case .chorus, .drop:  targetSeconds = 1.0   // peak energy: a touch faster
+        case .verse:          targetSeconds = 1.4
+        case .preChorus:      targetSeconds = 1.2
+        case .buildup:        targetSeconds = 1.2
+        default:              targetSeconds = 1.4
+        }
+        let raw = targetSeconds / max(beatDur, 0.01)
+        if raw < 1.5 { return 1 }
+        if raw < 3.0 { return 2 }
+        return 4
+    }
+
+    private func splitLongSlotsForPhotos(_ slots: inout [TimeSlot],
+                                         beatDur: Double,
+                                         beatmap: Beatmap) {
+        let veryShortBeat = beatDur <= 0.05
+        guard !veryShortBeat else { return }
+
+        var sectionHeroSlotIDs = Set<UUID>()
+        var seenHeroSection    = Set<UUID>()
+        for slot in slots {
+            guard slot.section.type == .chorus || slot.section.type == .drop else { continue }
+            if seenHeroSection.insert(slot.section.id).inserted {
+                sectionHeroSlotIDs.insert(slot.id)
+            }
+        }
+
+        var result = [TimeSlot]()
+        result.reserveCapacity(slots.count * 2)
+        var splitCount = 0
+
+        for slot in slots {
+            let beatsInSlot = slot.duration / beatDur
+            let targetBeats = photoHoldTargetBeats(beatDur: beatDur, section: slot.section.type)
+
+            let exempt = slot.isAnticipationHold
+                || slot.isBreath
+                || slot.isFlash
+                || (slot.hookClusterKey != nil && slot.hookSignatureIndex == 0)
+                || slot.section.type == .outro
+                || slot.section.type == .breakdown
+                || slot.section.type == .bridge
+                || sectionHeroSlotIDs.contains(slot.id)
+
+            // Only split when the slot is meaningfully longer than the target.
+            // A 10% tolerance keeps patterns that already produce on-target
+            // lengths (e.g. a 2-beat slot when targetBeats == 2) intact.
+            if exempt || beatsInSlot <= targetBeats * 1.1 {
+                result.append(slot)
+                continue
+            }
+
+            // Pick interior beats that land on target-beat multiples away from
+            // the slot start. This produces even 2-beat (or 4-beat) sub-slots
+            // snapped to the beatgrid.
+            let chunkDur = targetBeats * beatDur
+            var boundaries: [Double] = [slot.startTime]
+            var cursor = slot.startTime + chunkDur
+            while cursor < slot.endTime - beatDur * 0.25 {
+                let nearest = beatmap.nearestBeat(to: cursor)
+                if nearest > (boundaries.last ?? slot.startTime) + beatDur * 0.5,
+                   nearest < slot.endTime - beatDur * 0.25 {
+                    boundaries.append(nearest)
+                }
+                cursor += chunkDur
+            }
+            boundaries.append(slot.endTime)
+
+            guard boundaries.count > 2 else {
+                result.append(slot)
+                continue
+            }
+
+            for bi in 0..<boundaries.count - 1 {
+                let subStart = boundaries[bi]
+                let subEnd   = boundaries[bi + 1]
+                guard subEnd > subStart + 0.01 else { continue }
+
+                let inheritedSigIdx: Int? = {
+                    guard slot.hookClusterKey != nil else { return nil }
+                    return bi == 0 ? slot.hookSignatureIndex : nil
+                }()
+
+                let sub = TimeSlot(
+                    startTime: subStart,
+                    endTime: subEnd,
+                    section: slot.section,
+                    beatAligned: true,
+                    isFlash: false,
+                    peakBeat: beatmap.strongestBeat(in: subStart...subEnd),
+                    isBreath: false,
+                    hookClusterKey: slot.hookClusterKey,
+                    hookRepeatIndex: slot.hookRepeatIndex,
+                    hookSignatureIndex: inheritedSigIdx,
+                    isAnticipationHold: false
+                )
+                result.append(sub)
+            }
+            splitCount += 1
+        }
+
+        if splitCount > 0 {
+            logger.info("Sequencer: split \(splitCount) long photo-eligible slots (target \(beatDur, format: .fixed(precision: 2))s/beat, total slots now \(result.count))")
+        }
+        slots = result
     }
 
     // MARK: - Grading Hint

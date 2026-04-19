@@ -143,26 +143,27 @@ struct WorkspaceView: View {
 
                 if workspaceVM.hasSong && !workspaceVM.assets.isEmpty {
                     MSDivider()
-                    if workspaceVM.hasPlan {
+                    if workspaceVM.isProcessing {
+                        // While processing, show only Cancel — cleaner than a
+                        // loading primary + cancel stacked together.
+                        if workspaceVM.isCancellable {
+                            MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
+                                workspaceVM.cancelPipeline()
+                            }
+                        }
+                    } else if workspaceVM.hasPlan {
                         MSSecondaryButton("Re-run Pipeline", icon: "arrow.clockwise") {
                             Task { await workspaceVM.runPipeline() }
                         }
-                        .disabled(workspaceVM.isProcessing)
                     } else {
                         MSPrimaryButton(
-                            workspaceVM.isProcessing ? "Processing..." : "Run Pipeline",
-                            icon: workspaceVM.isProcessing ? nil : "sparkles",
-                            isLoading: workspaceVM.isProcessing
+                            "Run Pipeline",
+                            icon: "sparkles",
+                            isLoading: false
                         ) {
                             Task { await workspaceVM.runPipeline() }
                         }
                         .disabled(!workspaceVM.canRunPipeline)
-                    }
-
-                    if workspaceVM.isCancellable {
-                        MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
-                            workspaceVM.cancelPipeline()
-                        }
                     }
                 }
             }
@@ -196,6 +197,10 @@ struct WorkspaceView: View {
 
             if showMissingAssetsBanner {
                 missingAssetsBanner
+            }
+
+            if let shortfall = workspaceVM.clipShortfall {
+                clipShortfallBanner(shortfall)
             }
 
             Group {
@@ -250,6 +255,44 @@ struct WorkspaceView: View {
             .foregroundStyle(Color.accentColor)
             Button {
                 showMissingAssetsBanner = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { MSDivider() }
+    }
+
+    private func clipShortfallBanner(_ shortfall: SequencerPreflight) -> some View {
+        let seconds = Int(shortfall.estimatedShortfallSeconds.rounded())
+        let mins = seconds / 60
+        let secs = seconds % 60
+        let timeStr = String(format: "%d:%02d", mins, secs)
+        return HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
+            Text("Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat).")
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Add Photos") {
+                workspaceVM.selectedTab = .photos
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            Button("Build Anyway") {
+                Task { await workspaceVM.acknowledgeShortfallAndBuild() }
+            }
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            Button {
+                workspaceVM.dismissShortfall()
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 11))

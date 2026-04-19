@@ -7,10 +7,6 @@ struct StoryboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let shortfall = workspaceVM.clipShortfall {
-                clipShortfallBanner(shortfall)
-            }
-
             Group {
                 if let plan = workspaceVM.montagePlan {
                     StoryboardContentView(plan: plan)
@@ -32,57 +28,46 @@ struct StoryboardView: View {
         }
     }
 
-    // MARK: - Clip Shortfall Banner
-
-    private func clipShortfallBanner(_ shortfall: SequencerPreflight) -> some View {
-        let seconds = Int(shortfall.estimatedShortfallSeconds.rounded())
-        let mins = seconds / 60
-        let secs = seconds % 60
-        let timeStr = String(format: "%d:%02d", mins, secs)
-        return HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
-            Text("Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat).")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Add Photos") {
-                workspaceVM.selectedTab = .photos
-            }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            Button("Build Anyway") {
-                Task { await workspaceVM.acknowledgeShortfallAndBuild() }
-            }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            Button {
-                workspaceVM.dismissShortfall()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.orange.opacity(0.08))
-        .overlay(alignment: .bottom) { MSDivider() }
-    }
-
     private var generatingView: some View {
         VStack(spacing: MS.Spacing.lg) {
-            ProgressView()
-                .controlSize(.large)
-                .tint(.accentColor)
+            Image(systemName: "sparkles")
+                .font(.system(size: 36))
+                .foregroundStyle(Color.accentColor)
+
             Text(workspaceVM.processingStatus.message)
                 .font(MS.Font.heading)
                 .foregroundStyle(.secondary)
-            Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
-                .font(MS.Font.caption)
-                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+
+            // Progress bar — mirrors the pipeline panel style.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Spacer()
+                    Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
+                        .font(MS.Font.micro)
+                        .foregroundStyle(.secondary)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary).frame(height: 6)
+                        Capsule()
+                            .fill(Color.accentColor.gradient)
+                            .frame(width: geo.size.width * workspaceVM.processingStatus.progress, height: 6)
+                            .shadow(color: Color.accentColor.opacity(workspaceVM.isProcessing ? 0.3 : 0), radius: 4)
+                            .animation(.spring(), value: workspaceVM.processingStatus.progress)
+                    }
+                }
+                .frame(height: 6)
+
+                // Three tiny segmented sub-bars — score / prompts / sequence.
+                HStack(spacing: 4) {
+                    phaseSegment(phase: .scoringPhotos)
+                    phaseSegment(phase: .generatingPrompts)
+                    phaseSegment(phase: .sequencing)
+                }
+                .frame(height: 3)
+            }
+            .frame(maxWidth: 360)
 
             if workspaceVM.isCancellable {
                 MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
@@ -91,6 +76,19 @@ struct StoryboardView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(MS.Spacing.xl)
+    }
+
+    private func phaseSegment(phase: ProcessingPhase) -> some View {
+        let isActive = workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing
+        let isComplete: Bool = {
+            if workspaceVM.processingStatus.isComplete { return true }
+            return phase.index < workspaceVM.processingStatus.phase.index
+        }()
+        let color: Color = isComplete ? .green : (isActive ? .orange : Color.secondary.opacity(0.25))
+        return Capsule()
+            .fill(color)
+            .frame(height: 3)
     }
 }
 
@@ -103,6 +101,7 @@ struct StoryboardContentView: View {
     @State private var showExportSheet = false
     @State private var showDeleteConfirm = false
     @State private var showReRenderConfirm = false
+    @State private var transitionsExpanded = false
 
     private var selectedItem: MontageSequenceItem? {
         guard let id = selectedItemID else { return nil }
@@ -186,6 +185,7 @@ struct StoryboardContentView: View {
                         isRepeatedClip: repeated.contains(item.assetID)
                     )
                         .tag(item.id)
+                        .onTapGesture { selectedItemID = item.id }
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
@@ -205,6 +205,9 @@ struct StoryboardContentView: View {
                 if let id = selectedItemID, !newSequence.contains(where: { $0.id == id }) {
                     selectedItemID = nil
                 }
+            }
+            .onChange(of: workspaceVM.isGeneratingPlan) { _, gen in
+                if gen { selectedItemID = nil }
             }
         }
     }
@@ -310,24 +313,6 @@ struct StoryboardContentView: View {
                 }
                 .msCard()
 
-                // §3.11: fade-out edge masks on scroll rows
-                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                    MSSectionHeader(title: "Transitions")
-                    HStack {
-                        Text("In").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
-                        transitionScrollRow(current: item.transitionIn) { trans in
-                            workspaceVM.updateTransition(for: item, transitionIn: trans)
-                        }
-                    }
-                    HStack {
-                        Text("Out").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
-                        transitionScrollRow(current: item.transitionOut) { trans in
-                            workspaceVM.updateTransition(for: item, transitionOut: trans)
-                        }
-                    }
-                }
-                .msCard()
-
                 if !item.selectionReason.isEmpty || item.gradingHint != nil {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                         MSSectionHeader(title: "Why Selected")
@@ -344,6 +329,38 @@ struct StoryboardContentView: View {
                     }
                     .msCard()
                 }
+
+                DisclosureGroup(isExpanded: $transitionsExpanded) {
+                    VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                        HStack {
+                            Text("In").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
+                            transitionScrollRow(current: item.transitionIn) { trans in
+                                workspaceVM.updateTransition(for: item, transitionIn: trans)
+                            }
+                        }
+                        HStack {
+                            Text("Out").font(MS.Font.micro).foregroundStyle(.tertiary).frame(width: 20)
+                            transitionScrollRow(current: item.transitionOut) { trans in
+                                workspaceVM.updateTransition(for: item, transitionOut: trans)
+                            }
+                        }
+                    }
+                    .padding(.top, MS.Spacing.xs)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: item.transitionIn.icon)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Text("Transitions")
+                            .font(MS.Font.caption)
+                            .foregroundStyle(.secondary)
+                        Text("\(item.transitionIn.rawValue) → \(item.transitionOut.rawValue)")
+                            .font(MS.Font.micro)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                .msCard()
             }
             .padding(MS.Spacing.md)
         }
@@ -769,23 +786,28 @@ struct StoryboardSequenceRow: View {
                     if isRepeatedClip {
                         MSBadge(text: "⟲ Repeat", color: .orange, size: .small)
                     }
-                    if let firstLabel = asset?.sceneLabels?.first, !firstLabel.isEmpty {
-                        MSBadge(
-                            text: String(firstLabel.prefix(10)),
-                            color: .secondary,
-                            size: .small
-                        )
-                    }
+                }
+                if let caption = asset?.sceneCaption, !caption.isEmpty {
+                    Text(caption)
+                        .font(MS.Font.caption)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else if let firstLabel = asset?.sceneLabels?.first, !firstLabel.isEmpty {
+                    Text(firstLabel)
+                        .font(MS.Font.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 HStack(spacing: MS.Spacing.xs) {
                     Text(String(format: "%.1fs", item.duration))
                         .font(MS.Font.micro).foregroundStyle(.secondary)
                     Text("·").foregroundStyle(.tertiary)
-                    HStack(spacing: 2) {
-                        Image(systemName: item.transitionIn.icon).font(.system(size: 9))
-                        Text(item.transitionIn.rawValue).font(MS.Font.micro)
-                    }
-                    .foregroundStyle(.tertiary)
+                    Image(systemName: item.transitionIn.icon)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .help(item.transitionIn.rawValue)
                 }
             }
 
