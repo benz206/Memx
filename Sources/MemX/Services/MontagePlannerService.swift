@@ -73,7 +73,7 @@ final class SequencerService: SequencerServiceProtocol {
         applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
-        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap)
+        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap, vibe: settings.vibe)
 
         onProgress(0.20, "Built \(timeSlots.count) time slots from \(beatmap.sections.count) sections...")
         logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections, \(beatmap.hooks.count) hooks")
@@ -117,7 +117,8 @@ final class SequencerService: SequencerServiceProtocol {
             if let forced = forcedAsset {
                 asset = forced
             } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
-                                               prev: prevAsset, arcIntensity: arcIntensity) {
+                                               prev: prevAsset, arcIntensity: arcIntensity,
+                                               settings: settings) {
                 asset = picked
             } else {
                 continue
@@ -142,11 +143,12 @@ final class SequencerService: SequencerServiceProtocol {
                                    isFirstOfSection: isFirst, beatmap: beatmap,
                                    vibe: settings.vibe)
 
-            let microOffset = (position > 0 && !isHero
-                               && trans != .fadeFromBlack && trans != .dissolve) ? 0.04 : 0.0
+            let microOffset = 0.0
 
-            let itemStart = max(0, slot.startTime - microOffset)
-            let itemEnd   = min(max(0, slot.endTime - microOffset), totalDuration)
+            let snappedStart = beatmap.nearestBeat(to: slot.startTime)
+            let snappedEnd = slot.isFlash ? slot.endTime : beatmap.nearestBeat(to: slot.endTime)
+            let itemStart = max(0, snappedStart - microOffset)
+            let itemEnd   = min(max(itemStart + 0.01, snappedEnd - microOffset), totalDuration)
 
             let peakBeat = slot.peakBeat ?? slot.startTime
             let clipOffset: TimeInterval
@@ -237,7 +239,7 @@ final class SequencerService: SequencerServiceProtocol {
         applyBreathShots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyHookSlots(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
         applyAnticipationHold(to: &timeSlots, beatmap: beatmap, beatDur: beatDur)
-        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap)
+        splitLongSlotsForPhotos(&timeSlots, beatDur: beatDur, beatmap: beatmap, vibe: settings.vibe)
 
         let totalDuration = beatmap.durationSeconds
         let validSlots    = timeSlots.filter { $0.startTime < totalDuration }
@@ -801,14 +803,17 @@ final class SequencerService: SequencerServiceProtocol {
 
     /// Target musical length for a non-hero photo hold, snapped to {1, 2, 4} beats.
     /// Aims for ~1.4 s of screen time — slow enough to read, fast enough to feel.
-    private func photoHoldTargetBeats(beatDur: Double, section: SectionType) -> Double {
-        let targetSeconds: Double
+    private func photoHoldTargetBeats(beatDur: Double, section: SectionType, vibe: MontageVibe) -> Double {
+        var targetSeconds: Double
         switch section {
         case .chorus, .drop:  targetSeconds = 1.0   // peak energy: a touch faster
         case .verse:          targetSeconds = 1.4
         case .preChorus:      targetSeconds = 1.2
         case .buildup:        targetSeconds = 1.2
         default:              targetSeconds = 1.4
+        }
+        if vibe == .nostalgic {
+            targetSeconds *= 1.5
         }
         let raw = targetSeconds / max(beatDur, 0.01)
         if raw < 1.5 { return 1 }
@@ -818,7 +823,8 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func splitLongSlotsForPhotos(_ slots: inout [TimeSlot],
                                          beatDur: Double,
-                                         beatmap: Beatmap) {
+                                         beatmap: Beatmap,
+                                         vibe: MontageVibe) {
         let veryShortBeat = beatDur <= 0.05
         guard !veryShortBeat else { return }
 
@@ -837,7 +843,7 @@ final class SequencerService: SequencerServiceProtocol {
 
         for slot in slots {
             let beatsInSlot = slot.duration / beatDur
-            let targetBeats = photoHoldTargetBeats(beatDur: beatDur, section: slot.section.type)
+            let targetBeats = photoHoldTargetBeats(beatDur: beatDur, section: slot.section.type, vibe: vibe)
 
             let exempt = slot.isAnticipationHold
                 || slot.isBreath
@@ -1045,7 +1051,8 @@ final class SequencerService: SequencerServiceProtocol {
     }
 
     private func scoreAsset(_ a: MediaAsset, for slot: TimeSlot,
-                             prev: MediaAsset?, arcIntensity: Double) -> Double {
+                             prev: MediaAsset?, arcIntensity: Double,
+                             settings: MontageSettings) -> Double {
         let isHero      = slot.section.type == .chorus || slot.section.type == .drop
         let target      = targetEnergy(for: slot, arcIntensity: arcIntensity)
         let energy      = visualEnergy(a)
@@ -1074,23 +1081,30 @@ final class SequencerService: SequencerServiceProtocol {
 
         let isHeroOrPre = isHero || slot.section.type == .preChorus
         let peakFit: Double = (isHeroOrPre && (a.emotionScore ?? 0) > 0.7) ? 0.15 : 0.0
+        let semanticFit = semanticFit(a, slot: slot, settings: settings)
+        let motionFit = motionFit(a, slot: slot, targetEnergy: target, settings: settings)
+        let continuityFit = continuityFit(a, prev: prev, slot: slot)
 
-        return 0.30 * energyFit
-             + 0.20 * durationFit
-             + 0.15 * warmthFit
-             + 0.15 * noveltyVsPrev
-             + 0.10 * facesFit
-             + 0.10 * peakFit
+        return 0.23 * energyFit
+             + 0.17 * semanticFit
+             + 0.14 * motionFit
+             + 0.12 * durationFit
+             + 0.11 * warmthFit
+             + 0.10 * continuityFit
+             + 0.06 * noveltyVsPrev
+             + 0.04 * facesFit
+             + 0.03 * peakFit
              + heroBonus
     }
 
     private func selectAsset(for slot: TimeSlot, from pool: [MediaAsset],
-                              used: Set<String>, prev: MediaAsset?, arcIntensity: Double) -> MediaAsset? {
+                              used: Set<String>, prev: MediaAsset?, arcIntensity: Double,
+                              settings: MontageSettings) -> MediaAsset? {
         let isHero = slot.section.type == .chorus || slot.section.type == .drop
         let unused = pool.filter { !used.contains(clipKey($0)) }
 
         if !unused.isEmpty {
-            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity)) }
+            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, settings: settings)) }
             if let (best, score) = scored.max(by: { $0.1 < $1.1 }), score > 0.35 {
                 return best
             }
@@ -1098,6 +1112,133 @@ final class SequencerService: SequencerServiceProtocol {
         }
 
         return isHero ? pool.first : pool.last
+    }
+
+    private func semanticFit(_ asset: MediaAsset, slot: TimeSlot, settings: MontageSettings) -> Double {
+        let target = semanticKeywords(for: slot, settings: settings)
+        let text = semanticText(for: asset)
+        guard !target.isEmpty, !text.isEmpty else { return 0.5 }
+
+        let targetHits = target.reduce(0) { partial, word in
+            partial + (text.localizedCaseInsensitiveContains(word) ? 1 : 0)
+        }
+        let labelHits = (asset.sceneLabels ?? []).reduce(0) { partial, label in
+            partial + (target.contains { label.localizedCaseInsensitiveContains($0) } ? 1 : 0)
+        }
+        let raw = Double(targetHits + labelHits) / Double(max(target.count, 1))
+        return min(1.0, 0.35 + raw * 0.75)
+    }
+
+    private func motionFit(_ asset: MediaAsset, slot: TimeSlot, targetEnergy: Float, settings: MontageSettings) -> Double {
+        let magnitude = asset.motionVector?.magnitude ?? (asset.isVideo ? 0.45 : 0.12)
+        let desired: Double
+        switch slot.section.type {
+        case .intro, .outro, .breakdown: desired = settings.vibe == .hype ? 0.35 : 0.18
+        case .verse, .bridge:           desired = 0.38
+        case .preChorus, .buildup:      desired = 0.62
+        case .chorus:                   desired = 0.70
+        case .drop:                     desired = 0.88
+        }
+        let energyAdjusted = (desired + Double(targetEnergy)) * 0.5
+        let magnitudeFit = 1.0 - min(1.0, abs(magnitude - energyAdjusted))
+
+        let directionFit: Double
+        if let prev = asset.motionVector {
+            switch slot.section.type {
+            case .buildup, .preChorus:
+                directionFit = prev.dy >= -0.1 ? 1.0 : 0.75
+            case .drop, .chorus:
+                directionFit = abs(prev.dx) >= abs(prev.dy) ? 1.0 : 0.85
+            default:
+                directionFit = 0.9
+            }
+        } else {
+            directionFit = asset.isVideo ? 0.75 : 0.55
+        }
+
+        return max(0.0, min(1.0, magnitudeFit * 0.75 + directionFit * 0.25))
+    }
+
+    private func continuityFit(_ asset: MediaAsset, prev: MediaAsset?, slot: TimeSlot) -> Double {
+        guard let prev else { return 0.65 }
+        var score = 0.5
+
+        if let sim = cosine(asset.semanticEmbedding, prev.semanticEmbedding) {
+            let sameSectionSweetSpot = slot.section.type == .verse || slot.section.type == .intro || slot.section.type == .outro
+            let target = sameSectionSweetSpot ? 0.62 : 0.42
+            score += 0.35 * (1.0 - min(1.0, abs(sim - target)))
+        }
+        if asset.eventLabel != nil, asset.eventLabel == prev.eventLabel {
+            score += 0.1
+        }
+        if let amv = asset.motionVector, let pmv = prev.motionVector {
+            let directionalMatch = 1.0 - min(1.0, abs(amv.dx - pmv.dx) * 0.5 + abs(amv.dy - pmv.dy) * 0.5)
+            score += 0.2 * directionalMatch
+        }
+        if asset.shotType != prev.shotType {
+            score += 0.08
+        }
+        return max(0.0, min(1.0, score))
+    }
+
+    private func cosine(_ lhs: [Float]?, _ rhs: [Float]?) -> Double? {
+        guard let lhs, let rhs, !lhs.isEmpty, lhs.count == rhs.count else { return nil }
+        var dot = Float(0)
+        var ln = Float(0)
+        var rn = Float(0)
+        for i in lhs.indices {
+            dot += lhs[i] * rhs[i]
+            ln += lhs[i] * lhs[i]
+            rn += rhs[i] * rhs[i]
+        }
+        guard ln > 0, rn > 0 else { return nil }
+        return Double(dot / sqrt(ln * rn))
+    }
+
+    private func semanticText(for asset: MediaAsset) -> String {
+        [
+            asset.semanticSummary,
+            asset.sceneCaption,
+            asset.sceneLabels?.joined(separator: " "),
+            asset.eventLabel,
+            asset.shotType?.rawValue,
+            asset.isVideo ? "video motion" : "photo still"
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+    }
+
+    private func semanticKeywords(for slot: TimeSlot, settings: MontageSettings) -> [String] {
+        var words: [String] = []
+        switch settings.vibe {
+        case .nostalgic: words += ["warm", "memory", "family", "golden", "soft", "emotional"]
+        case .cinematic: words += ["wide", "dramatic", "landscape", "silhouette", "contrast", "epic"]
+        case .hype:      words += ["motion", "action", "crowd", "bright", "energy", "fast"]
+        case .wholesome: words += ["smile", "family", "friends", "joy", "hug", "warm"]
+        case .funny:     words += ["playful", "surprise", "expression", "fun", "party"]
+        case .travel:    words += ["travel", "landscape", "city", "road", "water", "mountain", "wide"]
+        }
+
+        switch settings.focus {
+        case .family:     words += ["family", "child", "parent", "home", "group"]
+        case .friends:    words += ["friends", "group", "party", "laugh", "crowd"]
+        case .scenery:    words += ["landscape", "sky", "water", "mountain", "city", "wide"]
+        case .everything: break
+        }
+
+        switch slot.section.type {
+        case .intro:     words += ["establishing", "wide", "quiet", "opening"]
+        case .verse:     words += ["story", "detail", "face", "place"]
+        case .preChorus: words += ["anticipation", "rising", "look", "motion"]
+        case .chorus:    words += ["joy", "hero", "group", "wide", "emotional"]
+        case .drop:      words += ["motion", "action", "impact", "fast", "video"]
+        case .buildup:   words += ["motion", "rising", "detail", "tension"]
+        case .bridge:    words += ["reflective", "wide", "quiet", "lonely"]
+        case .breakdown: words += ["calm", "still", "texture", "night"]
+        case .outro:     words += ["closing", "warm", "memory", "soft"]
+        }
+        return Array(Set(words))
     }
 
     // MARK: - Selection Reason

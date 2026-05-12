@@ -21,7 +21,11 @@ protocol MotionPromptServiceProtocol {
 final class MotionPromptService: MotionPromptServiceProtocol {
 
     static let shared = MotionPromptService()
-    private init() {}
+    private let openRouterService: OpenRouterServiceProtocol
+
+    init(openRouterService: OpenRouterServiceProtocol = OpenRouterService.shared) {
+        self.openRouterService = openRouterService
+    }
 
     internal static var _testForceMock = false
 
@@ -40,6 +44,13 @@ final class MotionPromptService: MotionPromptServiceProtocol {
         guard !Self._testForceMock else {
             try await Task.sleep(for: .milliseconds(Int.random(in: 150...300)))
             return mockPrompt(energy: songEnergy, section: sectionType, asset: asset)
+        }
+        if let prompt = await openRouterService.generateEditDirection(
+            for: asset,
+            songEnergy: songEnergy,
+            sectionType: sectionType
+        ), !prompt.isEmpty {
+            return prompt
         }
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {

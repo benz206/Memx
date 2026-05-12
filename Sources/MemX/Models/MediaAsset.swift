@@ -88,6 +88,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var faceAreaFraction: Double?
     var sceneLabels: [String]?          // Vision VNClassifyImage top-N labels above confidence threshold
     var sceneCaption: String?           // Natural-language caption from Foundation Models (nil if unavailable)
+    var semanticSummary: String?        // Edit-aware summary used for mood/content matching
+    var semanticEmbedding: [Float]?      // OpenRouter/free embedding for semantic sequencing
     var isSelected: Bool = false
 
     // Derived
@@ -134,7 +136,9 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         colorTemperature: Double? = nil,
         faceAreaFraction: Double? = nil,
         sceneLabels: [String]? = nil,
-        sceneCaption: String? = nil
+        sceneCaption: String? = nil,
+        semanticSummary: String? = nil,
+        semanticEmbedding: [Float]? = nil
     ) {
         self.id = id
         self.mediaType = mediaType
@@ -151,6 +155,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         self.faceAreaFraction = faceAreaFraction
         self.sceneLabels = sceneLabels
         self.sceneCaption = sceneCaption
+        self.semanticSummary = semanticSummary
+        self.semanticEmbedding = semanticEmbedding
     }
 }
 

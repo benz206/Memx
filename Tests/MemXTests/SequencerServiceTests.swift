@@ -315,6 +315,62 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertFalse(nonEmptyPrompts.isEmpty, "Expected some clips to have motion prompts")
     }
 
+    func testBuildSequencePrefersSemanticFitForRequestedMood() async {
+        var family = MediaAsset(id: "family", filename: "family.jpg", sceneLabels: ["people", "home"], sceneCaption: "Family smiling together indoors")
+        family.analysisScore = 0.9
+        family.qualityScore = 0.9
+        family.emotionScore = 0.6
+        family.noveltyScore = 0.5
+        family.semanticSummary = "warm family home memory"
+
+        var travel = MediaAsset(id: "travel", filename: "travel.jpg", shotType: .wide, sceneLabels: ["mountain", "sky", "road"], sceneCaption: "A wide mountain road under an open sky")
+        travel.analysisScore = 0.9
+        travel.qualityScore = 0.9
+        travel.emotionScore = 0.6
+        travel.noveltyScore = 0.5
+        travel.semanticSummary = "wide travel landscape road mountain"
+
+        let beatmap = Beatmap(
+            bpm: 120,
+            durationSeconds: 8,
+            energyCurve: [EnergyPoint(time: 0, energy: 0.4), EnergyPoint(time: 8, energy: 0.5)],
+            sections: [BeatSection(type: .intro, start: 0, end: 8, energyAvg: 0.4, cutStyle: .onBeat)],
+            beats: Array(stride(from: 0.0, through: 8.0, by: 0.5)),
+            drops: [],
+            vocalPeaks: []
+        )
+
+        let plan = await sequencer.buildSequence(
+            title: "Semantic",
+            settings: MontageSettings(vibe: .travel, focus: .scenery),
+            assets: [family, travel],
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        XCTAssertEqual(plan.sequence.first?.assetID, "travel")
+    }
+
+    func testBuildSequenceCutStartsStayOnBeatGrid() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmap(duration: 60)
+
+        let plan = await sequencer.buildSequence(
+            title: "Beat Locked",
+            settings: settings,
+            assets: assets,
+            motionPrompts: [],
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        for item in plan.sequence.dropFirst() {
+            let nearest = beatmap.nearestBeat(to: item.startTime)
+            XCTAssertEqual(item.startTime, nearest, accuracy: 0.001, "Clip \(item.position) is not beat-locked")
+        }
+    }
+
     // MARK: - buildSequence: progress callbacks
 
     func testBuildSequenceCallsProgressCallback() async {

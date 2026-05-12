@@ -98,6 +98,7 @@ final class WorkspaceViewModel {
     // MARK: Services
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol
+    private let semanticService: OpenRouterServiceProtocol
     private let promptService: MotionPromptServiceProtocol
     private let sequencerService: SequencerServiceProtocol
     private let renderService: VideoRenderServiceProtocol
@@ -108,6 +109,7 @@ final class WorkspaceViewModel {
         appVM: AppViewModel,
         beatmapService: BeatmapServiceProtocol = BeatmapService.shared,
         scoringService: PhotoScoringServiceProtocol = PhotoScoringService.shared,
+        semanticService: OpenRouterServiceProtocol = OpenRouterService.shared,
         promptService: MotionPromptServiceProtocol = MotionPromptService.shared,
         sequencerService: SequencerServiceProtocol = SequencerService.shared,
         renderService: VideoRenderServiceProtocol = VideoRenderService.shared
@@ -116,6 +118,7 @@ final class WorkspaceViewModel {
         self.appVM = appVM
         self.beatmapService = beatmapService
         self.scoringService = scoringService
+        self.semanticService = semanticService
         self.promptService = promptService
         self.sequencerService = sequencerService
         self.renderService = renderService
@@ -233,6 +236,14 @@ final class WorkspaceViewModel {
 
             let scoreMap = Dictionary(uniqueKeysWithValues: result.scoredAssets.map { ($0.id, $0) })
             assets = assets.map { scoreMap[$0.id] ?? $0 }
+            let semanticAssets = await semanticService.enrichAssets(assets) { [weak self] prog, msg in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.processingStatus.progress = 0.50 + prog * 0.05
+                    self.processingStatus.message = msg
+                }
+            }
+            assets = semanticAssets
             let included = result.candidates.filter(\.isIncluded).count
             logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
             photosScoredSuccessfully = true
