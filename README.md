@@ -1,17 +1,17 @@
 # MemX
 
-A macOS 26 SwiftUI app that turns your Photos library into a cinematic memory montage, beat-synced to a song. Analysis, scoring, motion planning, and render all run entirely on-device using Apple frameworks.
+A macOS 26 SwiftUI app that turns your Photos library into a cinematic memory montage, beat-synced to a song. Audio analysis and final stitching run on the Mac; visual scoring, captions, and semantic preparation are outsourced to OpenRouter.
 
-The pipeline is four tabs, in order: **Song → Photos → Motion → Storyboard**. Drop in an audio file, pick your photos, run the pipeline, render an MP4.
+The pipeline is three tabs, in order: **Song → Photos → Storyboard**. Drop in an audio file, pick your photos, run the pipeline, render an MP4.
 
 ---
 
 ## Highlights
 
-- **Real on-device analysis** — Vision face/saliency/classify, `vDSP` autocorrelation BPM, AVFoundation frame scoring. No mock fallbacks behind the hood.
+- **OpenRouter visual orchestration** — downscaled representative frames go to OpenRouter for quality, emotion, novelty, captions, semantic summaries, and edit-use metadata.
 - **Beat-synced sequencing** — song energy arc, section detection, onset grid, and mood arc drive clip duration, ordering, and transition choice.
 - **Real render** — `AVMutableComposition` + `AVAssetExportSession` produces an actual MP4 at the end. Song is mixed in; clips are exported, stitched, and persisted.
-- **Privacy first** — everything runs on-device. No images, prompts, or analysis ever leave your Mac.
+- **Local stitching** — the Mac handles Photos access, audio beat analysis, and the final AVFoundation MP4 render.
 - **Non-blocking UI** — every service is `nonisolated` (no default `@MainActor` isolation) and heavy work runs in bounded `TaskGroup`s. You can cancel mid-pipeline and mid-render.
 - **Project persistence** — projects are JSON-serialized to `~/Library/Application Support/MemX/projects.json` with atomic writes, and `PHAsset` references are restored when you reopen a project.
 
@@ -45,21 +45,20 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # 192 test
 ## The Pipeline
 
 ```
-   Song import            Photo import           Motion prompts        Storyboard + render
-┌──────────────────┐   ┌──────────────────┐   ┌───────────────────┐  ┌─────────────────────┐
-│ AVAudioFile      │   │ PhotosPicker +   │   │ Per-asset prompt  │  │ SequencerService    │
-│ stream → mono    │   │ PHCachingImage-  │   │ (Apple Foundation │  │ builds beat-aligned │
-│ 22.05 kHz        │   │ Manager          │   │ Models, on-device)│  │ sequence            │
-│                  │   │                  │   │                   │  │                     │
-│ vDSP autocorr    │   │ Vision: face,    │   │ energy-aware text │  │ AVMutableComposition│
-│ BPM detection    │   │ saliency,        │   │ describing motion │  │ + AVAssetExport-    │
-│                  │   │ classify         │   │ per clip          │  │ Session → .mp4      │
-│ Onset + section  │   │                  │   │                   │  │                     │
-│ detection        │   │ Bounded Task-    │   │ 6s timeout, falls │  │ Mood arc drives     │
-│                  │   │ Group (6-way)    │   │ back to heuristic │  │ transitions + dur.  │
-└──────────────────┘   └──────────────────┘   └───────────────────┘  └─────────────────────┘
-   BeatmapService         PhotoScoringService    MotionPromptService   SequencerService +
-                          VideoAnalysisService                         VideoRenderService
+   Song import            Photo import                  Storyboard + render
+┌──────────────────┐   ┌──────────────────┐      ┌─────────────────────┐
+│ AVAudioFile      │   │ PhotosPicker +   │      │ SequencerService    │
+│ stream → mono    │   │ PHCachingImage-  │      │ builds beat-aligned │
+│ 22.05 kHz        │   │ Manager          │      │ sequence            │
+│                  │   │                  │      │                     │
+│ vDSP autocorr    │   │ OpenRouter       │      │ AVMutableComposition│
+│ BPM detection    │   │ visual scoring   │      │ + AVAssetExport-    │
+│                  │   │                  │      │ Session → .mp4      │
+│ Onset + section  │   │ Bounded Task-    │      │ Story ramp drives   │
+│ detection        │   │ Group            │      │ clip density        │
+└──────────────────┘   └──────────────────┘      └─────────────────────┘
+   BeatmapService         PhotoScoringService      SequencerService +
+                          VideoAnalysisService     VideoRenderService
 ```
 
 Every phase reports progress through a callback, and every long-running phase is cancellable via a "Cancel" button in the sidebar footer.
@@ -77,26 +76,20 @@ Every phase reports progress through a callback, and every long-running phase is
 
 ### Photo scoring (`PhotoScoringService`)
 
-- Vision requests per asset: `VNDetectFaceRectanglesRequest`, `VNGenerateAttentionBasedSaliencyImageRequest`, `VNClassifyImageRequest`.
-- Runs in a **`withThrowingTaskGroup` bounded at 6 concurrent** per-asset analyses; preserves input order via an indexed result struct.
-- Per-task "Starting N/total…" progress ticks so the bar never looks stuck while iCloud photos fetch.
-- Fetches at **384 px `.opportunistic`** with a `resumed` guard that resolves on the non-degraded callback — fast enough for Vision, cheap enough for iCloud.
+- Fetches a downscaled photo or one representative video frame, JPEG-compresses it, and sends it to OpenRouter.
+- OpenRouter returns strict storyboard metadata: `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels`, `sceneCaption`, `semanticSummary`, `shotType`, warmth, face estimate, and best video start.
+- Runs in a bounded `withThrowingTaskGroup`; preserves input order via an indexed result struct.
+- Falls back to lightweight metadata heuristics when the API key or model call is unavailable, so development still works offline.
 
 ### Video analysis (`VideoAnalysisService`)
 
-- Replaces deprecated `copyCGImage(at:actualTime:)` with `AVAssetImageGenerator.images(for:)` (AsyncSequence).
-- Frames batched 6-wide, each batch runs the 3 Vision requests with `async let`.
-
-### Motion prompts (`MotionPromptService`)
-
-- Calls `SystemLanguageModel` + `LanguageModelSession` (Apple Foundation Models, macOS 26) entirely on-device.
-- Builds a text prompt from `asset.sceneCaption`, `asset.sceneLabels`, song energy bucket, and section type.
-- Races the model against a **6-second wall-clock timeout** via `withTaskGroup`; falls back to a deterministic heuristic prompt on timeout or model unavailability.
-- Strips leading/trailing quotes from the model response.
+- The old local Vision video scorer is now a compatibility facade.
+- Real video prep lives in `PhotoScoringService`: one representative frame plus metadata is sent to OpenRouter, and final source clipping still happens locally during render.
 
 ### Sequencer + render (`SequencerService`, `VideoRenderService`)
 
-- Sequencer groups candidates by event, picks top-3 per event to preserve the emotional arc, and adjusts clip durations against pacing + score (`>0.85` → +40%, `<0.55` → −30%).
+- Sequencer builds a story ramp: readable regular cuts at the start, tighter pre-chorus/buildup pacing, and denser clip coverage on drops or late choruses.
+- Hook repeats reuse signature assets for déjà-vu/payoff, while semantic summaries and embeddings bias clip choice toward the requested vibe and song section.
 - Render uses `AVMutableComposition.insertTimeRange` for each clip, attaches the audio track, and exports through `AVAssetExportSession`.
 - Clip exports run in a **`TaskGroup` capped at 3 concurrent** (memory pressure from H.264 encoders is the real constraint).
 
@@ -124,7 +117,7 @@ Every phase reports progress through a callback, and every long-running phase is
 
 ## UX & Flow
 
-- **Privacy Settings** — accessible behind a gear icon on the Landing view. Confirms all AI runs on-device.
+- **Privacy Settings** — accessible behind a gear icon on the Landing view. Shows that OpenRouter handles AI orchestration while the Mac handles media access and stitching.
 - **Step gating** — sidebar shows `checkmark.circle.fill` for completed steps, `circle.dotted` for the active one, `lock.fill` for unreachable. Navigating is never blocked; the lock is a cue, not a barrier.
 - **Persistent pipeline runner** — "Run Pipeline" lives in the sidebar footer on every tab once `hasSong && !assets.isEmpty`, with a matching "Cancel" when a task is in flight.
 - **Honest render steps** — the progress list shows what actually runs (clip stitch, audio attach, `AVAssetExportSession`). Planned items are tagged "Coming soon" instead of lying.
@@ -145,7 +138,7 @@ com.apple.security.personal-information.photos-library       true
 com.apple.security.device.audio-input                        true   # future mic support
 ```
 
-- All AI inference runs on-device — no network calls for analysis or prompts.
+- Visual analysis, captions, and embeddings call OpenRouter using `OPENROUTER_API_KEY` or the matching UserDefaults key.
 - Drag-dropped audio files wrap their `FileManager.copyItem` with `startAccessingSecurityScopedResource()` / `stop…`.
 - App Sandbox + Hardened Runtime are both on for the Xcode target. (The `swift run` CLI binary is unsigned and dev-only; use Xcode for signed builds.)
 
@@ -163,16 +156,15 @@ MemXApp  →  ContentView
               ↓
          PhotosLibraryService    PhotoKit + PHAssetCache actor + ThumbnailCache NSCache
          BeatmapService          Streamed mono 22 kHz + vDSP BPM + onset/section
-         PhotoScoringService     Vision face/saliency/classify (6-way TaskGroup)
-         VideoAnalysisService    AsyncSequence frames + parallel Vision
-         MotionPromptService     Apple Foundation Models on-device (6s timeout + mock fallback)
-         SequencerService        Event-aware storyboard builder
+         PhotoScoringService     OpenRouter visual analysis + lightweight media prep
+         VideoAnalysisService    Compatibility facade
+         SequencerService        Story-ramp storyboard builder
          VideoRenderService      AVMutableComposition + AVAssetExportSession (3-way)
               ↓
          ProjectStore         ~/Library/Application Support/MemX/projects.json
 ```
 
-All services are protocol-based singletons and can be swapped under the `WorkspaceViewModel.init` defaults — the 192-test suite exercises this via mock implementations.
+All services are protocol-based singletons and can be swapped under the `WorkspaceViewModel.init` defaults — the test suite exercises this via mock implementations.
 
 ---
 
@@ -181,10 +173,10 @@ All services are protocol-based singletons and can be swapped under the `Workspa
 ```
 Sources/MemX/
 ├── App/                   MemXApp.swift, ContentView.swift
-├── Models/                Project, MediaAsset, MontagePlan, AnalysisModels, Beatmap, MotionPrompt, SongTrack
+├── Models/                Project, MediaAsset, MontagePlan, AnalysisModels, Beatmap, SongTrack
 ├── Services/              PhotosLibraryService, AnalysisService (PhotoScoringService),
 │                          BeatmapService, VideoAnalysisService, VideoRenderService,
-│                          MotionPromptService, MontagePlannerService (SequencerService),
+│                          MontagePlannerService (SequencerService),
 │                          MusicSuggestionService
 ├── ViewModels/            AppViewModel, WorkspaceViewModel, ImportViewModel
 ├── Persistence/           ProjectStore
@@ -212,7 +204,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 ## Roadmap
 
-- 2.5D parallax / Ken Burns motion on stills
+- Optional 2.5D parallax / Ken Burns rendering on stills
 - Core Image transitions between clips (the render step list tags these "Coming soon")
 - MusicKit integration for the mock song catalog
 - EDL and PDF shot-list exports (UI is wired, formats TBD)

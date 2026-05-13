@@ -138,8 +138,8 @@ struct MediaGridView: View {
     private var mainGrid: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MS.Spacing.lg) {
-                if workspaceVM.hasMotionPrompts {
-                    // Show with motion prompt indicator
+                if workspaceVM.hasScoredAssets {
+                    // Group analyzed assets by OpenRouter event label.
                     ForEach(groupedByEvent, id: \.0) { eventLabel, assets in
                         eventSection(label: eventLabel, assets: assets)
                     }

@@ -84,7 +84,7 @@ struct LandingView: View {
 
                 Spacer()
 
-                Text("All analysis, AI scene captioning, motion prompts, and rendering run entirely on your Mac.")
+                Text("Song analysis, visual reads, musical sequencing, and rendering work together automatically.")
                     .font(MS.Font.micro)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -193,7 +193,7 @@ struct LandingView: View {
 
     private var features: [Feature] {[
         Feature(icon: "music.note.list", title: "Song First", description: "Pick a track. The beatmap drives every cut, hold, and transition.", color: .purple),
-        Feature(icon: "sparkles.rectangle.stack", title: "Motion Prompts", description: "Every photo gets a cinematographer's direction — it breathes, not invents.", color: .orange),
+        Feature(icon: "photo.on.rectangle.angled", title: "Visual Reads", description: "Each memory is scored for mood, story role, and musical fit.", color: .orange),
         Feature(icon: "waveform.badge.mic", title: "Beat-Synced Cuts", description: "Drops hit hard. Verses breathe. Breakdowns hold. Fully automatic.", color: .blue),
     ]}
 }

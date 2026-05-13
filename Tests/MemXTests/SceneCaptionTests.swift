@@ -81,40 +81,6 @@ final class SceneCaptionTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    // MARK: - MotionPromptService.mockPrompt weaves scene context
-
-    func testMotionPromptMockReferencesSceneCaption() async throws {
-        MotionPromptService._testForceMock = true
-        defer { MotionPromptService._testForceMock = false }
-
-        var asset = MediaAsset(id: "asset-with-caption", mediaType: .photo, pixelWidth: 1920, pixelHeight: 1080)
-        asset.sceneCaption = "Children laughing on a swing in a sunny park"
-
-        let prompt = try await MotionPromptService.shared.generatePrompt(
-            for: asset,
-            songEnergy: 0.5,
-            sectionType: .verse
-        )
-        XCTAssertTrue(
-            prompt.contains("Children laughing on a swing in a sunny park"),
-            "Mock prompt should reference the scene caption. Got: \(prompt)"
-        )
-    }
-
-    func testMotionPromptMockOmitsSceneWhenNoCaption() async throws {
-        MotionPromptService._testForceMock = true
-        defer { MotionPromptService._testForceMock = false }
-
-        let asset = MediaAsset(id: "asset-plain", mediaType: .photo, pixelWidth: 1920, pixelHeight: 1080)
-        let prompt = try await MotionPromptService.shared.generatePrompt(
-            for: asset,
-            songEnergy: 0.5,
-            sectionType: .verse
-        )
-        XCTAssertFalse(prompt.contains("Scene:"),
-                       "Mock prompt should not reference a scene when none is set. Got: \(prompt)")
-    }
-
     // MARK: - LocalVLMService protocol conformance
 
     func testLocalVLMServiceSharedIsAccessible() {

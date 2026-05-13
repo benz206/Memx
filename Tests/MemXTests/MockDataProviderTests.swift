@@ -172,38 +172,6 @@ final class MockDataProviderTests: XCTestCase {
         }
     }
 
-    // MARK: - mockMotionPrompts
-
-    func testMockMotionPromptsCountMatchesAssets() {
-        let assets = MockDataProvider.mockAssets()
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
-        XCTAssertEqual(prompts.count, assets.count)
-    }
-
-    func testMockMotionPromptsHavePromptText() {
-        let assets = Array(MockDataProvider.mockAssets().prefix(5))
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
-        for prompt in prompts {
-            XCTAssertFalse(prompt.prompt.isEmpty, "Expected non-empty prompt text")
-        }
-    }
-
-    func testMockMotionPromptsAssetIDsMatch() {
-        let assets = MockDataProvider.mockAssets()
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
-        let promptAssetIDs = Set(prompts.map(\.assetID))
-        let assetIDs = Set(assets.map(\.id))
-        XCTAssertEqual(promptAssetIDs, assetIDs)
-    }
-
-    func testMockMotionPromptsStatusIsReady() {
-        let assets = Array(MockDataProvider.mockAssets().prefix(3))
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
-        for prompt in prompts {
-            XCTAssertEqual(prompt.status, .ready)
-        }
-    }
-
     // MARK: - completedProcessingStatus
 
     func testCompletedProcessingStatusPhase() {

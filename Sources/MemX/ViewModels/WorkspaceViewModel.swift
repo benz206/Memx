@@ -13,19 +13,29 @@ struct RenderLogEntry: Identifiable, Hashable {
     let message: String
 }
 
+// MARK: - PipelineLogEntry
+
+struct PipelineLogEntry: Identifiable, Hashable {
+    let id = UUID()
+    let timestamp: Date
+    let phase: ProcessingPhase
+    let progress: Double
+    let message: String
+}
+
 // MARK: - WorkspaceTab
 
 enum WorkspaceTab: String, CaseIterable, Hashable {
     case song          = "Song"
     case photos        = "Photos"
-    case motionPrompts = "Motion"
+    case analysis      = "Analysis"
     case storyboard    = "Storyboard"
 
     var icon: String {
         switch self {
         case .song:          return "music.note.list"
         case .photos:        return "photo.stack.fill"
-        case .motionPrompts: return "sparkles.rectangle.stack.fill"
+        case .analysis:      return "sparkles.rectangle.stack"
         case .storyboard:    return "film.stack.fill"
         }
     }
@@ -34,7 +44,7 @@ enum WorkspaceTab: String, CaseIterable, Hashable {
         switch self {
         case .song:          return 1
         case .photos:        return 2
-        case .motionPrompts: return 3
+        case .analysis:      return 3
         case .storyboard:    return 4
         }
     }
@@ -60,12 +70,10 @@ final class WorkspaceViewModel {
     var isRestoringAssets: Bool = false
     var assetsFullyRestored: Bool = true
 
-    // MARK: Motion Prompts
-    var motionPrompts: [MotionPrompt] = []
-
     // MARK: Processing
     var processingStatus: ProcessingStatus
     var isProcessing: Bool = false
+    var pipelineLog: [PipelineLogEntry] = []
 
     // MARK: Storyboard
     var montagePlan: MontagePlan?
@@ -99,7 +107,6 @@ final class WorkspaceViewModel {
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol
     private let semanticService: OpenRouterServiceProtocol
-    private let promptService: MotionPromptServiceProtocol
     private let sequencerService: SequencerServiceProtocol
     private let renderService: VideoRenderServiceProtocol
     private let appVM: AppViewModel
@@ -110,7 +117,6 @@ final class WorkspaceViewModel {
         beatmapService: BeatmapServiceProtocol = BeatmapService.shared,
         scoringService: PhotoScoringServiceProtocol = PhotoScoringService.shared,
         semanticService: OpenRouterServiceProtocol = OpenRouterService.shared,
-        promptService: MotionPromptServiceProtocol = MotionPromptService.shared,
         sequencerService: SequencerServiceProtocol = SequencerService.shared,
         renderService: VideoRenderServiceProtocol = VideoRenderService.shared
     ) {
@@ -119,7 +125,6 @@ final class WorkspaceViewModel {
         self.beatmapService = beatmapService
         self.scoringService = scoringService
         self.semanticService = semanticService
-        self.promptService = promptService
         self.sequencerService = sequencerService
         self.renderService = renderService
         self.processingStatus = ProcessingStatus(projectID: project.id)
@@ -134,6 +139,7 @@ final class WorkspaceViewModel {
             self.processingStatus = MockDataProvider.completedProcessingStatus(for: project)
             self.selectedTab = .storyboard
         }
+        self.photosScoredSuccessfully = self.allAssetsScored
     }
 
     // MARK: - Song Import
@@ -182,8 +188,10 @@ final class WorkspaceViewModel {
             let result = try await beatmapService.analyzeSong(at: track.fileURL) { [weak self] prog, msg in
                 guard let self else { return }
                 Task { @MainActor in
-                    self.processingStatus.progress = prog * 0.33
+                    let scaled = prog * 0.20
+                    self.processingStatus.progress = scaled
                     self.processingStatus.message = msg
+                    self.appendPipelineLog(phase: .analyzingAudio, progress: scaled, message: msg)
                 }
             }
             beatmap = result
@@ -209,11 +217,20 @@ final class WorkspaceViewModel {
 
     func scorePhotos() async {
         guard !assets.isEmpty, !isProcessing else { return }
+        if assets.allSatisfy({ $0.analysisScore != nil }) {
+            photosScoredSuccessfully = true
+            processingStatus.phase = .scoringPhotos
+            processingStatus.progress = max(processingStatus.progress, 0.85)
+            processingStatus.message = "Visual analysis already complete"
+            appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
+            return
+        }
         isProcessing = true
         processingStatus.phase = .scoringPhotos
-        processingStatus.progress = 0.33
-        processingStatus.message = "Scoring \(assets.count) photos (this may take a while for iCloud photos)…"
+        processingStatus.progress = max(processingStatus.progress, 0.20)
+        processingStatus.message = "Sending \(assets.count) assets to OpenRouter for visual analysis..."
         processingStatus.error = nil
+        appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
         let density = project.settings.scoringDensity
         logger.info("Photo scoring started: \(self.assets.count) assets, density=\(density.rawValue, privacy: .public)")
 
@@ -229,8 +246,10 @@ final class WorkspaceViewModel {
             ) { [weak self] prog, msg in
                 guard let self else { return }
                 Task { @MainActor in
-                    self.processingStatus.progress = 0.33 + prog * 0.22
+                    let scaled = 0.20 + prog * 0.50
+                    self.processingStatus.progress = scaled
                     self.processingStatus.message = msg
+                    self.appendPipelineLog(phase: .scoringPhotos, progress: scaled, message: msg)
                 }
             }
 
@@ -239,8 +258,10 @@ final class WorkspaceViewModel {
             let semanticAssets = await semanticService.enrichAssets(assets) { [weak self] prog, msg in
                 guard let self else { return }
                 Task { @MainActor in
-                    self.processingStatus.progress = 0.50 + prog * 0.05
+                    let scaled = 0.70 + prog * 0.15
+                    self.processingStatus.progress = scaled
                     self.processingStatus.message = msg
+                    self.appendPipelineLog(phase: .scoringPhotos, progress: scaled, message: msg)
                 }
             }
             assets = semanticAssets
@@ -260,147 +281,6 @@ final class WorkspaceViewModel {
             processingStatus.error = error.localizedDescription
         }
 
-        isProcessing = false
-    }
-
-    func generateAllMotionPrompts() async {
-        guard !assets.isEmpty, !isProcessing else { return }
-
-        if !photosScoredSuccessfully {
-            await scorePhotos()
-            guard !isProcessing else { return }
-        }
-
-        guard !assets.isEmpty, !isProcessing else { return }
-        isProcessing = true
-        processingStatus.phase = .generatingPrompts
-        processingStatus.progress = 0.55
-        processingStatus.message = "Generating motion prompts..."
-        processingStatus.error = nil
-
-        let existingIDs = Set(motionPrompts.map(\.assetID))
-        let newAssets = assets.filter { !existingIDs.contains($0.id) }
-        for asset in newAssets {
-            motionPrompts.append(MotionPrompt(assetID: asset.id, status: .pending))
-        }
-
-        let total = motionPrompts.count
-        logger.info("Motion prompt generation started: \(total) prompts")
-
-        let priorStatus = project.status
-
-        // Build work queue up front so per-prompt inputs (energy, section) are
-        // captured while we still hold the relevant beatmap state, then fan
-        // out with bounded concurrency — on-device FM inference is the bottleneck,
-        // so serial iteration would leave ~4x on the table.
-        struct PromptWork {
-            let index: Int
-            let asset: MediaAsset
-            let energy: Float
-            let section: SectionType?
-            let name: String
-        }
-
-        var work: [PromptWork] = []
-        for i in motionPrompts.indices {
-            guard motionPrompts[i].status != .edited else { continue }
-            guard let asset = assets.first(where: { $0.id == motionPrompts[i].assetID }) else { continue }
-            let energy = Float(beatmap?.energy(at: Double(i) / Double(max(assets.count, 1)) * (beatmap?.durationSeconds ?? 60)) ?? 0.5)
-            let section = beatmap?.sections.first(where: { $0.energyAvg > Double(energy) - 0.1 })
-            motionPrompts[i].status = .generating
-            work.append(PromptWork(
-                index: i,
-                asset: asset,
-                energy: energy,
-                section: section?.type,
-                name: asset.filename ?? "photo \(i + 1)"
-            ))
-        }
-
-        let promptService = self.promptService
-        let maxConcurrent = 4
-        var completed = 0
-        var cancelled = false
-
-        await withTaskGroup(of: (PromptWork, Result<String, Error>).self) { group in
-            var nextIdx = 0
-
-            while nextIdx < work.count && nextIdx < maxConcurrent {
-                let item = work[nextIdx]
-                group.addTask {
-                    do {
-                        try Task.checkCancellation()
-                        let p = try await promptService.generatePrompt(
-                            for: item.asset,
-                            songEnergy: item.energy,
-                            sectionType: item.section
-                        )
-                        return (item, .success(p))
-                    } catch {
-                        return (item, .failure(error))
-                    }
-                }
-                nextIdx += 1
-            }
-
-            while let (item, result) = await group.next() {
-                completed += 1
-                switch result {
-                case .success(let prompt):
-                    motionPrompts[item.index].prompt = prompt
-                    motionPrompts[item.index].motionIntensity = item.energy
-                    motionPrompts[item.index].status = .ready
-                case .failure(let error):
-                    if error is CancellationError {
-                        cancelled = true
-                    } else {
-                        logger.warning("Prompt failed for \(item.name): \(error.localizedDescription)")
-                    }
-                    motionPrompts[item.index].status = .pending
-                }
-
-                let progress = Double(completed) / Double(max(work.count, 1))
-                processingStatus.progress = 0.55 + progress * 0.22
-                processingStatus.message = "Prompt \(completed)/\(work.count): \(item.name)"
-
-                if cancelled || Task.isCancelled {
-                    cancelled = true
-                    group.cancelAll()
-                    continue
-                }
-
-                if nextIdx < work.count {
-                    let next = work[nextIdx]
-                    nextIdx += 1
-                    group.addTask {
-                        do {
-                            try Task.checkCancellation()
-                            let p = try await promptService.generatePrompt(
-                                for: next.asset,
-                                songEnergy: next.energy,
-                                sectionType: next.section
-                            )
-                            return (next, .success(p))
-                        } catch {
-                            return (next, .failure(error))
-                        }
-                    }
-                }
-            }
-        }
-
-        if cancelled {
-            logger.info("Motion prompt generation cancelled")
-            project.status = priorStatus
-            appVM.updateProject(project)
-            cancelledNotice = "Pipeline cancelled"
-            isProcessing = false
-            return
-        }
-
-        logger.info("Motion prompts complete: \(self.readyPromptCount)/\(total) ready")
-        processingStatus.progress = 0.77
-        processingStatus.message = "\(readyPromptCount)/\(total) prompts ready — build the storyboard to continue"
         isProcessing = false
     }
 
@@ -455,21 +335,24 @@ final class WorkspaceViewModel {
         isProcessing = true
         isGeneratingPlan = true
         processingStatus.phase = .sequencing
-        processingStatus.progress = 0.77
+        processingStatus.progress = max(processingStatus.progress, 0.85)
         processingStatus.message = "Building sequence..."
         processingStatus.error = nil
-        logger.info("Sequence building started: \(self.assets.count) assets, \(bm.sections.count) sections, \(self.motionPrompts.count) prompts")
+        appendPipelineLog(phase: .sequencing, progress: processingStatus.progress, message: processingStatus.message)
+        logger.info("Sequence building started: \(self.assets.count) assets, \(bm.sections.count) sections")
 
         let plan = await sequencerService.buildSequence(
             title: project.title,
             settings: project.settings,
             assets: assets,
-            motionPrompts: motionPrompts,
             beatmap: bm
         ) { [weak self] prog, msg in
             Task { @MainActor in
-                self?.processingStatus.progress = 0.77 + prog * 0.23
-                self?.processingStatus.message = msg
+                guard let self else { return }
+                let scaled = 0.85 + prog * 0.15
+                self.processingStatus.progress = scaled
+                self.processingStatus.message = msg
+                self.appendPipelineLog(phase: .sequencing, progress: scaled, message: msg)
             }
         }
 
@@ -492,17 +375,17 @@ final class WorkspaceViewModel {
         guard !isProcessing else { return }
         logger.info("Full pipeline started: \(self.assets.count) assets")
 
-        // Reset stale pipeline outputs so a re-run starts clean.
-        motionPrompts = []
-        montagePlan = nil
+        // Keep completed stages and only fill missing work. This lets users
+        // jump between tabs without paying for earlier OpenRouter calls again.
         selectedSequenceItem = nil
         clipShortfall = nil
         pendingShortfallAck = false
         processingStatus = ProcessingStatus(projectID: project.id)
-        photosScoredSuccessfully = false
-
-        // Advance UI to the pipeline panel immediately so the user sees phases.
-        selectedTab = .motionPrompts
+        photosScoredSuccessfully = allAssetsScored
+        pipelineLog.removeAll()
+        OpenRouterService.resetCounters()
+        selectedTab = .analysis
+        appendPipelineLog(phase: .idle, progress: 0, message: "Starting pipeline — \(assets.count) assets")
 
         // Preflight early if we already have a beatmap — surface shortfall banner
         // right away instead of waiting for buildSequence.
@@ -521,20 +404,38 @@ final class WorkspaceViewModel {
             guard let self else { return }
             do {
                 try Task.checkCancellation()
-                await self.scorePhotos()
-                try Task.checkCancellation()
-                await self.generateAllMotionPrompts()
+                if !self.allAssetsScored {
+                    await self.scorePhotos()
+                }
                 try Task.checkCancellation()
                 await self.buildSequence()
                 logger.info("Full pipeline finished")
             } catch is CancellationError {
                 self.isProcessing = false
                 self.cancelledNotice = "Pipeline cancelled"
+                self.appendPipelineLog(phase: self.processingStatus.phase, progress: self.processingStatus.progress, message: "Pipeline cancelled")
             } catch {}
         }
         pipelineTask = task
         await task.value
         pipelineTask = nil
+
+        // Land on the storyboard once we're truly done — but only if we
+        // actually produced a plan. On cancel/error, stay on the Analysis
+        // tab so the user can read the last status and re-run.
+        if montagePlan != nil && processingStatus.error == nil {
+            selectedTab = .storyboard
+        }
+    }
+
+    // MARK: - Pipeline Log
+
+    private func appendPipelineLog(phase: ProcessingPhase, progress: Double, message: String) {
+        if let last = pipelineLog.last, last.message == message { return }
+        pipelineLog.append(PipelineLogEntry(timestamp: Date(), phase: phase, progress: progress, message: message))
+        if pipelineLog.count > 200 {
+            pipelineLog.removeFirst(pipelineLog.count - 200)
+        }
     }
 
     // MARK: - Video Render
@@ -631,6 +532,7 @@ final class WorkspaceViewModel {
         isRestoringAssets = true
         let restored = await PhotosLibraryService.shared.resolveAssets(for: project.assetIDs)
         assets = restored
+        photosScoredSuccessfully = allAssetsScored
         assetsFullyRestored = restored.count == project.assetIDs.count
         isRestoringAssets = false
     }
@@ -650,24 +552,9 @@ final class WorkspaceViewModel {
 
     func removeAsset(_ asset: MediaAsset) {
         assets.removeAll { $0.id == asset.id }
-        motionPrompts.removeAll { $0.assetID == asset.id }
         project.assetIDs.removeAll { $0 == asset.id }
         photosScoredSuccessfully = false
         appVM.updateProject(project)
-    }
-
-    // MARK: - Motion Prompt Editing
-
-    func updateMotionPrompt(_ prompt: MotionPrompt) {
-        guard let idx = motionPrompts.firstIndex(where: { $0.id == prompt.id }) else { return }
-        motionPrompts[idx] = prompt
-    }
-
-    func setMotionPromptEdited(id: UUID, text: String) {
-        guard let idx = motionPrompts.firstIndex(where: { $0.id == id }) else { return }
-        motionPrompts[idx].prompt = text
-        motionPrompts[idx].status = .edited
-        motionPrompts[idx].isEdited = true
     }
 
     // MARK: - Settings
@@ -781,9 +668,14 @@ final class WorkspaceViewModel {
     var videoCount: Int { assets.filter { $0.mediaType == .video }.count }
     var hasSong: Bool { songTrack != nil }
     var hasBeatmap: Bool { beatmap != nil }
-    var hasMotionPrompts: Bool { motionPrompts.contains { $0.status == .ready || $0.status == .edited } }
-    var readyPromptCount: Int { motionPrompts.filter { $0.status == .ready || $0.status == .edited }.count }
     var hasScoredAssets: Bool { assets.contains { $0.analysisScore != nil } }
+    var allAssetsScored: Bool { !assets.isEmpty && assets.allSatisfy { $0.analysisScore != nil } }
     var canRunPipeline: Bool { !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
+    var openRouterAvailable: Bool { semanticService.hasAPIKey }
+
+    var openRouterStats: (success: Int, failure: Int, lastFailure: String?) {
+        OpenRouterService.stats
+    }
+
 }

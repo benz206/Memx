@@ -156,32 +156,6 @@ enum MockDataProvider {
         return bm
     }
 
-    // MARK: - Motion Prompts
-
-    static func mockMotionPrompts(for assets: [MediaAsset]) -> [MotionPrompt] {
-        let prompts = [
-            "Slow push-in toward the horizon. Morning mist drifts left across the water.",
-            "Subtle parallax drift right-to-left. Soft bokeh shimmer in the background. Hair moves gently.",
-            "Gentle upward tilt. Clouds drift slowly. Warm light rakes across the surface.",
-            "Ken Burns zoom-out, starting tight on the faces. Background falls into soft focus.",
-            "Parallax depth: near branches drift left as sky holds steady behind.",
-            "Slow push-in with subtle light flicker. Candlelight dances in the corner of the frame.",
-            "Fast zoom-in on the center subject. Motion blur trails at the edges.",
-            "Tilt up from foreground detail to open sky. The scene opens wide.",
-            "Cross-frame parallax — figures shift right while background holds. Depth exaggerated.",
-            "Hold on the laugh. Subtle zoom-in on the peak expression. Bokeh swells.",
-        ]
-        return assets.enumerated().map { i, asset in
-            MotionPrompt(
-                assetID: asset.id,
-                prompt: prompts[i % prompts.count],
-                isEdited: false,
-                motionIntensity: Float.random(in: 0.2...0.9),
-                status: .ready
-            )
-        }
-    }
-
     // MARK: - Assets
 
     static func mockAssets() -> [MediaAsset] {
@@ -245,8 +219,6 @@ enum MockDataProvider {
     // MARK: - Montage Plan
 
     static func demoMontagePlan(assets: [MediaAsset], settings: MontageSettings, beatmap: Beatmap) -> MontagePlan {
-        let prompts = mockMotionPrompts(for: assets)
-        let promptMap = Dictionary(uniqueKeysWithValues: prompts.map { ($0.assetID, $0) })
         let sortedAssets = assets.sorted { ($0.analysisScore ?? 0) > ($1.analysisScore ?? 0) }
         let transitions: [TransitionType] = [.fadeFromBlack, .crossfade, .hardCut, .crossfade, .hardCut,
                                               .flashWhite, .hardCut, .dissolve, .crossfade, .hardCut]
@@ -267,8 +239,8 @@ enum MockDataProvider {
                 endTime: currentTime + dur,
                 transitionIn: transIn,
                 transitionOut: transOut,
-                motionPrompt: promptMap[asset.id]?.prompt ?? "",
-                motionIntensity: promptMap[asset.id]?.motionIntensity ?? 0.5,
+                motionPrompt: "",
+                motionIntensity: Float(beatmap.energy(at: currentTime)),
                 beatAligned: i % 2 == 0,
                 confidenceScore: asset.analysisScore ?? 0.8,
                 sectionType: sectionTypes[i % sectionTypes.count],

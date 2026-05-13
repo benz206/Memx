@@ -111,7 +111,7 @@ struct WorkspaceView: View {
         switch tab {
         case .song:          return workspaceVM.hasSong
         case .photos:        return !workspaceVM.assets.isEmpty
-        case .motionPrompts: return workspaceVM.hasMotionPrompts
+        case .analysis:      return workspaceVM.allAssetsScored && workspaceVM.hasPlan
         case .storyboard:    return workspaceVM.montagePlan != nil
         }
     }
@@ -120,8 +120,8 @@ struct WorkspaceView: View {
         switch tab {
         case .song:          return true
         case .photos:        return workspaceVM.hasSong
-        case .motionPrompts: return !workspaceVM.assets.isEmpty
-        case .storyboard:    return workspaceVM.hasMotionPrompts || workspaceVM.hasPlan
+        case .analysis:      return workspaceVM.hasSong && !workspaceVM.assets.isEmpty
+        case .storyboard:    return !workspaceVM.assets.isEmpty || workspaceVM.hasPlan
         }
     }
 
@@ -209,8 +209,8 @@ struct WorkspaceView: View {
                     SongImportView()
                 case .photos:
                     ImportView()
-                case .motionPrompts:
-                    MotionPromptsView()
+                case .analysis:
+                    PipelineRunView()
                 case .storyboard:
                     StoryboardView()
                 }

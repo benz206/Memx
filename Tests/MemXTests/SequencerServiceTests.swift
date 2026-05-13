@@ -11,13 +11,11 @@ final class SequencerServiceTests: XCTestCase {
     func testBuildSequenceReturnsNonEmptySequence() async {
         let assets = MockDataProvider.mockAssets()
         let beatmap = MockDataProvider.mockBeatmap()
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
 
         let plan = await sequencer.buildSequence(
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: prompts,
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -33,7 +31,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Summer Montage",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -50,7 +47,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: customSettings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -69,7 +65,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -91,7 +86,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -111,7 +105,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -133,7 +126,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -153,7 +145,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -179,7 +170,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: lowAssets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -201,7 +191,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -220,7 +209,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -243,7 +231,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -259,7 +246,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -286,33 +272,11 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
 
         XCTAssertTrue(plan.moodArc.isEmpty)
-    }
-
-    // MARK: - buildSequence: motion prompts
-
-    func testBuildSequenceUsesMotionPrompts() async {
-        let assets = MockDataProvider.mockAssets()
-        let prompts = MockDataProvider.mockMotionPrompts(for: assets)
-        let beatmap = MockDataProvider.mockBeatmap()
-
-        let plan = await sequencer.buildSequence(
-            title: "Test",
-            settings: settings,
-            assets: assets,
-            motionPrompts: prompts,
-            beatmap: beatmap,
-            onProgress: { _, _ in }
-        )
-
-        // At least some clips should have non-empty motion prompts
-        let nonEmptyPrompts = plan.sequence.filter { !$0.motionPrompt.isEmpty }
-        XCTAssertFalse(nonEmptyPrompts.isEmpty, "Expected some clips to have motion prompts")
     }
 
     func testBuildSequencePrefersSemanticFitForRequestedMood() async {
@@ -344,7 +308,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Semantic",
             settings: MontageSettings(vibe: .travel, focus: .scenery),
             assets: [family, travel],
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -360,7 +323,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Beat Locked",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -382,7 +344,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { progress, _ in
                 progressValues.append(progress)
@@ -402,7 +363,8 @@ final class SequencerServiceTests: XCTestCase {
         var assets = Array(MockDataProvider.mockAssets().prefix(2))
         for i in assets.indices { assets[i].analysisScore = 0.9 }
 
-        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+        let result = sequencer.preflight(settings: settings, assets: assets,
+            beatmap: beatmap)
 
         XCTAssertTrue(result.hasShortfall, "Expected shortfall with 2 assets and long beatmap")
         XCTAssertEqual(result.availableClipCount, 2)
@@ -417,7 +379,8 @@ final class SequencerServiceTests: XCTestCase {
         var assets = MockDataProvider.mockAssets()
         for i in assets.indices { assets[i].analysisScore = 0.9 }
 
-        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+        let result = sequencer.preflight(settings: settings, assets: assets,
+            beatmap: beatmap)
 
         XCTAssertFalse(result.hasShortfall, "Expected no shortfall with 20 assets and 30s beatmap")
         XCTAssertEqual(result.estimatedShortfall, 0)
@@ -430,7 +393,8 @@ final class SequencerServiceTests: XCTestCase {
         var assets = MockDataProvider.mockAssets()
         for i in assets.indices { assets[i].analysisScore = 0.1 } // all below 0.3
 
-        let result = sequencer.preflight(settings: settings, assets: assets, beatmap: beatmap)
+        let result = sequencer.preflight(settings: settings, assets: assets,
+            beatmap: beatmap)
 
         // Pool falls back to all assets when none pass threshold.
         XCTAssertEqual(result.availableClipCount, assets.count)
@@ -446,7 +410,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Hooked",
             settings: MontageSettings(),
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -465,7 +428,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Dejavu",
             settings: MontageSettings(),
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -503,7 +465,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "C",
             settings: MontageSettings(vibe: .cinematic),
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -511,7 +472,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "N",
             settings: MontageSettings(vibe: .nostalgic),
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )
@@ -581,7 +541,6 @@ final class SequencerServiceTests: XCTestCase {
             title: "Test",
             settings: settings,
             assets: assets,
-            motionPrompts: [],
             beatmap: beatmap,
             onProgress: { _, _ in }
         )

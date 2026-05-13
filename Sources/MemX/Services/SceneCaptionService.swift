@@ -11,7 +11,11 @@ protocol SceneCaptionServiceProtocol {
 final class SceneCaptionService: SceneCaptionServiceProtocol {
 
     static let shared = SceneCaptionService()
-    private init() {}
+    private let openRouterService: OpenRouterService
+
+    private init(openRouterService: OpenRouterService = .shared) {
+        self.openRouterService = openRouterService
+    }
 
     private static let instructions: String = """
         You write short, evocative captions for photos used in a music-video montage. \
@@ -30,11 +34,11 @@ final class SceneCaptionService: SceneCaptionServiceProtocol {
             userPrompt += " Hint tags from a separate scene classifier: \(cleanLabels.joined(separator: ", "))."
         }
 
-        logger.debug("VLM invoke — prompt: \(userPrompt, privacy: .public)")
+        logger.debug("OpenRouter caption invoke — prompt: \(userPrompt, privacy: .public)")
         let start = Date()
-        let result = await LocalVLMService.shared.describe(
+        let result = await openRouterService.caption(
             image: cgImage,
-            instructions: Self.instructions,
+            labels: cleanLabels,
             prompt: userPrompt,
             maxTokens: 60
         )

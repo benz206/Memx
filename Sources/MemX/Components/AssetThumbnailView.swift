@@ -60,7 +60,7 @@ struct AssetThumbnailView: View {
         }
         .overlay(selectionOverlay)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task {
+        .task(id: asset.id) {
             await loadThumbnail()
         }
     }
@@ -98,6 +98,7 @@ struct AssetThumbnailView: View {
 
     private func loadThumbnail() async {
         isLoading = true
+        image = nil
         image = await PhotosLibraryService.shared.fetchThumbnail(for: asset.id, size: thumbnailSize)
         isLoading = false
     }

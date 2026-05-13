@@ -274,7 +274,7 @@ struct ImportView: View {
                     Spacer()
                     MSPrimaryButton("Add to Project", icon: "arrow.right.circle.fill") {
                         workspaceVM.addAssets(importVM.selectedAssets)
-                        workspaceVM.selectedTab = workspaceVM.hasBeatmap ? .motionPrompts : .song
+                        workspaceVM.selectedTab = workspaceVM.hasBeatmap ? .storyboard : .song
                     }
                 }
                 .padding(.horizontal, MS.Spacing.lg)

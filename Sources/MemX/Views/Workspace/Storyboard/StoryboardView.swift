@@ -17,10 +17,10 @@ struct StoryboardView: View {
                         icon: "film.stack",
                         title: "No Storyboard Yet",
                         subtitle: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
-                            ? "Generate motion prompts first, then build the sequence."
+                            ? "Build the sequence from the prepared media, or run the full pipeline."
                             : "Import a song and photos to get started.",
                         action: workspaceVM.hasSong && !workspaceVM.assets.isEmpty
-                            ? ("Go to Motion", { workspaceVM.selectedTab = .motionPrompts })
+                            ? ("Build Storyboard", { Task { await workspaceVM.buildSequence() } })
                             : nil
                     )
                 }
@@ -59,10 +59,9 @@ struct StoryboardView: View {
                 }
                 .frame(height: 6)
 
-                // Three tiny segmented sub-bars — score / prompts / sequence.
+                // Two tiny segmented sub-bars — visual scoring / sequence.
                 HStack(spacing: 4) {
                     phaseSegment(phase: .scoringPhotos)
-                    phaseSegment(phase: .generatingPrompts)
                     phaseSegment(phase: .sequencing)
                 }
                 .frame(height: 3)
@@ -258,6 +257,7 @@ struct StoryboardContentView: View {
 
                 if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }) {
                     AssetThumbnailView(asset: asset, size: 200, cornerRadius: MS.Radius.md, isSelected: false, showOverlay: true)
+                        .id(asset.id)
                         .frame(maxWidth: .infinity)
                 }
 
@@ -266,12 +266,6 @@ struct StoryboardContentView: View {
                     MSStatRow(label: "Start", value: formatTimestamp(item.startTime), icon: "play.fill")
                     MSStatRow(label: "End", value: formatTimestamp(item.endTime), icon: "stop.fill")
                     MSStatRow(label: "Duration", value: formatDuration(item.duration), icon: "timer")
-                    if item.beatAligned {
-                        HStack(spacing: 4) {
-                            BeatAlignedBadge()
-                            Spacer()
-                        }
-                    }
                 }
                 .msCard()
 
@@ -298,20 +292,20 @@ struct StoryboardContentView: View {
                     .msCard()
                 }
 
-                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                    MSSectionHeader(title: "Motion Direction")
-                    if item.motionPrompt.isEmpty {
-                        Text("No motion prompt generated yet.")
-                            .font(MS.Font.caption)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        Text(item.motionPrompt)
+                if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                   let summary = asset.semanticSummary, !summary.isEmpty {
+                    VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+                        MSSectionHeader(title: "Embedding Read")
+                        Text(summary)
                             .font(MS.Font.body)
                             .foregroundStyle(.secondary)
+                        if let dimensions = asset.semanticEmbedding?.count {
+                            MSStatRow(label: "Vector", value: "\(dimensions) dimensions", icon: "point.3.connected.trianglepath.dotted")
+                        }
+                        MSStatRow(label: "Song Energy", value: "\(Int(item.motionIntensity * 100))%", icon: "bolt")
                     }
-                    MSStatRow(label: "Intensity", value: "\(Int(item.motionIntensity * 100))%", icon: "bolt")
+                    .msCard()
                 }
-                .msCard()
 
                 if !item.selectionReason.isEmpty || item.gradingHint != nil {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
@@ -703,6 +697,7 @@ struct StoryboardContentView: View {
     }
 
     private func formatDuration(_ t: TimeInterval) -> String {
+        if t < 10 { return String(format: "%.1fs", t) }
         let m = Int(t) / 60
         let s = Int(t) % 60
         return m > 0 ? "\(m)m \(s)s" : "\(s)s"
@@ -710,6 +705,13 @@ struct StoryboardContentView: View {
 
     private func formatTimestamp(_ t: TimeInterval) -> String {
         String(format: "%.2fs", t)
+    }
+
+    private func embeddingRead(for asset: MediaAsset) -> String {
+        if let summary = asset.semanticSummary, !summary.isEmpty { return summary }
+        if let caption = asset.sceneCaption, !caption.isEmpty { return caption }
+        if let labels = asset.sceneLabels, !labels.isEmpty { return labels.joined(separator: " · ") }
+        return "No semantic read available yet."
     }
 }
 
@@ -772,7 +774,6 @@ struct StoryboardSequenceRow: View {
                         .font(MS.Font.caption)
                         .fontWeight(.medium)
                         .lineLimit(1)
-                    if item.beatAligned { BeatAlignedBadge() }
                     if item.isHookMoment {
                         let label: String = {
                             if let r = item.hookRepeatIndex, r > 0 { return "Hook ×\(r + 1)" }
@@ -787,19 +788,12 @@ struct StoryboardSequenceRow: View {
                         MSBadge(text: "⟲ Repeat", color: .orange, size: .small)
                     }
                 }
-                if let caption = asset?.sceneCaption, !caption.isEmpty {
-                    Text(caption)
-                        .font(MS.Font.caption)
-                        .italic()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else if let firstLabel = asset?.sceneLabels?.first, !firstLabel.isEmpty {
-                    Text(firstLabel)
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(secondaryRowText(for: asset))
+                    .font(MS.Font.caption)
+                    .italic()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 HStack(spacing: MS.Spacing.xs) {
                     Text(String(format: "%.1fs", item.duration))
                         .font(MS.Font.micro).foregroundStyle(.secondary)
@@ -829,6 +823,38 @@ struct StoryboardSequenceRow: View {
         case .breakdown:      return .mint
         case .none:           return .secondary
         }
+    }
+
+    /// Distinct one-liner per asset. Prefers real OpenRouter output, falls
+    /// back to facts derived from the asset itself so the storyboard doesn't
+    /// show the same string on every row when analysis is unavailable.
+    private func secondaryRowText(for asset: MediaAsset?) -> String {
+        if let summary = asset?.semanticSummary, !summary.isEmpty { return summary }
+        if let caption = asset?.sceneCaption, !caption.isEmpty { return caption }
+        if let labels = asset?.sceneLabels, !labels.isEmpty {
+            return labels.prefix(3).joined(separator: " · ")
+        }
+        return Self.basicAssetFact(for: asset)
+    }
+
+    private static let factDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, yyyy"
+        return f
+    }()
+
+    private static func basicAssetFact(for asset: MediaAsset?) -> String {
+        guard let asset else { return "Memory clip" }
+        var parts: [String] = []
+        parts.append(asset.isVideo ? "Video" : (asset.aspectRatio < 0.85 ? "Photo · portrait" : (asset.aspectRatio > 1.4 ? "Photo · wide" : "Photo")))
+        if asset.isVideo, asset.duration > 0 {
+            parts.append(String(format: "%.1fs", asset.duration))
+        }
+        if let date = asset.creationDate {
+            parts.append(factDateFormatter.string(from: date))
+        }
+        if asset.isFavorite { parts.append("favorite") }
+        return parts.joined(separator: " · ")
     }
 }
 
