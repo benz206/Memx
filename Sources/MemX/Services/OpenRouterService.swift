@@ -134,6 +134,8 @@ final class OpenRouterService: OpenRouterServiceProtocol {
         var enriched = assets
         let inputs = enriched.map { semanticInput(for: $0) }
 
+        guard !Task.isCancelled else { return enriched }
+
         if let summaries = await generateBatchSummaries(for: enriched) {
             for i in enriched.indices {
                 enriched[i].semanticSummary = summaries[i]
@@ -145,6 +147,8 @@ final class OpenRouterService: OpenRouterServiceProtocol {
             // string in the UI.
             openRouterLogger.info("OpenRouter batch summaries unavailable; semanticSummary left empty for fallback assets")
         }
+
+        guard !Task.isCancelled else { return enriched }
 
         onProgress(0.35, "Embedding visual semantics...")
         if let remote = await embed(inputs) {

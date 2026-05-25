@@ -8,6 +8,7 @@ struct Project: Identifiable, Codable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var assetIDs: [String]          // PHAsset localIdentifiers
+    var analyzedAssets: [MediaAsset] = []  // Persisted scored assets (restored on reopen)
     var settings: MontageSettings
     var status: ProjectStatus
     var songTrack: SongTrack?
@@ -25,8 +26,28 @@ struct Project: Identifiable, Codable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.assetIDs = []
+        self.analyzedAssets = []
         self.settings = settings
         self.status = .draft
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, createdAt, updatedAt, assetIDs, analyzedAssets, settings, status, songTrack, montagePlan, exportedVideoURL
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        assetIDs = try c.decode([String].self, forKey: .assetIDs)
+        analyzedAssets = try c.decodeIfPresent([MediaAsset].self, forKey: .analyzedAssets) ?? []
+        settings = try c.decode(MontageSettings.self, forKey: .settings)
+        status = try c.decode(ProjectStatus.self, forKey: .status)
+        songTrack = try c.decodeIfPresent(SongTrack.self, forKey: .songTrack)
+        montagePlan = try c.decodeIfPresent(MontagePlan.self, forKey: .montagePlan)
+        exportedVideoURL = try c.decodeIfPresent(URL.self, forKey: .exportedVideoURL)
     }
 }
 

@@ -22,12 +22,14 @@ final class AppViewModel {
 
     // MARK: Projects
     var projects: [Project] = []
+    weak var activeWorkspaceVM: WorkspaceViewModel?
 
     // MARK: Photos Permission
     var photosPermissionStatus = PhotosLibraryService.shared.authorizationStatus()
 
     init() {
         loadProjects()
+        cleanUpStaleProjectData()
         Task.detached {
             PhotosLibraryService.shared.cleanupTemporaryFiles()
         }
@@ -74,14 +76,18 @@ final class AppViewModel {
 
     func deleteProject(_ project: Project) {
         logger.info("deleted project \(project.id): \(project.title)")
+        if activeWorkspaceVM?.project.id == project.id {
+            activeWorkspaceVM?.cancelPipeline()
+            activeWorkspaceVM = nil
+        }
         cleanUpProjectFiles(project)
         projects.removeAll { $0.id == project.id }
         saveProjects()
         if case .workspace(let current) = navigationState, current.id == project.id {
             navigationState = .projects
-            Task.detached {
-                PhotosLibraryService.shared.cleanupTemporaryFiles()
-            }
+        }
+        Task.detached {
+            PhotosLibraryService.shared.cleanupTemporaryFiles()
         }
     }
 
@@ -95,6 +101,36 @@ final class AppViewModel {
             let memxBase = base.appendingPathComponent("MemX")
             let songDir = memxBase.appendingPathComponent("Songs/\(project.id.uuidString)")
             try? fm.removeItem(at: songDir)
+            let exportFile = memxBase.appendingPathComponent("Exports/\(project.id.uuidString).mp4")
+            try? fm.removeItem(at: exportFile)
+        }
+    }
+
+    private func cleanUpStaleProjectData() {
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let memxBase = base.appendingPathComponent("MemX")
+        let validIDs = Set(projects.map { $0.id.uuidString })
+
+        let songsDir = memxBase.appendingPathComponent("Songs")
+        if let songSubdirs = try? fm.contentsOfDirectory(atPath: songsDir.path) {
+            for dirname in songSubdirs where !validIDs.contains(dirname) {
+                let stale = songsDir.appendingPathComponent(dirname)
+                try? fm.removeItem(at: stale)
+                logger.info("removed stale song directory: \(dirname)")
+            }
+        }
+
+        let exportsDir = memxBase.appendingPathComponent("Exports")
+        if let exportFiles = try? fm.contentsOfDirectory(atPath: exportsDir.path) {
+            for filename in exportFiles {
+                let stem = (filename as NSString).deletingPathExtension
+                if !validIDs.contains(stem) {
+                    let stale = exportsDir.appendingPathComponent(filename)
+                    try? fm.removeItem(at: stale)
+                    logger.info("removed stale export: \(filename)")
+                }
+            }
         }
     }
 

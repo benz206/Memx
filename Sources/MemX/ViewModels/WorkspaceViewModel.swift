@@ -140,6 +140,7 @@ final class WorkspaceViewModel {
             self.selectedTab = .storyboard
         }
         self.photosScoredSuccessfully = self.allAssetsScored
+        appVM.activeWorkspaceVM = self
     }
 
     // MARK: - Song Import
@@ -265,6 +266,8 @@ final class WorkspaceViewModel {
                 }
             }
             assets = semanticAssets
+            project.analyzedAssets = assets
+            appVM.updateProject(project)
             let included = result.candidates.filter(\.isIncluded).count
             logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
             photosScoredSuccessfully = true
@@ -530,10 +533,32 @@ final class WorkspaceViewModel {
     func restoreAssets() async {
         guard assets.isEmpty, !project.assetIDs.isEmpty else { return }
         isRestoringAssets = true
-        let restored = await PhotosLibraryService.shared.resolveAssets(for: project.assetIDs)
-        assets = restored
+        let resolved = await PhotosLibraryService.shared.resolveAssets(for: project.assetIDs)
+
+        // Merge persisted analysis data back into PHAsset-resolved structs
+        let analyzedMap = Dictionary(uniqueKeysWithValues: project.analyzedAssets.map { ($0.id, $0) })
+        assets = resolved.map { asset in
+            guard let analyzed = analyzedMap[asset.id] else { return asset }
+            var merged = asset
+            merged.analysisScore = analyzed.analysisScore
+            merged.qualityScore = analyzed.qualityScore
+            merged.emotionScore = analyzed.emotionScore
+            merged.noveltyScore = analyzed.noveltyScore
+            merged.eventLabel = analyzed.eventLabel
+            merged.sceneLabels = analyzed.sceneLabels
+            merged.sceneCaption = analyzed.sceneCaption
+            merged.semanticSummary = analyzed.semanticSummary
+            merged.semanticEmbedding = analyzed.semanticEmbedding
+            merged.shotType = analyzed.shotType
+            merged.motionVector = analyzed.motionVector
+            merged.colorTemperature = analyzed.colorTemperature
+            merged.faceAreaFraction = analyzed.faceAreaFraction
+            merged.clipStartTime = analyzed.clipStartTime
+            return merged
+        }
+
         photosScoredSuccessfully = allAssetsScored
-        assetsFullyRestored = restored.count == project.assetIDs.count
+        assetsFullyRestored = resolved.count == project.assetIDs.count
         isRestoringAssets = false
     }
 
@@ -542,6 +567,7 @@ final class WorkspaceViewModel {
         let toAdd = newAssets.filter { !existingIDs.contains($0.id) }
         assets.append(contentsOf: toAdd)
         project.assetIDs = assets.map(\.id)
+        project.analyzedAssets = assets
         project.updatedAt = Date()
         photosScoredSuccessfully = false
         if project.status == .draft {
@@ -553,6 +579,7 @@ final class WorkspaceViewModel {
     func removeAsset(_ asset: MediaAsset) {
         assets.removeAll { $0.id == asset.id }
         project.assetIDs.removeAll { $0 == asset.id }
+        project.analyzedAssets = assets
         photosScoredSuccessfully = false
         appVM.updateProject(project)
     }
