@@ -231,7 +231,18 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             addKnot(seg.effectivePresenceEnd)
         }
         addKnot(totalEnd)
-        let times = knots.map { Double($0) / 1000 }.sorted().filter { $0 <= totalEnd + epsilon }
+
+        // Instruction boundaries must tile [0, composition duration] exactly —
+        // AVFoundation rejects any gap, overlap, or zero-length range with
+        // AVErrorInvalidVideoComposition ("Operation Stopped"). Integer
+        // millisecond CMTimes keep consecutive knots from collapsing when
+        // rounded, and the final boundary is the composition's own duration so
+        // the tail is always covered.
+        let compositionEnd = try await composition.load(.duration)
+        var boundaries = knots.sorted()
+            .map { CMTime(value: CMTimeValue($0), timescale: 1000) }
+            .filter { $0 < compositionEnd }
+        boundaries.append(compositionEnd)
 
         func opacity(for seg: PlacedSegment, at t: Double) -> Float {
             var o: Float = 1
@@ -286,18 +297,14 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
 
         var instructions: [AVVideoCompositionInstruction] = []
-        for ti in 0..<max(0, times.count - 1) {
-            let t0 = times[ti], t1 = times[ti + 1]
-            guard t1 - t0 > epsilon else { continue }
+        for ti in 0..<max(0, boundaries.count - 1) {
+            let intervalRange = CMTimeRange(start: boundaries[ti], end: boundaries[ti + 1])
+            let t0 = intervalRange.start.seconds, t1 = intervalRange.end.seconds
             let mid = (t0 + t1) / 2
 
             let active = placed
                 .filter { $0.plan.start - epsilon <= mid && mid < $0.effectivePresenceEnd - 0 }
                 .sorted { $0.plan.start > $1.plan.start }   // newest first = top layer
-
-            let intervalRange = CMTimeRange(
-                start: CMTime(seconds: t0, preferredTimescale: timescale),
-                end: CMTime(seconds: t1, preferredTimescale: timescale))
 
             // Flash-white boundaries dip through a white background.
             let flashActive = active.contains {
@@ -328,8 +335,12 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 layers.append(AVVideoCompositionLayerInstruction(configuration: config))
             }
 
+            // backgroundColor must be an RGB color — AVFoundation doesn't
+            // accept grayscale-colorspace CGColors here.
             let instConfig = AVVideoCompositionInstruction.Configuration(
-                backgroundColor: flashActive ? CGColor(gray: 1, alpha: 1) : CGColor(gray: 0, alpha: 1),
+                backgroundColor: flashActive
+                    ? CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+                    : CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1),
                 layerInstructions: layers,
                 timeRange: intervalRange
             )
@@ -365,7 +376,14 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
         defer { progressTask.cancel() }
 
-        try await exportSession.export(to: outputURL, as: .mp4)
+        do {
+            try await exportSession.export(to: outputURL, as: .mp4)
+        } catch {
+            let ns = error as NSError
+            logger.error("Export failed: \(ns.domain) \(ns.code) — \(ns.localizedDescription); reason=\(ns.localizedFailureReason ?? "none"); userInfo=\(ns.userInfo)")
+            let reason = ns.localizedFailureReason.map { " — \($0)" } ?? ""
+            throw RenderError.exportFailed("\(ns.localizedDescription)\(reason) (\(ns.domain) \(ns.code))")
+        }
 
         logger.info("Render complete: \(self.formatDuration(totalEnd)), output=\(outputURL.lastPathComponent)")
         onProgress(1.0, "Render complete — \(formatDuration(totalEnd))")
@@ -644,7 +662,7 @@ enum RenderError: LocalizedError {
     case assetNotFound(String)
     case compositionFailed
     case exportSessionFailed
-    case exportFailed
+    case exportFailed(String)
     case pixelBufferFailed
 
     var errorDescription: String? {
@@ -653,7 +671,7 @@ enum RenderError: LocalizedError {
         case .assetNotFound(let id): return "Asset not found: \(id)"
         case .compositionFailed:     return "Failed to build video composition."
         case .exportSessionFailed:   return "Failed to create export session."
-        case .exportFailed:          return "Video export failed."
+        case .exportFailed(let detail): return "Video export failed: \(detail)"
         case .pixelBufferFailed:     return "Failed to create pixel buffer."
         }
     }
