@@ -152,4 +152,30 @@ final class MediaAssetModelTests: XCTestCase {
         XCTAssertFalse(MSAlbum.AlbumType.userAlbum.icon.isEmpty)
         XCTAssertFalse(MSAlbum.AlbumType.moment.icon.isEmpty)
     }
+
+    // MARK: - Embedding persistence
+
+    func testEmbeddingsRoundTripThroughCompactEncoding() throws {
+        var asset = MediaAsset(id: "emb-1")
+        asset.semanticEmbedding = [0.25, -1.5, 3.75]
+        asset.visualEmbedding = [1.0, 2.0]
+
+        let data = try JSONEncoder().encode(asset)
+        let decoded = try JSONDecoder().decode(MediaAsset.self, from: data)
+
+        XCTAssertEqual(decoded.semanticEmbedding, [0.25, -1.5, 3.75])
+        XCTAssertEqual(decoded.visualEmbedding, [1.0, 2.0])
+    }
+
+    func testEmbeddingsDecodeFromLegacyFloatArrays() throws {
+        let json = """
+        {"id":"legacy-1","mediaType":"Photo","pixelWidth":100,"pixelHeight":100,
+         "isFavorite":false,"duration":0,"isSelected":false,
+         "semanticEmbedding":[0.5,0.25],"visualEmbedding":[1.5]}
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(MediaAsset.self, from: json)
+        XCTAssertEqual(decoded.semanticEmbedding, [0.5, 0.25])
+        XCTAssertEqual(decoded.visualEmbedding, [1.5])
+    }
 }

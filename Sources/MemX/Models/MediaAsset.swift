@@ -155,6 +155,93 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     }
 }
 
+// MARK: - Codable
+// Embeddings are stored as raw Float32 data (base64 in JSON) instead of
+// decimal number arrays — roughly 5x smaller in projects.json, which is
+// rewritten on every save. Legacy [Float] payloads still decode.
+
+extension MediaAsset {
+    private enum CodingKeys: String, CodingKey {
+        case id, mediaType, creationDate, filename, pixelWidth, pixelHeight
+        case isFavorite, duration, location, analysisScore, eventLabel
+        case qualityScore, emotionScore, noveltyScore, clipStartTime
+        case shotType, colorTemperature, faceAreaFraction
+        case sceneLabels, sceneCaption, semanticSummary
+        case semanticEmbedding, visualEmbedding, motionEnergy, isSelected
+    }
+
+    private static func embeddingData(_ v: [Float]?) -> Data? {
+        v?.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    private static func decodeEmbedding(
+        _ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys
+    ) throws -> [Float]? {
+        if let data = try? c.decodeIfPresent(Data.self, forKey: key) {
+            return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        }
+        return try c.decodeIfPresent([Float].self, forKey: key)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        mediaType = try c.decode(MSMediaType.self, forKey: .mediaType)
+        creationDate = try c.decodeIfPresent(Date.self, forKey: .creationDate)
+        filename = try c.decodeIfPresent(String.self, forKey: .filename)
+        pixelWidth = try c.decode(Int.self, forKey: .pixelWidth)
+        pixelHeight = try c.decode(Int.self, forKey: .pixelHeight)
+        isFavorite = try c.decode(Bool.self, forKey: .isFavorite)
+        duration = try c.decode(TimeInterval.self, forKey: .duration)
+        location = try c.decodeIfPresent(AssetLocation.self, forKey: .location)
+        analysisScore = try c.decodeIfPresent(Float.self, forKey: .analysisScore)
+        eventLabel = try c.decodeIfPresent(String.self, forKey: .eventLabel)
+        qualityScore = try c.decodeIfPresent(Float.self, forKey: .qualityScore)
+        emotionScore = try c.decodeIfPresent(Float.self, forKey: .emotionScore)
+        noveltyScore = try c.decodeIfPresent(Float.self, forKey: .noveltyScore)
+        clipStartTime = try c.decodeIfPresent(TimeInterval.self, forKey: .clipStartTime)
+        shotType = try c.decodeIfPresent(ShotType.self, forKey: .shotType)
+        colorTemperature = try c.decodeIfPresent(Double.self, forKey: .colorTemperature)
+        faceAreaFraction = try c.decodeIfPresent(Double.self, forKey: .faceAreaFraction)
+        sceneLabels = try c.decodeIfPresent([String].self, forKey: .sceneLabels)
+        sceneCaption = try c.decodeIfPresent(String.self, forKey: .sceneCaption)
+        semanticSummary = try c.decodeIfPresent(String.self, forKey: .semanticSummary)
+        semanticEmbedding = try Self.decodeEmbedding(c, .semanticEmbedding)
+        visualEmbedding = try Self.decodeEmbedding(c, .visualEmbedding)
+        motionEnergy = try c.decodeIfPresent(Float.self, forKey: .motionEnergy)
+        isSelected = try c.decodeIfPresent(Bool.self, forKey: .isSelected) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(mediaType, forKey: .mediaType)
+        try c.encodeIfPresent(creationDate, forKey: .creationDate)
+        try c.encodeIfPresent(filename, forKey: .filename)
+        try c.encode(pixelWidth, forKey: .pixelWidth)
+        try c.encode(pixelHeight, forKey: .pixelHeight)
+        try c.encode(isFavorite, forKey: .isFavorite)
+        try c.encode(duration, forKey: .duration)
+        try c.encodeIfPresent(location, forKey: .location)
+        try c.encodeIfPresent(analysisScore, forKey: .analysisScore)
+        try c.encodeIfPresent(eventLabel, forKey: .eventLabel)
+        try c.encodeIfPresent(qualityScore, forKey: .qualityScore)
+        try c.encodeIfPresent(emotionScore, forKey: .emotionScore)
+        try c.encodeIfPresent(noveltyScore, forKey: .noveltyScore)
+        try c.encodeIfPresent(clipStartTime, forKey: .clipStartTime)
+        try c.encodeIfPresent(shotType, forKey: .shotType)
+        try c.encodeIfPresent(colorTemperature, forKey: .colorTemperature)
+        try c.encodeIfPresent(faceAreaFraction, forKey: .faceAreaFraction)
+        try c.encodeIfPresent(sceneLabels, forKey: .sceneLabels)
+        try c.encodeIfPresent(sceneCaption, forKey: .sceneCaption)
+        try c.encodeIfPresent(semanticSummary, forKey: .semanticSummary)
+        try c.encodeIfPresent(Self.embeddingData(semanticEmbedding), forKey: .semanticEmbedding)
+        try c.encodeIfPresent(Self.embeddingData(visualEmbedding), forKey: .visualEmbedding)
+        try c.encodeIfPresent(motionEnergy, forKey: .motionEnergy)
+        try c.encode(isSelected, forKey: .isSelected)
+    }
+}
+
 // MARK: - AssetLocation
 
 struct AssetLocation: Codable, Hashable {
