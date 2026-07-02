@@ -400,6 +400,72 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertEqual(result.availableClipCount, assets.count)
     }
 
+    // MARK: - Chronological ordering
+
+    /// Deterministic assets: identical scores so chronologyFit is the only
+    /// discriminating term between them.
+    private func datedAssets(count: Int) -> [MediaAsset] {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        return (0..<count).map { i in
+            var asset = MediaAsset(
+                id: String(format: "dated-%02d", i),
+                creationDate: base.addingTimeInterval(Double(i) * 86_400),
+                filename: "dated-\(i).jpg"
+            )
+            asset.analysisScore = 0.8
+            asset.emotionScore = 0.6
+            asset.noveltyScore = 0.6
+            asset.motionEnergy = 0.5
+            return asset
+        }
+    }
+
+    func testBuildSequenceFollowsCaptureDateChronology() async {
+        let assets = datedAssets(count: 24)
+        let beatmap = MockDataProvider.mockBeatmap(duration: 60)
+
+        let plan = await sequencer.buildSequence(
+            title: "Chrono",
+            settings: settings,
+            assets: assets,
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        let ranks: [Double] = plan.sequence.compactMap { item in
+            guard item.assetID.hasPrefix("dated-") else { return nil }
+            return Double(item.assetID.dropFirst("dated-".count))
+        }
+        guard ranks.count >= 6 else {
+            XCTFail("Expected enough dated clips to compare, got \(ranks.count)")
+            return
+        }
+
+        let third = ranks.count / 3
+        let earlyMean = ranks.prefix(third).reduce(0, +) / Double(third)
+        let lateMean = ranks.suffix(third).reduce(0, +) / Double(third)
+        XCTAssertLessThan(
+            earlyMean, lateMean,
+            "Expected earlier-captured assets to dominate the start of the montage"
+        )
+    }
+
+    func testBuildSequenceHandlesAssetsWithoutCreationDates() async {
+        var assets = datedAssets(count: 12)
+        for i in assets.indices { assets[i].creationDate = nil }
+        let beatmap = MockDataProvider.mockBeatmap(duration: 60)
+
+        let plan = await sequencer.buildSequence(
+            title: "Undated",
+            settings: settings,
+            assets: assets,
+            beatmap: beatmap,
+            onProgress: { _, _ in }
+        )
+
+        XCTAssertFalse(plan.sequence.isEmpty, "Nil creation dates must not break sequencing")
+    }
+
     // MARK: - Hook-aware sequencing
 
     func testBuildSequenceEmitsHookMomentsWhenBeatmapHasHooks() async {

@@ -80,6 +80,7 @@ final class SequencerService: SequencerServiceProtocol {
         // of per (slot × asset) inside scoring.
         let semanticTexts = Dictionary(pool.map { ($0.id, semanticText(for: $0)) },
                                        uniquingKeysWith: { first, _ in first })
+        let chronoPositions = chronologyPositions(for: pool)
         var usedKeys      = Set<String>()
         var sequence      = [MontageSequenceItem]()
         let totalDuration = beatmap.durationSeconds
@@ -119,7 +120,9 @@ final class SequencerService: SequencerServiceProtocol {
                 asset = forced
             } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
                                                prev: prevAsset, arcIntensity: arcIntensity,
-                                               settings: settings, semanticTexts: semanticTexts) {
+                                               settings: settings, semanticTexts: semanticTexts,
+                                               chronoPositions: chronoPositions,
+                                               slotProgress: slot.startTime / max(totalDuration, 0.01)) {
                 asset = picked
             } else {
                 continue
@@ -1149,9 +1152,30 @@ final class SequencerService: SequencerServiceProtocol {
         return min(1.0, base + Float(arcIntensity - 0.5) * 0.2)
     }
 
+    /// Rank-normalized capture-date positions (0 oldest … 1 newest) so slot
+    /// scoring can bias the montage toward chronological progression.
+    /// Assets without a creationDate are absent (scored neutral).
+    private func chronologyPositions(for pool: [MediaAsset]) -> [String: Double] {
+        var dated: [(id: String, date: Date)] = pool.compactMap { asset in
+            guard let date = asset.creationDate else { return nil }
+            return (id: asset.id, date: date)
+        }
+        dated.sort { lhs, rhs in
+            lhs.date == rhs.date ? lhs.id < rhs.id : lhs.date < rhs.date
+        }
+        guard dated.count > 1 else { return dated.isEmpty ? [:] : [dated[0].id: 0.5] }
+        let span = Double(dated.count - 1)
+        var positions: [String: Double] = [:]
+        for (rank, entry) in dated.enumerated() {
+            positions[entry.id] = Double(rank) / span
+        }
+        return positions
+    }
+
     private func scoreAsset(_ a: MediaAsset, for slot: TimeSlot,
                              prev: MediaAsset?, arcIntensity: Double,
-                             keywords: [String], semanticTexts: [String: String]) -> Double {
+                             keywords: [String], semanticTexts: [String: String],
+                             chronoPositions: [String: Double], slotProgress: Double) -> Double {
         let isHero      = slot.section.type == .chorus || slot.section.type == .drop
         let target      = targetEnergy(for: slot, arcIntensity: arcIntensity)
         let energy      = visualEnergy(a)
@@ -1180,27 +1204,34 @@ final class SequencerService: SequencerServiceProtocol {
         let peakFit: Double = (isHeroOrPre && (a.emotionScore ?? 0) > 0.7) ? 0.15 : 0.0
         let semanticFit = semanticFit(a, keywords: keywords, text: semanticTexts[a.id] ?? "")
         let continuityFit = continuityFit(a, prev: prev, slot: slot)
+        // Soft chronology: prefer assets whose position in the capture-date
+        // timeline matches the slot's position in the song. Strong enough to
+        // order similar assets, weak enough for energy/semantic fit to
+        // override locally.
+        let chronologyFit = chronoPositions[a.id].map { 1.0 - abs($0 - slotProgress) } ?? 0.5
 
-        return 0.28 * energyFit
-             + 0.24 * semanticFit
-             + 0.12 * durationFit
-             + 0.11 * warmthFit
-             + 0.12 * continuityFit
-             + 0.06 * noveltyVsPrev
+        return 0.24 * energyFit
+             + 0.20 * semanticFit
+             + 0.10 * durationFit
+             + 0.10 * warmthFit
+             + 0.11 * continuityFit
+             + 0.05 * noveltyVsPrev
              + 0.04 * facesFit
              + 0.03 * peakFit
+             + 0.13 * chronologyFit
              + heroBonus
     }
 
     private func selectAsset(for slot: TimeSlot, from pool: [MediaAsset],
                               used: Set<String>, prev: MediaAsset?, arcIntensity: Double,
-                              settings: MontageSettings, semanticTexts: [String: String]) -> MediaAsset? {
+                              settings: MontageSettings, semanticTexts: [String: String],
+                              chronoPositions: [String: Double], slotProgress: Double) -> MediaAsset? {
         let isHero = slot.section.type == .chorus || slot.section.type == .drop
         let unused = pool.filter { !used.contains(clipKey($0)) }
 
         if !unused.isEmpty {
             let keywords = semanticKeywords(for: slot, settings: settings)
-            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, keywords: keywords, semanticTexts: semanticTexts)) }
+            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, keywords: keywords, semanticTexts: semanticTexts, chronoPositions: chronoPositions, slotProgress: slotProgress)) }
             if let (best, score) = scored.max(by: { $0.1 < $1.1 }), score > 0.35 {
                 return best
             }
