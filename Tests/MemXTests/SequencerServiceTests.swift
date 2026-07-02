@@ -597,6 +597,47 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertNil(decoded.gradingHint)
     }
 
+    // MARK: - buildSequence: hero-first reservation
+
+    func testBuildSequenceReservesStandoutAssetForChorusOpener() async {
+        // One clearly-best video among mediocre photos: it must open the
+        // chorus (hero slot), not get spent by chronological fill earlier.
+        var hero = MediaAsset(id: "hero-video", mediaType: .video, duration: 12,
+                              motionEnergy: 0.95)
+        hero.analysisScore = 0.95
+        hero.emotionScore = 0.95
+        hero.noveltyScore = 0.9
+
+        var assets = [hero]
+        for i in 0..<40 {
+            var a = MediaAsset(id: "photo-\(i)", mediaType: .photo, motionEnergy: 0.3)
+            a.analysisScore = 0.5
+            a.emotionScore = 0.5
+            a.noveltyScore = 0.5
+            assets.append(a)
+        }
+
+        let beatmap = Beatmap(
+            bpm: 120, durationSeconds: 48,
+            energyCurve: [EnergyPoint(time: 0, energy: 0.4), EnergyPoint(time: 48, energy: 0.9)],
+            sections: [
+                BeatSection(type: .verse, start: 0, end: 24, energyAvg: 0.4),
+                BeatSection(type: .chorus, start: 24, end: 48, energyAvg: 0.9),
+            ],
+            beats: stride(from: 0.0, to: 48.0, by: 0.5).map { $0 },
+            drops: [], vocalPeaks: []
+        )
+
+        let plan = await sequencer.buildSequence(
+            title: "Test", settings: settings, assets: assets,
+            beatmap: beatmap, onProgress: { _, _ in }
+        )
+
+        let firstChorusItem = plan.sequence.first { $0.sectionType == .chorus }
+        XCTAssertEqual(firstChorusItem?.assetID, "hero-video",
+                       "the standout asset must be reserved for the hero slot")
+    }
+
     // MARK: - buildSequence: flash budget & high-energy cuts
 
     func testBuildSequenceKeepsFlashWhiteRare() async {

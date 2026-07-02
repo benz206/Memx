@@ -96,6 +96,15 @@ final class SequencerService: SequencerServiceProtocol {
                                                  vibe: settings.vibe)
         let totalSlots      = timeSlots.count
 
+        // Hero-first pass: priority moments claim assets from the full pool
+        // before chronological fill can spend them on a verse.
+        let reserved = reservePriorityAssets(
+            slots: timeSlots, pool: pool, sectionFirstIDs: sectionFirstIDs,
+            arcIntensities: arcIntensities, settings: settings,
+            semanticTexts: semanticTexts, chronoPositions: chronoPositions,
+            totalDuration: totalDuration)
+        usedKeys.formUnion(reserved.values.map { clipKey($0) })
+
         for (slotIndex, slot) in timeSlots.enumerated() {
             guard slot.startTime < totalDuration else { break }
 
@@ -120,6 +129,8 @@ final class SequencerService: SequencerServiceProtocol {
             let asset: MediaAsset
             if let forced = forcedAsset {
                 asset = forced
+            } else if let claimed = reserved[slot.id] {
+                asset = claimed
             } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
                                                prev: prevAsset, arcIntensity: arcIntensity,
                                                settings: settings, semanticTexts: semanticTexts,
@@ -1156,6 +1167,53 @@ final class SequencerService: SequencerServiceProtocol {
             return true
         }
         return beatmap.beatStrength(at: slot.startTime) >= 0.9
+    }
+
+    // MARK: - Hero-First Reservation
+    // Greedy chronological selection spends the strongest assets on early
+    // verse slots before the drop ever gets to ask. An editor lays in the
+    // hero moments first and fills around them: priority slots claim assets
+    // from the full pool, in order of dramatic importance.
+
+    private func reservePriorityAssets(
+        slots: [TimeSlot], pool: [MediaAsset], sectionFirstIDs: Set<UUID>,
+        arcIntensities: [UUID: Double], settings: MontageSettings,
+        semanticTexts: [String: String], chronoPositions: [String: Double],
+        totalDuration: Double
+    ) -> [UUID: MediaAsset] {
+        var priorities = [(tier: Int, slot: TimeSlot)]()
+        for slot in slots {
+            guard slot.startTime < totalDuration else { continue }
+            let isHero = sectionFirstIDs.contains(slot.id)
+                && (slot.section.type == .chorus || slot.section.type == .drop)
+            let arc = arcIntensities[slot.section.id] ?? 0.9
+            if slot.isAnticipationHold {
+                priorities.append((0, slot))
+            } else if isHero {
+                priorities.append((arc >= 0.95 ? 1 : 2, slot))
+            } else if slot.hookClusterKey != nil, (slot.hookRepeatIndex ?? 0) == 0 {
+                priorities.append((3, slot))
+            } else if slot.isVocalHold || slot.isBreath {
+                priorities.append((4, slot))
+            }
+        }
+
+        var reserved = [UUID: MediaAsset]()
+        var used = Set<String>()
+        for entry in priorities.sorted(by: {
+            $0.tier == $1.tier ? $0.slot.startTime < $1.slot.startTime : $0.tier < $1.tier
+        }) {
+            let arc = arcIntensities[entry.slot.section.id] ?? 0.9
+            guard let picked = selectAsset(
+                for: entry.slot, from: pool, used: used, prev: nil,
+                arcIntensity: arc, settings: settings, semanticTexts: semanticTexts,
+                chronoPositions: chronoPositions,
+                slotProgress: entry.slot.startTime / max(totalDuration, 0.01)
+            ) else { continue }
+            reserved[entry.slot.id] = picked
+            used.insert(clipKey(picked))
+        }
+        return reserved
     }
 
     // MARK: - Asset Selection
