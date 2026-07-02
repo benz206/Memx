@@ -236,24 +236,6 @@ final class WorkspaceViewModel {
         return .blocked
     }
 
-    func stageSubtitle(for tab: WorkspaceTab) -> String {
-        switch tab {
-        case .song:
-            return hasSong ? "Track imported" : "Import audio first"
-        case .photos:
-            if !hasSong { return "Waiting for song" }
-            return assets.isEmpty ? "Choose media" : "\(totalAssetCount) selected"
-        case .analysis:
-            if !hasSong { return "Waiting for song" }
-            if assets.isEmpty { return "Waiting for media" }
-            if isProcessing { return "Running" }
-            return hasPlan ? "Storyboard built" : "Ready to run"
-        case .storyboard:
-            guard let plan = montagePlan else { return "Run analysis first" }
-            return "\(plan.sequence.count) clips ready"
-        }
-    }
-
     func stageDetail(for tab: WorkspaceTab) -> String {
         switch tab {
         case .song:
@@ -309,14 +291,6 @@ final class WorkspaceViewModel {
             if assets.isEmpty { return "Choose photos and videos before opening the storyboard." }
             return "Run the pipeline before opening the storyboard."
         }
-    }
-
-    var completedStageCount: Int {
-        WorkspaceTab.allCases.filter { isStageComplete($0) }.count
-    }
-
-    var workflowProgress: Double {
-        Double(completedStageCount) / Double(WorkspaceTab.allCases.count)
     }
 
     var nextStepMessage: String {

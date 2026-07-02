@@ -40,6 +40,7 @@ struct WorkspaceView: View {
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help("Back to Projects (⌘[)")
             }
 
             ToolbarItem(placement: .principal) {
@@ -74,20 +75,14 @@ struct WorkspaceView: View {
     // MARK: - Sidebar
 
     private var sidebarContent: some View {
-        List {
-            Section {
+        List(selection: Binding(
+            get: { Optional(workspaceVM.selectedTab) },
+            set: { if let tab = $0 { workspaceVM.goToStage(tab) } }
+        )) {
+            Section("Stages") {
                 ForEach(WorkspaceTab.allCases, id: \.self) { tab in
-                    Button {
-                        workspaceVM.goToStage(tab)
-                    } label: {
-                        stageSidebarRow(tab)
-                    }
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets(top: 5, leading: 8, bottom: 5, trailing: 8))
-                    .listRowBackground(
-                        RoundedRectangle(cornerRadius: MS.Radius.sm)
-                            .fill(workspaceVM.selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear)
-                    )
+                    stageSidebarRow(tab)
+                        .tag(tab)
                 }
             }
         }
@@ -102,32 +97,14 @@ struct WorkspaceView: View {
     private func stageSidebarRow(_ tab: WorkspaceTab) -> some View {
         let state = workspaceVM.stageState(for: tab)
 
-        HStack(alignment: .top, spacing: MS.Spacing.sm) {
-            stepIcon(for: tab)
-                .frame(width: 18, height: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: MS.Spacing.xs) {
-                    Text("\(tab.stepNumber). \(tab.rawValue)")
-                        .font(MS.Font.button)
-                        .foregroundStyle(state == .blocked ? .secondary : .primary)
-                    if state == .running {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
-                }
-
-                Text(workspaceVM.stageSubtitle(for: tab))
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
+        HStack(spacing: MS.Spacing.sm) {
+            Label(tab.rawValue, systemImage: tab.icon)
+                .font(MS.Font.body)
             Spacer(minLength: 0)
+            stepIcon(for: tab)
         }
-        .contentShape(Rectangle())
-        .opacity(state == .blocked ? 0.58 : 1)
+        .opacity(state == .blocked ? 0.5 : 1)
+        .help("\(tab.rawValue) (⌘\(tab.stepNumber))")
     }
 
     @ViewBuilder
@@ -135,23 +112,17 @@ struct WorkspaceView: View {
         switch workspaceVM.stageState(for: tab) {
         case .complete:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundStyle(.green)
-        case .current:
-            Image(systemName: "circle.dotted")
-                .font(.system(size: 12))
-                .foregroundStyle(Color.accentColor)
         case .running:
             ProgressView()
                 .controlSize(.mini)
-        case .available:
-            Image(systemName: "circle")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
         case .blocked:
             Image(systemName: "lock.fill")
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+        case .current, .available:
+            EmptyView()
         }
     }
 
@@ -185,6 +156,7 @@ struct WorkspaceView: View {
                         MSSecondaryButton("Re-run Pipeline", icon: "arrow.clockwise") {
                             Task { await workspaceVM.runPipeline() }
                         }
+                        .help("Run Pipeline (⌘R)")
                     } else {
                         MSPrimaryButton(
                             "Run Pipeline",
@@ -194,6 +166,7 @@ struct WorkspaceView: View {
                             Task { await workspaceVM.runPipeline() }
                         }
                         .disabled(!workspaceVM.canRunPipeline)
+                        .help("Run Pipeline (⌘R)")
                     }
                 }
             }
@@ -257,20 +230,13 @@ struct WorkspaceView: View {
 
     private var stageOverviewBar: some View {
         HStack(alignment: .center, spacing: MS.Spacing.md) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Step \(workspaceVM.selectedTab.stepNumber) of \(WorkspaceTab.allCases.count): \(workspaceVM.selectedTab.rawValue)")
-                    .font(MS.Font.heading)
-                Text(workspaceVM.stageDetail(for: workspaceVM.selectedTab))
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(workspaceVM.stageDetail(for: workspaceVM.selectedTab))
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
             Spacer(minLength: MS.Spacing.md)
-
-            ProgressView(value: workspaceVM.workflowProgress)
-                .frame(width: 120)
 
             if let previous = workspaceVM.previousStage(before: workspaceVM.selectedTab) {
                 Button {
@@ -279,7 +245,7 @@ struct WorkspaceView: View {
                     Image(systemName: "chevron.left")
                 }
                 .buttonStyle(.borderless)
-                .help("Previous stage")
+                .help("Previous stage (⇧⌘[)")
             }
 
             if let next = workspaceVM.nextStage(after: workspaceVM.selectedTab) {
@@ -290,12 +256,12 @@ struct WorkspaceView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!workspaceVM.canOpenStage(next))
-                .help("Next stage")
+                .help("Next stage (⇧⌘])")
             }
         }
         .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.regularMaterial)
+        .padding(.vertical, 6)
+        .background(.bar)
         .overlay(alignment: .bottom) { MSDivider() }
     }
 
