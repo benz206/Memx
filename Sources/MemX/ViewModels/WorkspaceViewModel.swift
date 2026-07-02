@@ -50,6 +50,14 @@ enum WorkspaceTab: String, CaseIterable, Hashable {
     }
 }
 
+enum WorkspaceStageState: Hashable {
+    case complete
+    case current
+    case available
+    case blocked
+    case running
+}
+
 // MARK: - WorkspaceViewModel
 
 @Observable
@@ -60,6 +68,7 @@ final class WorkspaceViewModel {
 
     // MARK: Tabs
     var selectedTab: WorkspaceTab = .song
+    var stageNavigationNotice: String? = nil
 
     // MARK: Song
     var songTrack: SongTrack?
@@ -143,6 +152,183 @@ final class WorkspaceViewModel {
         appVM.activeWorkspaceVM = self
     }
 
+    // MARK: - Stage Navigation
+
+    @discardableResult
+    func goToStage(_ tab: WorkspaceTab) -> Bool {
+        guard canOpenStage(tab) else {
+            stageNavigationNotice = blockedReason(for: tab)
+            return false
+        }
+
+        selectedTab = tab
+        stageNavigationNotice = nil
+        return true
+    }
+
+    func goToNextStage() {
+        guard let next = nextStage(after: selectedTab) else { return }
+        goToStage(next)
+    }
+
+    func goToPreviousStage() {
+        guard let previous = previousStage(before: selectedTab) else { return }
+        selectedTab = previous
+        stageNavigationNotice = nil
+    }
+
+    func dismissStageNavigationNotice() {
+        stageNavigationNotice = nil
+    }
+
+    func nextStage(after tab: WorkspaceTab) -> WorkspaceTab? {
+        guard let index = WorkspaceTab.allCases.firstIndex(of: tab) else { return nil }
+        let nextIndex = WorkspaceTab.allCases.index(after: index)
+        guard nextIndex < WorkspaceTab.allCases.endIndex else { return nil }
+        return WorkspaceTab.allCases[nextIndex]
+    }
+
+    func previousStage(before tab: WorkspaceTab) -> WorkspaceTab? {
+        guard let index = WorkspaceTab.allCases.firstIndex(of: tab),
+              index > WorkspaceTab.allCases.startIndex
+        else { return nil }
+        return WorkspaceTab.allCases[WorkspaceTab.allCases.index(before: index)]
+    }
+
+    func canOpenStage(_ tab: WorkspaceTab) -> Bool {
+        switch tab {
+        case .song:
+            return true
+        case .photos:
+            return hasSong
+        case .analysis:
+            return hasSong && !assets.isEmpty
+        case .storyboard:
+            return hasPlan
+        }
+    }
+
+    func isStageComplete(_ tab: WorkspaceTab) -> Bool {
+        switch tab {
+        case .song:
+            return hasSong
+        case .photos:
+            return !assets.isEmpty
+        case .analysis:
+            return hasPlan
+        case .storyboard:
+            return hasPlan
+        }
+    }
+
+    func stageState(for tab: WorkspaceTab) -> WorkspaceStageState {
+        if selectedTab == tab {
+            if tab == .analysis && isProcessing { return .running }
+            return .current
+        }
+        if isStageComplete(tab) { return .complete }
+        if canOpenStage(tab) { return .available }
+        return .blocked
+    }
+
+    func stageSubtitle(for tab: WorkspaceTab) -> String {
+        switch tab {
+        case .song:
+            return hasSong ? "Track imported" : "Import audio first"
+        case .photos:
+            if !hasSong { return "Waiting for song" }
+            return assets.isEmpty ? "Choose media" : "\(totalAssetCount) selected"
+        case .analysis:
+            if !hasSong { return "Waiting for song" }
+            if assets.isEmpty { return "Waiting for media" }
+            if isProcessing { return "Running" }
+            return hasPlan ? "Storyboard built" : "Ready to run"
+        case .storyboard:
+            guard let plan = montagePlan else { return "Run analysis first" }
+            return "\(plan.sequence.count) clips ready"
+        }
+    }
+
+    func stageDetail(for tab: WorkspaceTab) -> String {
+        switch tab {
+        case .song:
+            if let songTrack {
+                return "Track ready: \(songTrack.displayTitle)"
+            }
+            return "Import the audio track that sets the beat, sections, and final runtime."
+        case .photos:
+            if !hasSong {
+                return "Import a song before selecting photos and videos."
+            }
+            if assets.isEmpty {
+                return "Choose the photos and videos that should appear in this montage."
+            }
+            return "\(totalAssetCount) media item\(totalAssetCount == 1 ? "" : "s") selected for analysis."
+        case .analysis:
+            if !hasSong {
+                return "Import a song before running analysis."
+            }
+            if assets.isEmpty {
+                return "Choose photos and videos before running analysis."
+            }
+            if isProcessing {
+                return processingStatus.message
+            }
+            if hasPlan {
+                return "Analysis is complete. Review the storyboard or re-run the pipeline after changes."
+            }
+            if allAssetsScored {
+                return "Media is scored. Build the beat-matched storyboard."
+            }
+            return "Run the pipeline to score media and assemble the first storyboard."
+        case .storyboard:
+            guard let plan = montagePlan else {
+                return "Run analysis before reviewing the storyboard."
+            }
+            let duration = formatDuration(plan.totalDuration)
+            return "\(plan.sequence.count) clips over \(duration), ready for review and render."
+        }
+    }
+
+    func blockedReason(for tab: WorkspaceTab) -> String {
+        switch tab {
+        case .song:
+            return ""
+        case .photos:
+            return "Import a song before choosing media."
+        case .analysis:
+            if !hasSong { return "Import a song before running analysis." }
+            return "Choose photos and videos before running analysis."
+        case .storyboard:
+            if !hasSong { return "Import a song before opening the storyboard." }
+            if assets.isEmpty { return "Choose photos and videos before opening the storyboard." }
+            return "Run the pipeline before opening the storyboard."
+        }
+    }
+
+    var completedStageCount: Int {
+        WorkspaceTab.allCases.filter { isStageComplete($0) }.count
+    }
+
+    var workflowProgress: Double {
+        Double(completedStageCount) / Double(WorkspaceTab.allCases.count)
+    }
+
+    var nextStepMessage: String {
+        if !hasSong { return "Import a song to start the project." }
+        if assets.isEmpty { return "Choose photos and videos for the edit." }
+        if isProcessing { return processingStatus.message }
+        if !hasPlan { return "Run analysis to build the storyboard." }
+        return "Review the storyboard and render the final video."
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded()))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
     // MARK: - Song Import
 
     func importSong(from url: URL) async {
@@ -169,7 +355,7 @@ final class WorkspaceViewModel {
 
         await analyzeAudio(track: track)
 
-        selectedTab = .photos
+        goToStage(.photos)
     }
 
     // MARK: - Pipeline Phases
@@ -368,7 +554,7 @@ final class WorkspaceViewModel {
         processingStatus.message = "Pipeline complete — storyboard ready"
         processingStatus.completedAt = Date()
         appVM.updateProject(project)
-        selectedTab = .storyboard
+        goToStage(.storyboard)
         clipShortfall = nil
         isProcessing = false
         isGeneratingPlan = false
@@ -376,6 +562,17 @@ final class WorkspaceViewModel {
 
     func runPipeline() async {
         guard !isProcessing else { return }
+        guard hasSong else {
+            stageNavigationNotice = blockedReason(for: .analysis)
+            selectedTab = .song
+            return
+        }
+        guard !assets.isEmpty else {
+            stageNavigationNotice = blockedReason(for: .analysis)
+            selectedTab = .photos
+            return
+        }
+
         logger.info("Full pipeline started: \(self.assets.count) assets")
 
         // Keep completed stages and only fill missing work. This lets users
@@ -387,7 +584,7 @@ final class WorkspaceViewModel {
         photosScoredSuccessfully = allAssetsScored
         pipelineLog.removeAll()
         OpenRouterService.resetCounters()
-        selectedTab = .analysis
+        goToStage(.analysis)
         appendPipelineLog(phase: .idle, progress: 0, message: "Starting pipeline — \(assets.count) assets")
 
         // Preflight early if we already have a beatmap — surface shortfall banner
@@ -427,7 +624,7 @@ final class WorkspaceViewModel {
         // actually produced a plan. On cancel/error, stay on the Analysis
         // tab so the user can read the last status and re-run.
         if montagePlan != nil && processingStatus.error == nil {
-            selectedTab = .storyboard
+            goToStage(.storyboard)
         }
     }
 
@@ -697,7 +894,7 @@ final class WorkspaceViewModel {
     var hasBeatmap: Bool { beatmap != nil }
     var hasScoredAssets: Bool { assets.contains { $0.analysisScore != nil } }
     var allAssetsScored: Bool { !assets.isEmpty && assets.allSatisfy { $0.analysisScore != nil } }
-    var canRunPipeline: Bool { !assets.isEmpty && !isProcessing }
+    var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
     var openRouterAvailable: Bool { semanticService.hasAPIKey }
 
