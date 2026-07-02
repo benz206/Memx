@@ -346,6 +346,7 @@ final class WorkspaceViewModel {
         )
         songTrack = track
         project.songTrack = track
+        invalidateGeneratedOutputs(clearBeatmap: true)
 
         if project.status == .draft {
             project.status = .configuring
@@ -727,6 +728,39 @@ final class WorkspaceViewModel {
 
     // MARK: - Asset Management
 
+    private func invalidateGeneratedOutputs(clearBeatmap: Bool = false) {
+        if clearBeatmap {
+            beatmap = nil
+        }
+
+        montagePlan = nil
+        selectedSequenceItem = nil
+        project.montagePlan = nil
+        renderedVideoURL = nil
+        project.exportedVideoURL = nil
+        clipShortfall = nil
+        pendingShortfallAck = false
+        renderError = nil
+
+        if !isProcessing {
+            processingStatus = ProcessingStatus(projectID: project.id)
+        }
+
+        if project.status == .ready || project.status == .exported || project.status == .analyzing {
+            project.status = .configuring
+        }
+
+        if selectedTab == .storyboard {
+            if hasSong && !assets.isEmpty {
+                selectedTab = .analysis
+            } else if hasSong {
+                selectedTab = .photos
+            } else {
+                selectedTab = .song
+            }
+        }
+    }
+
     func restoreAssets() async {
         guard assets.isEmpty, !project.assetIDs.isEmpty else { return }
         isRestoringAssets = true
@@ -762,11 +796,14 @@ final class WorkspaceViewModel {
     func addAssets(_ newAssets: [MediaAsset]) {
         let existingIDs = Set(assets.map(\.id))
         let toAdd = newAssets.filter { !existingIDs.contains($0.id) }
+        guard !toAdd.isEmpty else { return }
+
         assets.append(contentsOf: toAdd)
         project.assetIDs = assets.map(\.id)
         project.analyzedAssets = assets
         project.updatedAt = Date()
         photosScoredSuccessfully = false
+        invalidateGeneratedOutputs()
         if project.status == .draft {
             project.status = .configuring
         }
@@ -774,10 +811,13 @@ final class WorkspaceViewModel {
     }
 
     func removeAsset(_ asset: MediaAsset) {
+        guard assets.contains(where: { $0.id == asset.id }) else { return }
+
         assets.removeAll { $0.id == asset.id }
         project.assetIDs.removeAll { $0 == asset.id }
         project.analyzedAssets = assets
         photosScoredSuccessfully = false
+        invalidateGeneratedOutputs()
         appVM.updateProject(project)
     }
 
