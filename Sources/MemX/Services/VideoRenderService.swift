@@ -14,6 +14,7 @@ protocol VideoRenderServiceProtocol {
         plan: MontagePlan,
         songURL: URL,
         assets: [MediaAsset],
+        beatmap: Beatmap?,
         onProgress: @escaping (Double, String) -> Void
     ) async throws -> URL
 }
@@ -41,11 +42,16 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         plan: MontagePlan,
         songURL: URL,
         assets: [MediaAsset],
+        beatmap: Beatmap?,
         onProgress: @escaping (Double, String) -> Void
     ) async throws -> URL {
         let assetMap = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
         let sequence = plan.sequence
         guard !sequence.isEmpty else { throw RenderError.emptySequence }
+
+        // Beat-synced brightness pulses (no beatmap → identity envelope).
+        let pulseEnvelope = RenderTimeline.PulseEnvelope(
+            pulses: beatmap.map { RenderTimeline.beatPulses(beatmap: $0) } ?? [])
 
         let renderSize = computeRenderSize(for: sequence, assetMap: assetMap, settings: plan.settings)
         let songVolume = Float(max(0, min(1, plan.settings.songVolume)))
@@ -306,16 +312,32 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                     && mid <= $0.plan.start + $0.plan.headOverlap + epsilon
             }
 
+            // Beat-pulse bend points inside this interval, shared by every
+            // active layer. Interior CMTimes stay on the same 1000-timescale
+            // grid as the boundaries so sub-ramps tile the instruction range.
+            var sampleTimes: [(time: CMTime, seconds: Double)] = [(intervalRange.start, t0)]
+            for s in pulseEnvelope.knotTimes(in: t0, t1, minSpacing: 1.5 / Double(fps)) {
+                sampleTimes.append((CMTime(value: CMTimeValue((s * 1000).rounded()), timescale: 1000), s))
+            }
+            sampleTimes.append((intervalRange.end, t1))
+
             var layers = [AVVideoCompositionLayerInstruction]()
             for seg in active {
                 var config = AVVideoCompositionLayerInstruction.Configuration(assetTrack: seg.track)
 
-                let o0 = opacity(for: seg, at: t0)
-                let o1 = opacity(for: seg, at: t1)
-                if abs(o0 - o1) < 0.001 {
-                    config.setOpacity(o0, at: intervalRange.start)
-                } else {
-                    config.addOpacityRamp(.init(timeRange: intervalRange, start: o0, end: o1))
+                // The pulse multiplies into every active layer so a dip never
+                // reveals an un-dimmed clip underneath; consecutive sub-ramps
+                // starting at discontinuous values express the on-beat snap.
+                for k in 0..<(sampleTimes.count - 1) {
+                    let (c0, s0) = sampleTimes[k]
+                    let (c1, s1) = sampleTimes[k + 1]
+                    let o0 = Float(Double(opacity(for: seg, at: s0)) * pulseEnvelope.value(atOrAfter: s0))
+                    let o1 = Float(Double(opacity(for: seg, at: s1)) * pulseEnvelope.value(before: s1))
+                    if abs(o0 - o1) < 0.001 {
+                        config.setOpacity(o0, at: c0)
+                    } else {
+                        config.addOpacityRamp(.init(timeRange: CMTimeRange(start: c0, end: c1), start: o0, end: o1))
+                    }
                 }
 
                 let tr0 = transform(for: seg, at: t0)
@@ -329,11 +351,17 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             }
 
             // backgroundColor must be an RGB color — AVFoundation doesn't
-            // accept grayscale-colorspace CGColors here.
+            // accept grayscale-colorspace CGColors here. Outside flashes it
+            // is the dark section tint revealed by beat-pulse dips and
+            // transition gaps, so hue only moves at section boundaries.
+            let tint = RenderTimeline.sectionTint(
+                active.first?.item.sectionType,
+                hint: active.first?.item.gradingHint
+            )
             let instConfig = AVVideoCompositionInstruction.Configuration(
                 backgroundColor: flashActive
                     ? CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
-                    : CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1),
+                    : CGColor(srgbRed: tint.r, green: tint.g, blue: tint.b, alpha: 1),
                 layerInstructions: layers,
                 timeRange: intervalRange
             )

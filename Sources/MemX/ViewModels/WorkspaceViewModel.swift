@@ -674,7 +674,8 @@ final class WorkspaceViewModel {
                 let tempURL = try await self.renderService.render(
                     plan: plan,
                     songURL: song.fileURL,
-                    assets: self.assets
+                    assets: self.assets,
+                    beatmap: self.beatmap
                 ) { [weak self] (prog: Double, msg: String) in
                     Task { @MainActor in
                         self?.renderProgress = prog

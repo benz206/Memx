@@ -148,6 +148,116 @@ final class RenderTimelineTests: XCTestCase {
         XCTAssertEqual(RenderTimeline.whipProgress(0.5), 0.875, accuracy: 1e-9)
     }
 
+    // MARK: - Beat pulses
+
+    func testPulseGateFollowsSectionEnergyHierarchy() {
+        XCTAssertEqual(RenderTimeline.pulseGate(section: .drop, energy: 0.5), 1.0)
+        XCTAssertEqual(RenderTimeline.pulseGate(section: .chorus, energy: 0.5), 1.0)
+        XCTAssertGreaterThan(
+            RenderTimeline.pulseGate(section: .buildup, energy: 0.5),
+            RenderTimeline.pulseGate(section: .verse, energy: 0.5)
+        )
+        XCTAssertEqual(RenderTimeline.pulseGate(section: .intro, energy: 0.9), 0)
+        XCTAssertEqual(RenderTimeline.pulseGate(section: .outro, energy: 0.9), 0)
+        // No section: energy-follower fallback, silent below the floor.
+        XCTAssertEqual(RenderTimeline.pulseGate(section: nil, energy: 0.4), 0)
+        XCTAssertGreaterThan(RenderTimeline.pulseGate(section: nil, energy: 0.9), 0.5)
+    }
+
+    func testBeatPulsesSkipQuietSectionsAndScaleWithStrength() {
+        let beatmap = Beatmap(
+            bpm: 120,
+            durationSeconds: 4,
+            energyCurve: [],
+            sections: [
+                BeatSection(type: .drop, start: 0, end: 2, energyAvg: 0.9),
+                BeatSection(type: .intro, start: 2, end: 4, energyAvg: 0.2),
+            ],
+            beats: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+            drops: [],
+            vocalPeaks: [],
+            beatStrengths: [1, 0.5, 1, 0.5, 1, 0.5, 1, 0.5]
+        )
+        let pulses = RenderTimeline.beatPulses(beatmap: beatmap)
+        XCTAssertFalse(pulses.isEmpty)
+        XCTAssertTrue(pulses.allSatisfy { $0.time < 2 }, "Intro beats must not pulse")
+        let strong = pulses.first { $0.time == 0 }
+        let weak = pulses.first { $0.time == 0.5 }
+        XCTAssertNotNil(strong)
+        if let strong, let weak {
+            XCTAssertGreaterThan(strong.depth, weak.depth)
+        }
+    }
+
+    func testPulseEnvelopeSnapsOnBeatAndDecaysToFloor() {
+        let pulse = RenderTimeline.BeatPulse(time: 1.0, depth: 0.08, decay: 0.3)
+        let next = RenderTimeline.BeatPulse(time: 1.5, depth: 0.08, decay: 0.3)
+        let env = RenderTimeline.PulseEnvelope(pulses: [pulse, next])
+
+        XCTAssertEqual(env.value(atOrAfter: 1.0), 1.0, accuracy: 1e-9)          // snap
+        XCTAssertEqual(env.value(atOrAfter: 1.35), 0.92, accuracy: 1e-9)        // floor after decay
+        XCTAssertEqual(env.value(before: 1.5), 0.92, accuracy: 1e-9)            // dimmed just before next
+        XCTAssertEqual(env.value(atOrAfter: 1.5), 1.0, accuracy: 1e-9)          // snaps again
+        // Monotonically non-increasing between snap and floor.
+        var prev = 1.0
+        for step in 0...30 {
+            let v = env.value(atOrAfter: 1.0 + Double(step) * 0.01)
+            XCTAssertLessThanOrEqual(v, prev + 1e-9)
+            prev = v
+        }
+    }
+
+    func testPulseEnvelopeKnotsRespectMinSpacingAtExtremeBPM() {
+        // 240 BPM: beats every 0.25s, knots would land 0.0875s apart untinned.
+        let pulses = stride(from: 0.0, to: 10, by: 0.25).map {
+            RenderTimeline.BeatPulse(time: $0, depth: 0.06, decay: 0.2)
+        }
+        let env = RenderTimeline.PulseEnvelope(pulses: pulses)
+        let knots = env.knotTimes(in: 2, 4, minSpacing: 0.05)
+        XCTAssertFalse(knots.isEmpty)
+        for (a, b) in zip(knots, knots.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(b - a, 0.05 - 1e-9)
+        }
+        XCTAssertTrue(knots.allSatisfy { $0 > 2 && $0 < 4 })
+    }
+
+    func testEmptyPulseEnvelopeIsIdentity() {
+        let env = RenderTimeline.PulseEnvelope(pulses: [])
+        for t in [0.0, 1.7, 42.0] {
+            XCTAssertEqual(env.value(atOrAfter: t), 1.0)
+            XCTAssertEqual(env.value(before: t), 1.0)
+        }
+        XCTAssertTrue(env.knotTimes(in: 0, 60, minSpacing: 0.05).isEmpty)
+    }
+
+    func testPulseNeverBrightensBeyondTransitionEnvelope() {
+        let pulse = RenderTimeline.BeatPulse(time: 0.1, depth: 0.08, decay: 0.3)
+        let env = RenderTimeline.PulseEnvelope(pulses: [pulse])
+        let p = plan(head: .crossfade, headOverlap: 0.5)
+        for step in 0...50 {
+            let t = Double(step) * 0.02
+            let combined = RenderTimeline.transitionOpacity(for: p, at: t) * env.value(atOrAfter: t)
+            XCTAssertLessThanOrEqual(combined, RenderTimeline.transitionOpacity(for: p, at: t) + 1e-9)
+        }
+    }
+
+    func testSectionTintIsDarkAndChangesAcrossSections() {
+        let sections: [SectionType] = [.intro, .verse, .preChorus, .chorus, .buildup, .drop, .bridge, .breakdown, .outro]
+        for type in sections {
+            let tint = RenderTimeline.sectionTint(type, hint: nil)
+            XCTAssertLessThan(max(tint.r, max(tint.g, tint.b)), 0.15, "Tints must stay near-black")
+        }
+        let drop = RenderTimeline.sectionTint(.drop, hint: nil)
+        let verse = RenderTimeline.sectionTint(.verse, hint: nil)
+        XCTAssertNotEqual(drop.r, verse.r)
+        // Same section + hint always yields the same tint (hue is section-stable).
+        let a = RenderTimeline.sectionTint(.chorus, hint: .warm)
+        let b = RenderTimeline.sectionTint(.chorus, hint: .warm)
+        XCTAssertEqual(a.r, b.r)
+        XCTAssertEqual(a.g, b.g)
+        XCTAssertEqual(a.b, b.b)
+    }
+
     // MARK: - plan: beat lock
 
     func testPlanPreservesPlannedStartTimes() {

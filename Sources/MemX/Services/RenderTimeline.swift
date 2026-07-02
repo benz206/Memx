@@ -112,6 +112,140 @@ enum RenderTimeline {
         easeOutCubic(fraction)
     }
 
+    // MARK: - Beat Pulses
+    // Party-speaker-style rhythm lighting adapted to video: snap to full
+    // brightness exactly on the beat, then ease down to a slightly dimmed
+    // floor until the next beat so each snap reads as a pulse. Depth follows
+    // beat strength gated by section energy; hue never changes per beat —
+    // the section-tinted background shows through the dip instead, and only
+    // changes at section boundaries.
+
+    struct BeatPulse {
+        let time: Double
+        let depth: Double       // brightness dip revealed between beats (0…~0.08)
+        let decay: Double       // seconds from on-beat snap to the dimmed floor
+    }
+
+    /// How strongly a section participates in beat pulsing.
+    static func pulseGate(section: SectionType?, energy: Double) -> Double {
+        switch section {
+        case .drop, .chorus:          return 1.0
+        case .buildup, .preChorus:    return 0.6
+        case .verse:                  return 0.35
+        case .intro, .bridge, .breakdown, .outro: return 0
+        case nil:                     return max(0, (energy - 0.55) * 2)
+        }
+    }
+
+    static func beatPulses(beatmap: Beatmap) -> [BeatPulse] {
+        var pulses: [BeatPulse] = []
+        for (i, beat) in beatmap.beats.enumerated() {
+            let gate = pulseGate(section: beatmap.section(at: beat)?.type,
+                                 energy: beatmap.energy(at: beat))
+            let depth = 0.08 * beatmap.beatStrength(at: beat) * gate
+            guard depth >= 0.01 else { continue }
+            let interval = i + 1 < beatmap.beats.count
+                ? beatmap.beats[i + 1] - beat
+                : 60.0 / max(beatmap.bpm, 1)
+            pulses.append(BeatPulse(
+                time: beat,
+                depth: depth,
+                decay: min(0.35, max(0.2, interval * 0.7))
+            ))
+        }
+        return pulses
+    }
+
+    /// Brightness envelope over the whole song, evaluated per pulse as
+    /// two linear pieces (fast early dip, slower settle) then a hold at the
+    /// floor until the next pulse snaps back to 1.0. The snap is a
+    /// discontinuity, hence the left/right-limit accessors.
+    struct PulseEnvelope {
+        private let pulses: [BeatPulse]
+
+        init(pulses: [BeatPulse]) {
+            self.pulses = pulses.sorted { $0.time < $1.time }
+        }
+
+        /// Right-limit: exactly ON a pulse this is 1.0 (the snap).
+        func value(atOrAfter t: Double) -> Double {
+            guard let pulse = lastPulse(where: { $0.time <= t }) else { return 1 }
+            return level(of: pulse, dt: t - pulse.time)
+        }
+
+        /// Left-limit: just before the next pulse this is the dimmed floor.
+        func value(before t: Double) -> Double {
+            guard let pulse = lastPulse(where: { $0.time < t }) else { return 1 }
+            return level(of: pulse, dt: t - pulse.time)
+        }
+
+        /// Sample times strictly inside (t0, t1) where the envelope bends:
+        /// the snap, the knee, and the floor of each pulse. Thinned so
+        /// consecutive knots stay at least `minSpacing` apart (guards
+        /// sub-frame ramps at extreme BPM).
+        func knotTimes(in t0: Double, _ t1: Double, minSpacing: Double) -> [Double] {
+            var times: [Double] = []
+            for pulse in pulses {
+                if pulse.time > t1 { break }
+                let candidates = [pulse.time, pulse.time + pulse.decay * 0.35, pulse.time + pulse.decay]
+                times.append(contentsOf: candidates.filter { $0 > t0 && $0 < t1 })
+            }
+            var thinned: [Double] = []
+            for time in times.sorted() where (thinned.last.map { time - $0 >= minSpacing } ?? (time - t0 >= minSpacing)) {
+                guard t1 - time >= minSpacing else { break }
+                thinned.append(time)
+            }
+            return thinned
+        }
+
+        private func lastPulse(where predicate: (BeatPulse) -> Bool) -> BeatPulse? {
+            // Binary search for the last pulse satisfying the time predicate.
+            var lo = 0, hi = pulses.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if predicate(pulses[mid]) { lo = mid + 1 } else { hi = mid }
+            }
+            return lo > 0 ? pulses[lo - 1] : nil
+        }
+
+        private func level(of pulse: BeatPulse, dt: Double) -> Double {
+            guard pulse.depth > 0, dt > 0 else { return 1 }
+            let knee = pulse.decay * 0.35
+            if dt < knee {
+                return 1 - 0.75 * pulse.depth * (dt / knee)
+            }
+            if dt < pulse.decay {
+                let f = (dt - knee) / max(pulse.decay - knee, 1e-6)
+                return 1 - pulse.depth * (0.75 + 0.25 * f)
+            }
+            return 1 - pulse.depth
+        }
+    }
+
+    /// Dark desaturated background hue per section — revealed by the beat
+    /// pulse dip and by transition overlaps. Hue only moves when the section
+    /// (or its grading hint) changes, never per beat.
+    static func sectionTint(_ type: SectionType?, hint: GradingHint?) -> (r: CGFloat, g: CGFloat, b: CGFloat) {
+        var tint: (r: CGFloat, g: CGFloat, b: CGFloat)
+        switch type {
+        case .drop:                tint = (0.10, 0.02, 0.03)   // deep crimson
+        case .chorus:              tint = (0.09, 0.06, 0.02)   // warm amber
+        case .buildup, .preChorus: tint = (0.06, 0.03, 0.08)   // violet lift
+        case .verse:               tint = (0.02, 0.04, 0.08)   // deep blue
+        case .intro, .bridge, .breakdown, .outro, nil:
+            tint = (0.01, 0.01, 0.015)                          // near-black
+        }
+        switch hint {
+        case .warm, .golden:
+            tint = (min(1, tint.r + 0.02), min(1, tint.g + 0.01), tint.b)
+        case .cool:
+            tint = (tint.r, tint.g, min(1, tint.b + 0.02))
+        default:
+            break
+        }
+        return tint
+    }
+
     /// Opacity of a segment at absolute time `t`: its eased head transition
     /// combined with a flash-white tail exit.
     ///
