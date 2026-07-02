@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ProjectsView: View {
     @Environment(AppViewModel.self) private var appVM
-    @State private var showNewProjectSheet = false
     @State private var searchText = ""
     @State private var projectToDelete: Project? = nil
 
@@ -14,88 +13,37 @@ struct ProjectsView: View {
     }
 
     var body: some View {
-        ZStack {
-            MSGradientBackground()
+        @Bindable var appVM = appVM
 
-            VStack(spacing: 0) {
-                // Top bar
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Projects")
-                            .font(MS.Font.displayMedium)
-                        Text("\(appVM.projects.count) montage project\(appVM.projects.count == 1 ? "" : "s")")
-                            .font(MS.Font.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    HStack(spacing: MS.Spacing.sm) {
-                        Button {
-                            appVM.showLanding()
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 14, weight: .medium))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Back to Home")
-
-                        MSPrimaryButton("New Project", icon: "plus") {
-                            showNewProjectSheet = true
-                        }
-                    }
-                }
-                .padding(.horizontal, MS.Spacing.xl)
-                .padding(.top, MS.Spacing.xl)
-                .padding(.bottom, MS.Spacing.md)
-
-                // Search
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 14))
-                    TextField("Search projects...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(MS.Font.body)
-                }
-                .padding(MS.Spacing.sm + 2)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-                .padding(.horizontal, MS.Spacing.xl)
-                .padding(.bottom, MS.Spacing.md)
-
-                if filteredProjects.isEmpty {
-                    EmptyStateView(
-                        icon: "film.stack",
-                        title: searchText.isEmpty ? "No Projects Yet" : "No Results",
-                        subtitle: searchText.isEmpty
-                            ? "Create your first montage."
-                            : "Try a different search term.",
-                        action: searchText.isEmpty ? ("Create Project", { showNewProjectSheet = true }) : nil
-                    )
+        NavigationStack {
+            Group {
+                if appVM.projects.isEmpty {
+                    welcomeState
+                } else if filteredProjects.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: MS.Spacing.sm) {
-                            ForEach(filteredProjects) { project in
-                                ProjectRowView(project: project)
-                                    .onTapGesture { appVM.openProject(project) }
-                                    .contextMenu {
-                                        Button("Open") { appVM.openProject(project) }
-                                        Button("Duplicate") { appVM.duplicateProject(project) }
-                                        Divider()
-                                        Button("Delete", role: .destructive) { projectToDelete = project }
-                                    }
-                            }
-                        }
-                        .padding(.horizontal, MS.Spacing.xl)
-                        .padding(.bottom, MS.Spacing.xl)
-                    }
+                    projectList
                 }
             }
+            .navigationTitle("MemX")
+            .navigationSubtitle("\(appVM.projects.count) project\(appVM.projects.count == 1 ? "" : "s")")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        appVM.isNewProjectSheetPresented = true
+                    } label: {
+                        Label("New Project", systemImage: "plus")
+                    }
+                    .help("New Project (⌘N)")
+                }
+            }
+            .searchable(text: $searchText, placement: .toolbar, prompt: "Search projects")
         }
-        .sheet(isPresented: $showNewProjectSheet) {
-            NewProjectSheet(isPresented: $showNewProjectSheet)
+        .sheet(isPresented: $appVM.isNewProjectSheetPresented) {
+            NewProjectSheet()
         }
         .confirmationDialog(
-            "Delete \"\(projectToDelete?.title ?? "")\"?",
+            "Delete “\(projectToDelete?.title ?? "")”?",
             isPresented: Binding(
                 get: { projectToDelete != nil },
                 set: { if !$0 { projectToDelete = nil } }
@@ -112,40 +60,113 @@ struct ProjectsView: View {
         }
     }
 
+    // MARK: - Project List
+
+    private var projectList: some View {
+        @Bindable var appVM = appVM
+
+        return List(selection: $appVM.selectedProjectID) {
+            ForEach(filteredProjects) { project in
+                ProjectRowView(project: project)
+                    .tag(project.id)
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            appVM.openProject(project)
+                        }
+                    )
+                    .contextMenu {
+                        Button("Open") { appVM.openProject(project) }
+                        Button("Duplicate") { appVM.duplicateProject(project) }
+                        Divider()
+                        Button("Delete…", role: .destructive) { projectToDelete = project }
+                    }
+            }
+        }
+        .listStyle(.inset)
+        .onKeyPress(.return) {
+            guard let selected = selectedProject else { return .ignored }
+            appVM.openProject(selected)
+            return .handled
+        }
+        .onDeleteCommand {
+            if let selected = selectedProject { projectToDelete = selected }
+        }
+    }
+
+    private var selectedProject: Project? {
+        appVM.projects.first { $0.id == appVM.selectedProjectID }
+    }
+
+    // MARK: - Welcome / Empty State
+
+    private var welcomeState: some View {
+        VStack(spacing: MS.Spacing.lg) {
+            Image(systemName: "music.note.list")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+
+            VStack(spacing: MS.Spacing.sm) {
+                Text("Welcome to MemX")
+                    .font(MS.Font.displayMedium)
+                Text("Pick a song and a set of photos. MemX analyzes the track on-device and cuts your memories into a beat-synchronized montage.")
+                    .font(MS.Font.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            Button {
+                appVM.isNewProjectSheetPresented = true
+            } label: {
+                Label("New Project", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+
+            Text("Everything — analysis, sequencing, rendering — runs locally on your Mac.")
+                .font(MS.Font.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }
 
 // MARK: - New Project Sheet
 
-private struct NewProjectSheet: View {
+struct NewProjectSheet: View {
     @Environment(AppViewModel.self) private var appVM
-    @Binding var isPresented: Bool
+    @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
-        VStack(spacing: MS.Spacing.lg) {
+        VStack(alignment: .leading, spacing: MS.Spacing.lg) {
             Text("New Project")
                 .font(MS.Font.title)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Project Title")
+                Text("Name")
                     .font(MS.Font.caption)
                     .foregroundStyle(.secondary)
                 TextField("e.g. Summer in Lisbon", text: $title)
                     .textFieldStyle(.roundedBorder)
                     .font(MS.Font.body)
                     .focused($titleFieldFocused)
-                    .submitLabel(.go)
                     .onSubmit(create)
             }
 
-            HStack(spacing: MS.Spacing.sm) {
-                MSSecondaryButton("Cancel") { isPresented = false }
-                MSPrimaryButton("Create", icon: "sparkles", action: create)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create", action: create)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(MS.Spacing.xl)
-        .frame(width: 360)
+        .padding(MS.Spacing.lg)
+        .frame(width: 380)
         .task {
             // Defer by one runloop tick + small delay so the sheet window is
             // fully key before focusing; otherwise macOS silently drops
@@ -157,7 +178,12 @@ private struct NewProjectSheet: View {
 
     private func create() {
         appVM.createProject(title: title.isEmpty ? "New Project" : title)
-        isPresented = false
+        dismiss()
+        Task {
+            if PhotosLibraryService.shared.authorizationStatus() == .notDetermined {
+                _ = await PhotosLibraryService.shared.requestPermission()
+            }
+        }
     }
 }
 
@@ -165,56 +191,45 @@ private struct NewProjectSheet: View {
 
 struct ProjectRowView: View {
     let project: Project
-    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: MS.Spacing.md) {
-            // Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .fill(project.status.displayColor.opacity(0.15))
-                    .frame(width: 48, height: 48)
-                Image(systemName: "film.stack.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(project.status.displayColor)
-            }
+            Image(systemName: project.status.icon)
+                .font(.system(size: 15))
+                .foregroundStyle(project.status.displayColor)
+                .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(project.title)
-                        .font(MS.Font.heading)
-                        .lineLimit(1)
-                    Spacer()
+            VStack(alignment: .leading, spacing: 3) {
+                Text(project.title)
+                    .font(MS.Font.body)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+
+                HStack(spacing: 5) {
                     Text(formatDate(project.updatedAt))
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: MS.Spacing.sm) {
-                    MSBadge(text: project.status.displayName, color: project.status.displayColor, size: .small)
                     if !project.assetIDs.isEmpty {
-                        MSBadge(text: "\(project.assetIDs.count) assets", size: .small)
+                        Text("·")
+                        Text("\(project.assetIDs.count) asset\(project.assetIDs.count == 1 ? "" : "s")")
                     }
-                    MSBadge(text: project.settings.vibe.rawValue, size: .small)
                     if let song = project.songTrack {
-                        MSBadge(text: song.displayTitle, color: .purple, size: .small)
+                        Text("·")
+                        Text(song.displayTitle).lineLimit(1)
                     }
-                    Spacer()
                 }
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
             }
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+            Spacer()
+
+            MSBadge(
+                text: project.status.displayName,
+                color: project.status.displayColor,
+                size: .small
+            )
         }
-        .padding(MS.Spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: MS.Radius.md, style: .continuous)
-                .fill(isHovered ? Color.secondary.opacity(0.08) : Color.clear)
-        )
-        .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
-        .msCard()
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {

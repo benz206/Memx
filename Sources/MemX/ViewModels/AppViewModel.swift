@@ -7,7 +7,6 @@ private let logger = Logger(subsystem: "com.memx.app", category: "app")
 // MARK: - NavigationState
 
 enum NavigationState: Hashable {
-    case landing
     case projects
     case workspace(Project)
 }
@@ -18,7 +17,14 @@ enum NavigationState: Hashable {
 final class AppViewModel {
 
     // MARK: Navigation
-    var navigationState: NavigationState = .landing
+    var navigationState: NavigationState = .projects
+
+    /// Project selected in the projects list; targeted by menu commands
+    /// (Open, Duplicate, Delete).
+    var selectedProjectID: UUID? = nil
+
+    /// Presented from the projects screen; menu ⌘N routes here.
+    var isNewProjectSheetPresented = false
 
     // MARK: Projects
     var projects: [Project] = []
@@ -38,17 +44,18 @@ final class AppViewModel {
 
     // MARK: - Navigation
 
-    func showLanding() {
-        navigationState = .landing
-        logger.debug("navigation → landing")
-    }
-
     func showProjects() {
         navigationState = .projects
         logger.debug("navigation → projects")
         Task.detached {
             PhotosLibraryService.shared.cleanupTemporaryFiles()
         }
+    }
+
+    /// Menu-bar New Project: return to the projects screen and open the sheet.
+    func requestNewProject() {
+        navigationState = .projects
+        isNewProjectSheetPresented = true
     }
 
     func openProject(_ project: Project) {

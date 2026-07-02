@@ -6,17 +6,14 @@ struct ContentView: View {
     var body: some View {
         Group {
             switch appVM.navigationState {
-            case .landing:
-                LandingView()
-                    .transition(.move(edge: .leading).combined(with: .opacity))
             case .projects:
                 ProjectsView()
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.opacity)
             case .workspace(let project):
                 WorkspaceView(project: project, appVM: appVM)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.35), value: appVM.navigationState)
+        .animation(.easeInOut(duration: 0.2), value: appVM.navigationState)
     }
 }
