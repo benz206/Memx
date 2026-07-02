@@ -355,12 +355,6 @@ final class OpenRouterService: OpenRouterServiceProtocol {
         .joined(separator: ". ")
     }
 
-    private func localSummary(for asset: MediaAsset) -> String {
-        let subject = asset.sceneCaption ?? asset.sceneLabels?.prefix(3).joined(separator: ", ") ?? asset.filename ?? "visual moment"
-        let mood = moodWords(for: asset).joined(separator: " ")
-        return "\(mood) | \(subject)"
-    }
-
     private func localEmbedding(for text: String) -> [Float] {
         // Apple's on-device sentence embedding (free, ~512-dim, real semantic
         // geometry). The hash bag-of-words below only covers the edge case
@@ -404,16 +398,6 @@ final class OpenRouterService: OpenRouterServiceProtocol {
             hash &*= 1099511628211
         }
         return hash
-    }
-
-    private func moodWords(for asset: MediaAsset) -> [String] {
-        var words = [String]()
-        if (asset.emotionScore ?? 0) > 0.72 { words.append("emotional") }
-        if (asset.noveltyScore ?? 0) > 0.70 { words.append("distinct") }
-        if (asset.colorTemperature ?? 0.5) > 0.62 { words.append("warm") }
-        if (asset.colorTemperature ?? 0.5) < 0.38 { words.append("cool") }
-        if asset.isVideo { words.append("video") }
-        return words.isEmpty ? ["balanced"] : words
     }
 
     static func jpegData(from cgImage: CGImage, maxDimension: CGFloat = 768, compressionQuality: CGFloat = 0.72) -> Data? {
