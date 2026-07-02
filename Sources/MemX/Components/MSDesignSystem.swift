@@ -5,11 +5,11 @@ import SwiftUI
 enum MS {
     // MARK: Radius
     enum Radius {
-        static let xs:  CGFloat = 6
-        static let sm:  CGFloat = 10
-        static let md:  CGFloat = 14
-        static let lg:  CGFloat = 18
-        static let xl:  CGFloat = 24
+        static let xs:  CGFloat = 4
+        static let sm:  CGFloat = 6
+        static let md:  CGFloat = 8
+        static let lg:  CGFloat = 10
+        static let xl:  CGFloat = 14
         static let full: CGFloat = 9999
     }
 
@@ -24,16 +24,17 @@ enum MS {
     }
 
     // MARK: Typography
+    // Standard macOS text sizes: 13pt body, 11pt caption. No rounded faces.
     enum Font {
-        static var displayLarge: SwiftUI.Font  { .system(size: 40, weight: .bold, design: .rounded) }
-        static var displayMedium: SwiftUI.Font { .system(size: 30, weight: .bold, design: .rounded) }
-        static var title: SwiftUI.Font         { .system(size: 22, weight: .semibold, design: .rounded) }
-        static var heading: SwiftUI.Font       { .system(size: 17, weight: .semibold, design: .rounded) }
-        static var button: SwiftUI.Font        { .system(size: 13, weight: .semibold, design: .rounded) }
-        static var body: SwiftUI.Font          { .system(size: 14, weight: .regular, design: .default) }
-        static var caption: SwiftUI.Font       { .system(size: 12, weight: .regular, design: .default) }
-        static var micro: SwiftUI.Font         { .system(size: 10, weight: .medium, design: .monospaced) }
-        static var mono: SwiftUI.Font          { .system(size: 12, weight: .regular, design: .monospaced) }
+        static var displayLarge: SwiftUI.Font  { .system(size: 26, weight: .bold) }
+        static var displayMedium: SwiftUI.Font { .system(size: 20, weight: .semibold) }
+        static var title: SwiftUI.Font         { .system(size: 15, weight: .semibold) }
+        static var heading: SwiftUI.Font       { .system(size: 13, weight: .semibold) }
+        static var button: SwiftUI.Font        { .system(size: 13, weight: .medium) }
+        static var body: SwiftUI.Font          { .system(size: 13, weight: .regular) }
+        static var caption: SwiftUI.Font       { .system(size: 11, weight: .regular) }
+        static var micro: SwiftUI.Font         { .system(size: 10, weight: .medium) }
+        static var mono: SwiftUI.Font          { .system(size: 11, weight: .regular, design: .monospaced) }
     }
 
     // MARK: Shadow
@@ -45,6 +46,7 @@ enum MS {
 
 // MARK: - Card Modifier
 
+/// Flat inspector-style group: quiet fill with a hairline border, no shadow.
 struct MSCard: ViewModifier {
     var padding: CGFloat = MS.Spacing.md
     var radius: CGFloat = MS.Radius.md
@@ -52,8 +54,11 @@ struct MSCard: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(padding)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .shadow(color: MS.Shadow.subtle.color, radius: MS.Shadow.subtle.radius, x: MS.Shadow.subtle.x, y: MS.Shadow.subtle.y)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(.separator.opacity(0.6), lineWidth: 1)
+            )
     }
 }
 
@@ -70,6 +75,7 @@ extension View {
 
 // MARK: - Primary Button
 
+/// Native prominent push button. Kept as a wrapper so call sites stay small.
 struct MSPrimaryButton: View {
     let title: String
     let icon: String?
@@ -87,29 +93,23 @@ struct MSPrimaryButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 if isLoading {
-                    ProgressView().controlSize(.small).tint(.white)
+                    ProgressView().controlSize(.small)
                 } else if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .medium))
                 }
                 Text(title)
-                    .font(MS.Font.button)
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, MS.Spacing.md)
-            .padding(.vertical, 7)
-            .background(
-                Color.accentColor.gradient,
-                in: RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.regular)
         .disabled(isLoading)
     }
 }
 
 // MARK: - Secondary Button
 
+/// Native bordered push button.
 struct MSSecondaryButton: View {
     let title: String
     let icon: String?
@@ -124,27 +124,18 @@ struct MSSecondaryButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
+        Button(role: isDestructive ? .destructive : nil, action: action) {
             HStack(spacing: 5) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                 }
                 Text(title)
-                    .font(MS.Font.button)
             }
-            .foregroundStyle(isDestructive ? Color.red.opacity(0.85) : .primary)
-            .padding(.horizontal, MS.Spacing.sm + 4)
-            .padding(.vertical, 7)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous))
-            .overlay(
-                isDestructive
-                    ? RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous)
-                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                    : nil
-            )
+            .foregroundStyle(isDestructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
     }
 }
 
@@ -179,7 +170,7 @@ struct MSStatRow: View {
         HStack {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
             }
@@ -240,9 +231,9 @@ struct MSBadge: View {
             .font(size == .small ? MS.Font.micro : MS.Font.caption)
             .fontWeight(.medium)
             .foregroundStyle(color)
-            .padding(.horizontal, size == .small ? 5 : 8)
-            .padding(.vertical, size == .small ? 2 : 3)
-            .background(color.opacity(0.12), in: Capsule())
+            .padding(.horizontal, size == .small ? 5 : 7)
+            .padding(.vertical, size == .small ? 1.5 : 2.5)
+            .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
     }
 }
 
@@ -270,26 +261,14 @@ struct MSVerticalDivider: View {
     }
 }
 
-// MARK: - Accent Gradient Background
+// MARK: - Window Background
 
+/// Plain window background. Name kept from the old gradient version so call
+/// sites don't churn.
 struct MSGradientBackground: View {
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            RadialGradient(
-                colors: [Color.accentColor.opacity(0.08), .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 600
-            )
-            RadialGradient(
-                colors: [Color.purple.opacity(0.05), .clear],
-                center: .bottomTrailing,
-                startRadius: 0,
-                endRadius: 500
-            )
-        }
-        .ignoresSafeArea()
+        Color(nsColor: .windowBackgroundColor)
+            .ignoresSafeArea()
     }
 }
 
