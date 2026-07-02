@@ -5,66 +5,6 @@ import Foundation
 
 enum MockDataProvider {
 
-    // MARK: - Projects
-
-    static func demoProject() -> Project {
-        var p = Project(
-            id: UUID(uuidString: "A1B2C3D4-0000-0000-0000-000000000001")!,
-            title: "Summer in Lisbon",
-            settings: MontageSettings(
-                vibe: .travel,
-                focus: .friends,
-                aspectRatio: .widescreen,
-                renderQuality: .parallax2D
-            )
-        )
-        p.assetIDs = mockAssets().map(\.id)
-        p.songTrack = mockSongTrack()
-        p.status = .ready
-        p.montagePlan = demoMontagePlan(assets: mockAssets(), settings: p.settings, beatmap: mockBeatmap(duration: 214))
-        return p
-    }
-
-    static func sampleProjects() -> [Project] {
-        [
-            demoProject(),
-            {
-                var p = Project(title: "Birthday Weekend")
-                p.assetIDs = Array(mockAssets().prefix(12).map(\.id))
-                p.songTrack = SongTrack(
-                    title: "Riptide",
-                    artist: "Vance Joy",
-                    fileURL: URL(fileURLWithPath: "/mock/riptide.mp3"),
-                    durationSeconds: 204,
-                    fileFormat: "mp3"
-                )
-                p.status = .draft
-                return p
-            }(),
-            {
-                var p = Project(
-                    title: "Winter Cabin Trip",
-                    settings: MontageSettings(vibe: .nostalgic, aspectRatio: .widescreen)
-                )
-                p.status = .analyzing
-                p.assetIDs = Array(mockAssets().prefix(8).map(\.id))
-                return p
-            }(),
-        ]
-    }
-
-    // MARK: - Song
-
-    static func mockSongTrack() -> SongTrack {
-        SongTrack(
-            title: "Golden Thread",
-            artist: "Novo Amor",
-            fileURL: URL(fileURLWithPath: "/mock/golden-thread.mp3"),
-            durationSeconds: 214,
-            fileFormat: "mp3"
-        )
-    }
-
     // MARK: - Beatmap
 
     static func mockBeatmap(duration: Double = 214) -> Beatmap {
@@ -214,57 +154,6 @@ enum MockDataProvider {
             MSAlbum(title: "Winter Cabin", count: 54, type: .userAlbum),
             MSAlbum(title: "Portraits", count: 210, type: .userAlbum),
         ]
-    }
-
-    // MARK: - Montage Plan
-
-    static func demoMontagePlan(assets: [MediaAsset], settings: MontageSettings, beatmap: Beatmap) -> MontagePlan {
-        let sortedAssets = assets.sorted { ($0.analysisScore ?? 0) > ($1.analysisScore ?? 0) }
-        let transitions: [TransitionType] = [.fadeFromBlack, .crossfade, .hardCut, .crossfade, .hardCut,
-                                              .flashWhite, .hardCut, .dissolve, .crossfade, .hardCut]
-
-        var currentTime: TimeInterval = 0
-        let clipDurations: [TimeInterval] = [4.5, 2.8, 2.8, 1.8, 3.2, 1.2, 1.2, 6.0, 2.5, 1.6]
-        let sectionTypes: [SectionType] = [.intro, .verse, .verse, .chorus, .verse,
-                                            .drop, .drop, .breakdown, .chorus, .outro]
-
-        let sequence: [MontageSequenceItem] = sortedAssets.prefix(10).enumerated().map { i, asset in
-            let dur = clipDurations[i % clipDurations.count]
-            let transIn = transitions[i % transitions.count]
-            let transOut: TransitionType = i == 9 ? .dissolve : .hardCut
-            let item = MontageSequenceItem(
-                position: i,
-                assetID: asset.id,
-                startTime: currentTime,
-                endTime: currentTime + dur,
-                transitionIn: transIn,
-                transitionOut: transOut,
-                motionIntensity: Float(beatmap.energy(at: currentTime)),
-                beatAligned: i % 2 == 0,
-                confidenceScore: asset.analysisScore ?? 0.8,
-                sectionType: sectionTypes[i % sectionTypes.count],
-                selectionReason: "sharp & well-exposed · beat-aligned"
-            )
-            currentTime += dur
-            return item
-        }
-
-        let moodArc = beatmap.energyCurve.prefix(8).enumerated().map { i, pt in
-            MoodPoint(
-                position: pt.time / beatmap.durationSeconds,
-                valence: 0.4 + pt.energy * 0.6,
-                energy: pt.energy,
-                label: beatmap.section(at: pt.time)?.type.rawValue ?? ""
-            )
-        }
-
-        return MontagePlan(
-            title: "Summer in Lisbon",
-            settings: settings,
-            sequence: Array(sequence),
-            moodArc: Array(moodArc),
-            excludedAssetIDs: Array(sortedAssets.dropFirst(10).map(\.id))
-        )
     }
 
     // MARK: - Processing Status
