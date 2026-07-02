@@ -22,13 +22,9 @@ final class ImportViewModel {
     // MARK: Loading
     var isLoadingRecents: Bool = false
     var isLoadingAlbums: Bool = false
-    var isLoadingAlbumAssets: Bool = false
-    var importProgress: Double = 0
 
     // MARK: PhotosPicker
     var importedPickerAssets: [MediaAsset] = [] { didSet { refreshFilter() } }
-    var isImportingFromPicker: Bool = false
-    var pickerError: String? = nil
 
     // MARK: Filtered (cached)
     private(set) var filteredAssets: [MediaAsset] = []
@@ -106,7 +102,6 @@ final class ImportViewModel {
     func selectAlbum(_ album: MSAlbum?) async {
         selectedAlbum = album
         guard let album else { return }
-        isLoadingAlbumAssets = true
         let status = photosService.authorizationStatus()
         if status == .authorized || status == .limited {
             albumAssets = await photosService.fetchAssets(in: album, limit: 300)
@@ -115,7 +110,6 @@ final class ImportViewModel {
             logger.warning("selectAlbum: photos permission \(String(describing: status)) — using mock data")
             albumAssets = MockDataProvider.mockAssets()
         }
-        isLoadingAlbumAssets = false
     }
 
     // MARK: - Selection
@@ -139,18 +133,12 @@ final class ImportViewModel {
     // MARK: - PhotosPicker Import
 
     func handlePickerSelection(_ assetIDs: [String]) async {
-        isImportingFromPicker = true
-        importProgress = 0
-        pickerError = nil
         logger.info("picker import started: \(assetIDs.count) ids")
 
-        for (i, assetID) in assetIDs.enumerated() {
-            defer { importProgress = Double(i + 1) / Double(assetIDs.count) }
-
+        for assetID in assetIDs {
             let resolved = await PhotosLibraryService.shared.resolveAssets(for: [assetID])
             guard let asset = resolved.first else {
                 logger.warning("picker import: failed to resolve \(assetID) — full-library access required")
-                pickerError = "Photos full-library access is required to import selected items."
                 continue
             }
 
@@ -158,14 +146,7 @@ final class ImportViewModel {
             selectedAssetIDs.insert(assetID)
         }
 
-        isImportingFromPicker = false
         logger.info("picker import complete: \(self.importedPickerAssets.count) imported")
-    }
-
-    // MARK: - Thumbnail
-
-    func thumbnail(for asset: MediaAsset, size: CGSize = CGSize(width: 200, height: 200)) async -> NSImage? {
-        await photosService.fetchThumbnail(for: asset.id, size: size)
     }
 }
 

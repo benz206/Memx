@@ -125,7 +125,7 @@ struct LandingView: View {
                     )
                 )
                 .frame(width: 88, height: 88)
-                .msShadow(.strong)
+                .msShadow()
             Image(systemName: "music.note.list")
                 .font(.system(size: 38))
                 .foregroundStyle(.white)

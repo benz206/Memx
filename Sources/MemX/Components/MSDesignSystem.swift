@@ -39,7 +39,6 @@ enum MS {
     // MARK: Shadow
     enum Shadow {
         static let subtle = (color: Color.black.opacity(0.06), radius: CGFloat(4), x: CGFloat(0), y: CGFloat(2))
-        static let medium = (color: Color.black.opacity(0.10), radius: CGFloat(12), x: CGFloat(0), y: CGFloat(4))
         static let strong = (color: Color.black.opacity(0.18), radius: CGFloat(24), x: CGFloat(0), y: CGFloat(8))
     }
 }
@@ -63,22 +62,11 @@ extension View {
         modifier(MSCard(padding: padding, radius: radius))
     }
 
-    func msShadow(_ level: ShadowLevel = .subtle) -> some View {
-        switch level {
-        case .subtle:
-            return shadow(color: MS.Shadow.subtle.color, radius: MS.Shadow.subtle.radius,
-                         x: MS.Shadow.subtle.x, y: MS.Shadow.subtle.y)
-        case .medium:
-            return shadow(color: MS.Shadow.medium.color, radius: MS.Shadow.medium.radius,
-                         x: MS.Shadow.medium.x, y: MS.Shadow.medium.y)
-        case .strong:
-            return shadow(color: MS.Shadow.strong.color, radius: MS.Shadow.strong.radius,
-                         x: MS.Shadow.strong.x, y: MS.Shadow.strong.y)
-        }
+    func msShadow() -> some View {
+        shadow(color: MS.Shadow.strong.color, radius: MS.Shadow.strong.radius,
+               x: MS.Shadow.strong.x, y: MS.Shadow.strong.y)
     }
 }
-
-enum ShadowLevel { case subtle, medium, strong }
 
 // MARK: - Primary Button
 
@@ -87,13 +75,11 @@ struct MSPrimaryButton: View {
     let icon: String?
     let action: () -> Void
     var isLoading: Bool = false
-    var isDestructive: Bool = false
 
-    init(_ title: String, icon: String? = nil, isLoading: Bool = false, isDestructive: Bool = false, action: @escaping () -> Void) {
+    init(_ title: String, icon: String? = nil, isLoading: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.icon = icon
         self.isLoading = isLoading
-        self.isDestructive = isDestructive
         self.action = action
     }
 
@@ -113,9 +99,7 @@ struct MSPrimaryButton: View {
             .padding(.horizontal, MS.Spacing.md)
             .padding(.vertical, 7)
             .background(
-                isDestructive
-                    ? Color.red.gradient
-                    : Color.accentColor.gradient,
+                Color.accentColor.gradient,
                 in: RoundedRectangle(cornerRadius: MS.Radius.full, style: .continuous)
             )
         }
@@ -207,39 +191,6 @@ struct MSStatRow: View {
                 .font(MS.Font.caption)
                 .fontWeight(.medium)
                 .foregroundStyle(.primary)
-        }
-    }
-}
-
-// MARK: - Score Bar
-
-struct MSScoreBar: View {
-    let label: String
-    let value: Float
-    var color: Color = .accentColor
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(label)
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(Int(value * 100))%")
-                    .font(MS.Font.micro)
-                    .foregroundStyle(.secondary)
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.quaternary)
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(color.gradient)
-                        .frame(width: geo.size.width * CGFloat(value), height: 4)
-                }
-            }
-            .frame(height: 4)
         }
     }
 }

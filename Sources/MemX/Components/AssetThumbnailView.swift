@@ -135,41 +135,13 @@ struct AssetGridCell: View {
         .buttonStyle(.plain)
     }
 
-    private func formatDate(_ date: Date) -> String {
+    private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d, yyyy"
-        return f.string(from: date)
-    }
-}
+        return f
+    }()
 
-// MARK: - ScoreRing
-
-struct ScoreRing: View {
-    let score: Float
-    var size: CGFloat = 32
-    var lineWidth: CGFloat = 3
-
-    var color: Color {
-        switch score {
-        case 0.8...: return .green
-        case 0.6..<0.8: return .orange
-        default: return .red
-        }
-    }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(color.opacity(0.2), lineWidth: lineWidth)
-            Circle()
-                .trim(from: 0, to: CGFloat(score))
-                .stroke(color.gradient, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            Text("\(Int(score * 100))")
-                .font(.system(size: size * 0.28, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-        }
-        .frame(width: size, height: size)
-        .animation(.spring(), value: score)
+    private func formatDate(_ date: Date) -> String {
+        Self.dateFormatter.string(from: date)
     }
 }
