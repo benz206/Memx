@@ -44,9 +44,13 @@ App (MemXApp + ContentView)
 
 Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
-- **`AppViewModel`** — global project list, navigation state (`landing → projects → workspace(Project)`), Photos permission, on-disk persistence via `ProjectStore`.
-- **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, montage plan, render state, clip-shortage preflight, cancellation, pipeline log.
+- **`AppViewModel`** — global project list, navigation state (`projects → workspace(Project)`; the app launches straight into the projects list), projects-list selection (`selectedProjectID`) and New Project sheet flag (both targeted by menu commands), Photos permission, on-disk persistence via `ProjectStore`.
+- **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, montage plan, render state, clip-shortage preflight, cancellation, pipeline log. Holds a weak `activeImportVM` so Edit-menu commands can reach the photos grid.
 - **`ImportViewModel`** — import tab: album browsing, asset selection, filtering/sorting, PhotosPicker integration.
+
+### Menu Commands & Keyboard Shortcuts
+
+Defined in `MemXApp.commands`, enabled/disabled from live view-model state (via `appViewModel.activeWorkspaceVM`, only while a workspace is open): ⌘N new project, ⌘R run pipeline, ⇧⌘E export video, ⌘. stop, ⌘[ back to projects, ⌘1–⌘4 workspace stages, ⇧⌘]/⇧⌘[ next/previous stage, ⇧⌘A/⇧⌘D select/deselect all assets. The projects list additionally handles Return (open) and Delete (confirm-delete); the storyboard sequence list handles Delete (remove clip).
 
 ### Services (singletons)
 
@@ -93,7 +97,7 @@ Analysis results are persisted on the project (`analyzedAssets`) so tab switches
 
 ### Design System
 
-`MSDesignSystem.swift` defines spacing/radius/typography tokens as nested enums (`MS.Spacing.md`, `MS.Radius.lg`, etc.), reusable SwiftUI components (`.msCard()`, `MSPrimaryButton`, `MSSecondaryButton`, `MSBadge`, `MSSkeletonBlock`, `MSGradientBackground`), and shared display mappings (`ProjectStatus.displayColor/.displayName`, `SectionType.displayColor`).
+`MSDesignSystem.swift` defines spacing/radius/typography tokens as nested enums (`MS.Spacing.md`, `MS.Radius.lg`, etc.), reusable SwiftUI components, and shared display mappings (`ProjectStatus.displayColor/.displayName`, `SectionType.displayColor`). The look is native macOS: standard system typography (13 pt body / 11 pt caption, no rounded faces), `MSPrimaryButton`/`MSSecondaryButton` wrap native `.borderedProminent`/`.bordered` styles, `.msCard()` is a flat hairline-bordered quinary group (no shadow), and `MSGradientBackground` is (despite the legacy name) the plain window background. Prefer native controls (Form, Picker, List selection, toolbars) over custom chrome.
 
 ### Mock-First Development
 
