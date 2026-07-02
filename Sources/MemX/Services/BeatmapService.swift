@@ -142,10 +142,14 @@ final class BeatmapService: BeatmapServiceProtocol {
         onProgress(0.86, "Segmenting sections...")
 
         let barStartTimes = stride(from: downbeat, to: beats.count, by: 4).map { beats[$0] }
-        let sections = Self.snapSections(
+        var sections = Self.snapSections(
             buildSections(energyCurve: energyCurve, duration: duration),
             barStarts: barStartTimes
         )
+        for i in sections.indices where sections[i].duration > 0 {
+            let count = onsets.filter { $0.time >= sections[i].start && $0.time < sections[i].end }.count
+            sections[i].onsetDensity = Double(count) / sections[i].duration
+        }
         let drops    = Self.selectPeaks(onsets, minStrength: 0.75, maxCount: 6, minSeparation: 5.0)
         let avgStr   = onsets.map(\.strength).reduce(0, +) / Double(max(onsets.count, 1))
         let vocal    = Self.selectPeaks(onsets.filter { $0.strength < 0.75 },

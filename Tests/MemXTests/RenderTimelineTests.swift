@@ -373,6 +373,17 @@ final class RenderTimelineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(min(m!.startScale, m!.endScale), 1.0, "never zoom below fit")
     }
 
+    func testEveryThirdNonImpactPhotoHoldsStatic() {
+        // position % 3 == 2 → no drift, unless the slot is an impact.
+        let still = RenderTimeline.motion(
+            for: item(position: 2, start: 0, end: 2), isPhoto: true, headTransition: .hardCut)
+        XCTAssertNil(still)
+        let impact = RenderTimeline.motion(
+            for: item(position: 2, start: 0, end: 1, section: .drop),
+            isPhoto: true, headTransition: .hardCut)
+        XCTAssertNotNil(impact, "impact slots keep their punch even at static positions")
+    }
+
     func testPlainVideoGetsNoMotion() {
         let m = RenderTimeline.motion(
             for: item(position: 0, start: 0, end: 2), isPhoto: false, headTransition: .crossfade)

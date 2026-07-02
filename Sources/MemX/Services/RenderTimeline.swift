@@ -374,6 +374,11 @@ enum RenderTimeline {
                                  punchScale: 1, punchDuration: 0)
         }
 
+        // Every third non-impact photo holds static: uniform drift on
+        // everything reads as a template, and a still frame lets the next
+        // drift register.
+        if item.position % 3 == 2 && !isImpact { return nil }
+
         let drift = 0.045 + 0.05 * Double(min(1, max(0, item.motionIntensity)))
         let zoomIn = item.position % 2 == 0
         let panDirs: [(Double, Double)] = [(1, 0.35), (-1, -0.35), (-0.6, 1), (0.6, -1)]

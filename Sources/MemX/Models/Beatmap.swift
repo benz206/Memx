@@ -155,6 +155,7 @@ struct BeatSection: Identifiable, Codable, Hashable {
     var start: Double
     var end: Double
     var energyAvg: Double
+    var onsetDensity: Double?   // onsets per second — drives adaptive cut density
 
     var duration: Double { end - start }
 
@@ -163,13 +164,15 @@ struct BeatSection: Identifiable, Codable, Hashable {
         type: SectionType,
         start: Double,
         end: Double,
-        energyAvg: Double
+        energyAvg: Double,
+        onsetDensity: Double? = nil
     ) {
         self.id = id
         self.type = type
         self.start = start
         self.end = end
         self.energyAvg = energyAvg
+        self.onsetDensity = onsetDensity
     }
 }
 

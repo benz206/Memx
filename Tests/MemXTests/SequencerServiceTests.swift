@@ -728,6 +728,33 @@ final class SequencerServiceTests: XCTestCase {
                        "the standout asset must be reserved for the hero slot")
     }
 
+    // MARK: - buildSequence: adaptive cut density
+
+    func testBuildSequenceCutsFasterInDenserSections() async {
+        let assets = MockDataProvider.mockAssets()
+        // Two equal-length verses; A is musically busy, B is sparse.
+        let beatmap = Beatmap(
+            bpm: 120, durationSeconds: 64,
+            energyCurve: [EnergyPoint(time: 0, energy: 0.5), EnergyPoint(time: 64, energy: 0.5)],
+            sections: [
+                BeatSection(type: .verse, start: 0, end: 32, energyAvg: 0.5, onsetDensity: 5.0),
+                BeatSection(type: .verse, start: 32, end: 64, energyAvg: 0.5, onsetDensity: 1.0),
+            ],
+            beats: stride(from: 0.0, to: 64.0, by: 0.5).map { $0 },
+            drops: [], vocalPeaks: []
+        )
+
+        let plan = await sequencer.buildSequence(
+            title: "Test", settings: settings, assets: assets,
+            beatmap: beatmap, onProgress: { _, _ in }
+        )
+
+        let denseCount = plan.sequence.filter { $0.startTime < 32 }.count
+        let sparseCount = plan.sequence.filter { $0.startTime >= 32 }.count
+        XCTAssertGreaterThan(denseCount, sparseCount,
+                             "busier music must cut faster than sparse music")
+    }
+
     // MARK: - buildSequence: flash budget & high-energy cuts
 
     func testBuildSequenceKeepsFlashWhiteRare() async {

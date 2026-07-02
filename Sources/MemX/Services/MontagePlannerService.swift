@@ -498,6 +498,38 @@ final class SequencerService: SequencerServiceProtocol {
         return CutPattern(durationsInBeats: durs, isAnchoredToBar: base.isAnchoredToBar)
     }
 
+    // Cut density follows the music's measured busyness, not just the
+    // section label: the same fixed verse pattern shouldn't cut a sparse
+    // ballad verse and a dense funk verse identically. Long-hold section
+    // types keep their dramatic shape.
+    private func densityAdjusted(_ pattern: CutPattern, section: BeatSection,
+                                 sections: [BeatSection]) -> CutPattern {
+        guard section.type != .intro, section.type != .outro, section.type != .breakdown,
+              let density = section.onsetDensity else { return pattern }
+
+        var weightedSum = 0.0
+        var totalDuration = 0.0
+        for s in sections {
+            guard let d = s.onsetDensity, s.duration > 0 else { continue }
+            weightedSum += d * s.duration
+            totalDuration += s.duration
+        }
+        guard totalDuration > 0 else { return pattern }
+        let mean = weightedSum / totalDuration
+        guard mean > 0 else { return pattern }
+
+        let ratio = density / mean
+        let scale: Double
+        if ratio > 1.35      { scale = 0.75 }   // busy passage: cut faster
+        else if ratio < 0.65 { scale = 1.35 }   // sparse passage: let shots breathe
+        else                 { return pattern }
+
+        return CutPattern(
+            durationsInBeats: pattern.durationsInBeats.map { max(0.5, $0 * scale) },
+            isAnchoredToBar: pattern.isAnchoredToBar
+        )
+    }
+
     private func storyRampValue(sectionIndex: Int, sections: [BeatSection]) -> Double {
         guard !sections.isEmpty else { return 0 }
         let current = sections[sectionIndex]
@@ -556,12 +588,14 @@ final class SequencerService: SequencerServiceProtocol {
                 ? storyRampValue(sectionIndex: idx, sections: beatmap.sections)
                 : 0
             let base    = baseCutPattern(for: section.type, leadsToDrop: leadsToDrop, vibe: vibe)
-            let pattern = adjustedPattern(base: base, sectionType: section.type,
-                                          arcIntensity: arcIntensity,
-                                          encounterIndex: k, totalEncounters: n,
-                                          sectionBeatCount: sectionBeats.count,
-                                          storyRamp: storyRamp,
-                                          leadsToDrop: leadsToDrop)
+            let pattern = densityAdjusted(
+                adjustedPattern(base: base, sectionType: section.type,
+                                arcIntensity: arcIntensity,
+                                encounterIndex: k, totalEncounters: n,
+                                sectionBeatCount: sectionBeats.count,
+                                storyRamp: storyRamp,
+                                leadsToDrop: leadsToDrop),
+                section: section, sections: beatmap.sections)
 
             emitSlots(for: section, pattern: pattern, beats: sectionBeats, bars: sectionBars,
                       beatDur: beatDur, beatmap: beatmap, to: &slots)
