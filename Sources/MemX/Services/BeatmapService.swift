@@ -361,10 +361,7 @@ final class BeatmapService: BeatmapServiceProtocol {
     // MARK: - BPM via Autocorrelation
 
     private func estimateBPM(envelope: [Float], hopRate: Double) -> Double {
-        // Autocorrelation over the whole envelope is wasteful on long tracks —
-        // BPM is stable enough that the first ~90s resolves it. Cap the
-        // analysis window; per-lag vDSP_dotpr then runs over ≤9000 samples
-        // instead of tens of thousands.
+        // BPM is stable enough that the first ~90s resolves it.
         let n = min(envelope.count, Int(hopRate * 90.0))
         guard n > 200 else { return 120 }
 
@@ -389,7 +386,7 @@ final class BeatmapService: BeatmapServiceProtocol {
         return max(60, min(180, 60.0 / beatPeriod))
     }
 
-    // MARK: - Onset Detection (positive spectral flux)
+    // MARK: - Onset Detection (positive energy flux on the RMS envelope)
 
     private struct Onset { let time: Double; let strength: Double }
 

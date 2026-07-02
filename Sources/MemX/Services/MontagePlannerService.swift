@@ -139,12 +139,9 @@ final class SequencerService: SequencerServiceProtocol {
                                    isFirstOfSection: isFirst, beatmap: beatmap,
                                    vibe: settings.vibe)
 
-            let microOffset = 0.0
-
-            let snappedStart = beatmap.nearestBeat(to: slot.startTime)
+            let itemStart = max(0, beatmap.nearestBeat(to: slot.startTime))
             let snappedEnd = slot.isFlash ? slot.endTime : beatmap.nearestBeat(to: slot.endTime)
-            let itemStart = max(0, snappedStart - microOffset)
-            let itemEnd   = min(max(itemStart + 0.01, snappedEnd - microOffset), totalDuration)
+            let itemEnd   = min(max(itemStart + 0.01, snappedEnd), totalDuration)
 
             let peakBeat = slot.peakBeat ?? slot.startTime
             let clipOffset: TimeInterval
@@ -711,24 +708,10 @@ final class SequencerService: SequencerServiceProtocol {
         guard !beatmap.hooks.isEmpty else { return }
         let barDur = beatDur * 4
 
-        // Cluster key: for repeatIndex == 0, use the section's own startTime as
-        // the stable key; later occurrences in the same cluster need the same
-        // key, so we walk hooks in chronological order and map each
-        // (rounded-signature fingerprint) to its prototype key.
-        // A simpler stable key: repeatIndex == 0 → self.startTime, else use the
-        // most recent earlier hook's startTime as prototype. Since hooks are
-        // sorted chronologically and repeatIndex is cluster-local, the
-        // prototype is the nearest earlier hook with repeatIndex == 0 that
-        // hasn't been "closed" by another repeatIndex == 0 of a different
-        // cluster. Because BeatmapService emits hooks cluster-by-cluster
-        // already sorted, we just track the last seen rIdx == 0 start per
-        // sort order — but clusters can interleave in pathological cases.
-        // Good enough: use (startTime rounded) of the nearest earlier rIdx==0
-        // hook that shares the cluster. We approximate by grouping hooks
-        // whose endTime-startTime "shape" matches.
-        // Pragmatic approach: hooks arrive sorted by startTime; for each hook,
-        // find the prototype = nearest earlier hook with repeatIndex == 0
-        // and matching duration (within 30%). If none, self is prototype.
+        // Cluster key: hooks arrive sorted by startTime with cluster-local
+        // repeatIndex. The prototype for a repeat is the nearest earlier hook
+        // with repeatIndex == 0 and a matching duration (within 30%); its
+        // startTime is the stable key shared across the cluster.
         func prototypeKey(for hook: HookMoment, among all: [HookMoment]) -> Double {
             if hook.repeatIndex == 0 { return hook.startTime }
             let dur = hook.endTime - hook.startTime
@@ -775,14 +758,13 @@ final class SequencerService: SequencerServiceProtocol {
                 // leave a naked leading chunk un-styled).
                 let finalStart = (sIdx == 0) ? start : slotStart
 
-                let aligned = true
-                let peak    = beatmap.strongestBeat(in: finalStart...slotEnd)
+                let peak = beatmap.strongestBeat(in: finalStart...slotEnd)
 
                 hookSlots.append(TimeSlot(
                     startTime: finalStart,
                     endTime: slotEnd,
                     section: section,
-                    beatAligned: aligned,
+                    beatAligned: true,
                     isFlash: (slotEnd - finalStart) < beatDur,
                     peakBeat: peak,
                     isBreath: false,

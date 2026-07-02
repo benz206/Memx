@@ -506,7 +506,6 @@ struct StoryboardContentView: View {
                 .padding(MS.Spacing.sm)
                 .background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
             } else {
-                // §3.3: real steps shown normally; unimplemented steps shown as "Coming soon"
                 VStack(spacing: MS.Spacing.xs) {
                     ForEach(renderSteps, id: \.title) { step in
                         HStack(spacing: MS.Spacing.sm) {
@@ -680,7 +679,6 @@ struct StoryboardContentView: View {
             VStack(spacing: 3) {
                 Image(systemName: trans.icon).font(.system(size: 11))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                // §3.4: font size 11 (was 8)
                 Text(trans.rawValue).font(.system(size: 11))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .lineLimit(1)
@@ -892,7 +890,6 @@ struct MoodArcChart: View {
                         }
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                        // §3.12: raised from prefix(8) to prefix(20)
                         ForEach(points.prefix(20), id: \.position) { pt in
                             Circle()
                                 .fill(Color.accentColor)
@@ -986,7 +983,6 @@ struct ExportPlanSheet: View {
             if available, let action {
                 MSSecondaryButton("Export", icon: "square.and.arrow.up", action: action)
             } else {
-                // §3.5: "Soon" badge already shown; row is disabled + dimmed
                 MSBadge(text: "Soon", color: .orange, size: .small)
             }
         }
