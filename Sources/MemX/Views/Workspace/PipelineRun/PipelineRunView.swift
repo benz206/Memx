@@ -122,10 +122,7 @@ struct PipelineRunView: View {
 
     private var header: some View {
         HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14))
-                .foregroundStyle(Color.accentColor)
-            Text("Running Pipeline")
+            Text("Analysis")
                 .font(MS.Font.heading)
             Spacer()
             phaseBadge
@@ -167,17 +164,9 @@ struct PipelineRunView: View {
                     .monospacedDigit()
             }
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary).frame(height: 8)
-                    Capsule()
-                        .fill(Color.accentColor.gradient)
-                        .frame(width: max(0, geo.size.width * workspaceVM.processingStatus.progress), height: 8)
-                        .shadow(color: Color.accentColor.opacity(workspaceVM.isProcessing ? 0.35 : 0), radius: 6)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: workspaceVM.processingStatus.progress)
-                }
-            }
-            .frame(height: 8)
+            ProgressView(value: workspaceVM.processingStatus.progress)
+                .progressViewStyle(.linear)
+                .animation(.easeOut(duration: 0.25), value: workspaceVM.processingStatus.progress)
 
             HStack(spacing: 4) {
                 phaseSegment(phase: .analyzingAudio)
@@ -328,18 +317,22 @@ struct PipelineRunView: View {
                 MSSecondaryButton("Cancel Pipeline", icon: "xmark", isDestructive: true) {
                     workspaceVM.cancelPipeline()
                 }
+                .help("Stop (⌘.)")
             } else if workspaceVM.montagePlan != nil {
                 MSPrimaryButton("View Storyboard", icon: "film.stack.fill") {
                     workspaceVM.goToStage(.storyboard)
                 }
+                .help("Storyboard (⌘4)")
                 MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
                     Task { await workspaceVM.runPipeline() }
                 }
+                .help("Run Pipeline (⌘R)")
             } else {
                 MSPrimaryButton("Run Pipeline", icon: "sparkles") {
                     Task { await workspaceVM.runPipeline() }
                 }
                 .disabled(!workspaceVM.canRunPipeline)
+                .help("Run Pipeline (⌘R)")
             }
             Spacer()
         }

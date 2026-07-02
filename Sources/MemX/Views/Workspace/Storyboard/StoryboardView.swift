@@ -47,17 +47,9 @@ struct StoryboardView: View {
                         .font(MS.Font.micro)
                         .foregroundStyle(.secondary)
                 }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(.quaternary).frame(height: 6)
-                        Capsule()
-                            .fill(Color.accentColor.gradient)
-                            .frame(width: geo.size.width * workspaceVM.processingStatus.progress, height: 6)
-                            .shadow(color: Color.accentColor.opacity(workspaceVM.isProcessing ? 0.3 : 0), radius: 4)
-                            .animation(.spring(), value: workspaceVM.processingStatus.progress)
-                    }
-                }
-                .frame(height: 6)
+                ProgressView(value: workspaceVM.processingStatus.progress)
+                    .progressViewStyle(.linear)
+                    .animation(.easeOut(duration: 0.25), value: workspaceVM.processingStatus.progress)
 
                 // Two tiny segmented sub-bars — visual scoring / sequence.
                 HStack(spacing: 4) {
@@ -205,6 +197,12 @@ struct StoryboardContentView: View {
                 }
             }
             .listStyle(.plain)
+            .onDeleteCommand {
+                guard let id = selectedItemID,
+                      let item = plan.sequence.first(where: { $0.id == id }) else { return }
+                workspaceVM.removeSequenceItem(item)
+                selectedItemID = nil
+            }
             .onChange(of: plan.sequence) { _, newSequence in
                 if let id = selectedItemID, !newSequence.contains(where: { $0.id == id }) {
                     selectedItemID = nil
@@ -416,8 +414,7 @@ struct StoryboardContentView: View {
             HStack(spacing: MS.Spacing.md) {
                 ZStack {
                     RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor.opacity(0.3), .purple.opacity(0.2)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor.opacity(0.12))
                         .frame(width: 44, height: 44)
                     Image(systemName: song.fileFormatIcon)
                         .font(.system(size: 18))
@@ -556,6 +553,7 @@ struct StoryboardContentView: View {
                 }
             }
             .disabled(workspaceVM.isRendering || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
+            .help("Export Video (⇧⌘E)")
         }
         .msCard()
     }
