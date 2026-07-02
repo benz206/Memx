@@ -206,19 +206,6 @@ enum ScoringDensity: String, Codable, CaseIterable, Hashable {
     case dense      = "Dense"
     case veryDense  = "Very Dense"
 
-    /// Target number of frame samples per video when scoring.
-    /// OpenRouter analysis uses one representative frame today; the value is
-    /// retained for saved settings and future multi-frame sampling.
-    var videoFrameSamples: Int {
-        switch self {
-        case .verySparse: return 8
-        case .sparse:     return 14
-        case .balanced:   return 20
-        case .dense:      return 30
-        case .veryDense:  return 48
-        }
-    }
-
     var description: String {
         switch self {
         case .verySparse: return "Fastest — may miss peak moments"

@@ -6,7 +6,7 @@ struct ConfidenceBadge: View {
     let score: Float
     var style: BadgeStyle = .pill
 
-    enum BadgeStyle { case pill, icon, ring }
+    enum BadgeStyle { case pill, icon }
 
     var tier: Tier {
         switch score {
@@ -62,78 +62,7 @@ struct ConfidenceBadge: View {
                 .font(.system(size: 12))
                 .foregroundStyle(tier.color)
                 .help("\(Int(score * 100))% confidence")
-
-        case .ring:
-            ScoreRing(score: score, size: 28)
         }
-    }
-}
-
-// MARK: - EmotionBadge
-
-struct EmotionBadge: View {
-    let emotion: Emotion
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: emotion.icon)
-                .font(.system(size: 10))
-            Text(emotion.rawValue)
-                .font(MS.Font.micro)
-        }
-        .foregroundStyle(emotionColor)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(emotionColor.opacity(0.12), in: Capsule())
-    }
-
-    private var emotionColor: Color {
-        switch emotion {
-        case .joy:        return .yellow
-        case .nostalgia:  return .orange
-        case .excitement: return .red
-        case .calm:       return .blue
-        case .awe:        return .purple
-        case .humor:      return .green
-        case .love:       return .pink
-        case .surprise:   return .teal
-        }
-    }
-}
-
-// MARK: - MediaTypeBadge
-
-struct MediaTypeBadge: View {
-    let type: MSMediaType
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: type.icon)
-                .font(.system(size: 10))
-            Text(type.rawValue)
-                .font(MS.Font.micro)
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(.quaternary, in: Capsule())
-    }
-}
-
-// MARK: - BeatAlignedBadge
-
-struct BeatAlignedBadge: View {
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "waveform")
-                .font(.system(size: 9, weight: .semibold))
-            Text("Beat")
-                .font(MS.Font.micro)
-        }
-        .foregroundStyle(.purple)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Color.purple.opacity(0.12), in: Capsule())
     }
 }
 

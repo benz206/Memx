@@ -37,8 +37,8 @@ final class BeatmapModelTests: XCTestCase {
 
     func testSectionAtTimeReturnsCorrectSection() {
         let sections = [
-            BeatSection(type: .intro, start: 0, end: 15, energyAvg: 0.1, cutStyle: .slowFade),
-            BeatSection(type: .verse, start: 15, end: 45, energyAvg: 0.4, cutStyle: .onBeat),
+            BeatSection(type: .intro, start: 0, end: 15, energyAvg: 0.1),
+            BeatSection(type: .verse, start: 15, end: 45, energyAvg: 0.4),
         ]
         let beatmap = makeBeatmap(sections: sections)
         XCTAssertEqual(beatmap.section(at: 5)?.type, .intro)
@@ -47,8 +47,8 @@ final class BeatmapModelTests: XCTestCase {
 
     func testSectionAtBoundary() {
         let sections = [
-            BeatSection(type: .intro, start: 0, end: 15, energyAvg: 0.1, cutStyle: .slowFade),
-            BeatSection(type: .verse, start: 15, end: 45, energyAvg: 0.4, cutStyle: .onBeat),
+            BeatSection(type: .intro, start: 0, end: 15, energyAvg: 0.1),
+            BeatSection(type: .verse, start: 15, end: 45, energyAvg: 0.4),
         ]
         let beatmap = makeBeatmap(sections: sections)
         // start <= time < end, so t=15 belongs to verse
@@ -58,7 +58,7 @@ final class BeatmapModelTests: XCTestCase {
 
     func testSectionAtReturnNilForOutOfRange() {
         let sections = [
-            BeatSection(type: .verse, start: 5, end: 10, energyAvg: 0.4, cutStyle: .onBeat),
+            BeatSection(type: .verse, start: 5, end: 10, energyAvg: 0.4),
         ]
         let beatmap = makeBeatmap(sections: sections)
         XCTAssertNil(beatmap.section(at: 0))
@@ -104,12 +104,12 @@ final class BeatmapModelTests: XCTestCase {
     // MARK: - BeatSection
 
     func testBeatSectionDuration() {
-        let section = BeatSection(type: .chorus, start: 10, end: 40, energyAvg: 0.8, cutStyle: .onBeat)
+        let section = BeatSection(type: .chorus, start: 10, end: 40, energyAvg: 0.8)
         XCTAssertEqual(section.duration, 30, accuracy: 0.0001)
     }
 
     func testBeatSectionZeroDuration() {
-        let section = BeatSection(type: .drop, start: 5, end: 5, energyAvg: 1.0, cutStyle: .rapidCut)
+        let section = BeatSection(type: .drop, start: 5, end: 5, energyAvg: 1.0)
         XCTAssertEqual(section.duration, 0, accuracy: 0.0001)
     }
 
@@ -140,14 +140,6 @@ final class BeatmapModelTests: XCTestCase {
 
     func testBreakdownSectionHasLongClipHold() {
         XCTAssertGreaterThanOrEqual(SectionType.breakdown.clipHoldSeconds.lowerBound, 6.0)
-    }
-
-    // MARK: - CutStyle
-
-    func testCutStyleRawValues() {
-        XCTAssertEqual(CutStyle.rapidCut.rawValue, "Rapid Cut")
-        XCTAssertEqual(CutStyle.slowFade.rawValue, "Slow Fade")
-        XCTAssertEqual(CutStyle.onBeat.rawValue, "On Beat")
     }
 
     // MARK: - HookMoment

@@ -151,7 +151,6 @@ struct BeatSection: Identifiable, Codable, Hashable {
     var start: Double
     var end: Double
     var energyAvg: Double
-    var cutStyle: CutStyle
 
     var duration: Double { end - start }
 
@@ -160,15 +159,13 @@ struct BeatSection: Identifiable, Codable, Hashable {
         type: SectionType,
         start: Double,
         end: Double,
-        energyAvg: Double,
-        cutStyle: CutStyle
+        energyAvg: Double
     ) {
         self.id = id
         self.type = type
         self.start = start
         self.end = end
         self.energyAvg = energyAvg
-        self.cutStyle = cutStyle
     }
 }
 
@@ -231,15 +228,4 @@ enum SectionType: String, Codable, CaseIterable, Hashable {
         case .breakdown:      return 6.0...12.0
         }
     }
-}
-
-// MARK: - CutStyle
-
-enum CutStyle: String, Codable, Hashable {
-    case slowFade       = "Slow Fade"
-    case onBeat         = "On Beat"
-    case accelerating   = "Accelerating"
-    case rapidCut       = "Rapid Cut"
-    case singleHold     = "Single Hold"
-    case kenBurnsDrift  = "Ken Burns"
 }

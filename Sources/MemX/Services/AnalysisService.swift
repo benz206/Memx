@@ -136,7 +136,6 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[result.index].sceneCaption = a.sceneCaption.isEmpty ? nil : a.sceneCaption
             scoredAssets[result.index].semanticSummary = a.semanticSummary.isEmpty ? nil : a.semanticSummary
             scoredAssets[result.index].shotType = a.shotType
-            scoredAssets[result.index].motionVector = nil
             scoredAssets[result.index].colorTemperature = a.colorTemperature
             scoredAssets[result.index].faceAreaFraction = a.faceAreaFraction
             scoredAssets[result.index].clipStartTime = a.clipStartTime

@@ -56,14 +56,6 @@ enum ShotType: String, Codable, Hashable, CaseIterable {
     case motion
 }
 
-// MARK: - MotionVector
-
-struct MotionVector: Codable, Hashable {
-    var dx: Double
-    var dy: Double
-    var magnitude: Double
-}
-
 // MARK: - MediaAsset (concrete, Codable for persistence)
 
 struct MediaAsset: MediaAssetProtocol, Codable {
@@ -83,7 +75,6 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var noveltyScore: Float?
     var clipStartTime: TimeInterval?    // best segment start offset within video (nil for photos)
     var shotType: ShotType?
-    var motionVector: MotionVector?
     var colorTemperature: Double?
     var faceAreaFraction: Double?
     var sceneLabels: [String]?          // Vision VNClassifyImage top-N labels above confidence threshold
@@ -134,7 +125,6 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         duration: TimeInterval = 0,
         location: AssetLocation? = nil,
         shotType: ShotType? = nil,
-        motionVector: MotionVector? = nil,
         colorTemperature: Double? = nil,
         faceAreaFraction: Double? = nil,
         sceneLabels: [String]? = nil,
@@ -154,7 +144,6 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         self.duration = duration
         self.location = location
         self.shotType = shotType
-        self.motionVector = motionVector
         self.colorTemperature = colorTemperature
         self.faceAreaFraction = faceAreaFraction
         self.sceneLabels = sceneLabels

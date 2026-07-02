@@ -88,29 +88,4 @@ final class ProcessingStatusTests: XCTestCase {
         }
     }
 
-    // MARK: - MemoryEvent
-
-    func testMemoryEventDefaults() {
-        let event = MemoryEvent(label: "Summer", description: "Beach trip")
-        XCTAssertEqual(event.label, "Summer")
-        XCTAssertEqual(event.description, "Beach trip")
-        XCTAssertTrue(event.assetIDs.isEmpty)
-        XCTAssertEqual(event.dominantEmotion, .joy)
-        XCTAssertEqual(event.importanceScore, 0.7, accuracy: 0.001)
-        XCTAssertNil(event.representativeAssetID)
-    }
-
-    // MARK: - Emotion
-
-    func testAllEmotionsHaveIcons() {
-        for emotion in Emotion.allCases {
-            XCTAssertFalse(emotion.icon.isEmpty, "\(emotion) icon is empty")
-        }
-    }
-
-    func testEmotionRawValues() {
-        XCTAssertEqual(Emotion.joy.rawValue, "Joy")
-        XCTAssertEqual(Emotion.nostalgia.rawValue, "Nostalgia")
-        XCTAssertEqual(Emotion.awe.rawValue, "Awe")
-    }
 }

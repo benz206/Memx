@@ -497,18 +497,7 @@ final class BeatmapService: BeatmapServiceProtocol {
                 type = .verse
             }
 
-            let cutStyle: CutStyle
-            switch type {
-            case .drop:                cutStyle = .rapidCut
-            case .buildup, .preChorus: cutStyle = .accelerating
-            case .chorus:              cutStyle = .onBeat
-            case .breakdown:           cutStyle = .singleHold
-            case .intro:               cutStyle = .slowFade
-            case .bridge, .outro:      cutStyle = .kenBurnsDrift
-            case .verse:               cutStyle = .onBeat
-            }
-
-            sections.append(BeatSection(type: type, start: start, end: end, energyAvg: e, cutStyle: cutStyle))
+            sections.append(BeatSection(type: type, start: start, end: end, energyAvg: e))
         }
         return sections
     }

@@ -783,7 +783,6 @@ final class WorkspaceViewModel {
             merged.visualEmbedding = analyzed.visualEmbedding
             merged.motionEnergy = analyzed.motionEnergy
             merged.shotType = analyzed.shotType
-            merged.motionVector = analyzed.motionVector
             merged.colorTemperature = analyzed.colorTemperature
             merged.faceAreaFraction = analyzed.faceAreaFraction
             merged.clipStartTime = analyzed.clipStartTime

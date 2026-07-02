@@ -41,7 +41,6 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
     var endTime: TimeInterval
     var transitionIn: TransitionType
     var transitionOut: TransitionType
-    var motionPrompt: String
     var motionIntensity: Float          // 0.0 – 1.0
     var beatAligned: Bool
     var confidenceScore: Float
@@ -64,7 +63,6 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         endTime: TimeInterval,
         transitionIn: TransitionType = .crossfade,
         transitionOut: TransitionType = .hardCut,
-        motionPrompt: String = "",
         motionIntensity: Float = 0.5,
         beatAligned: Bool = false,
         confidenceScore: Float = 0.8,
@@ -84,7 +82,6 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         self.endTime = endTime
         self.transitionIn = transitionIn
         self.transitionOut = transitionOut
-        self.motionPrompt = motionPrompt
         self.motionIntensity = motionIntensity
         self.beatAligned = beatAligned
         self.confidenceScore = confidenceScore
@@ -103,7 +100,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, position, assetID, startTime, endTime
         case transitionIn, transitionOut
-        case motionPrompt, motionIntensity
+        case motionIntensity
         case beatAligned, confidenceScore
         case sectionType, selectionReason
         case clipOffset, peakTime
@@ -119,7 +116,6 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         endTime = try c.decode(TimeInterval.self, forKey: .endTime)
         transitionIn = try c.decode(TransitionType.self, forKey: .transitionIn)
         transitionOut = try c.decode(TransitionType.self, forKey: .transitionOut)
-        motionPrompt = try c.decode(String.self, forKey: .motionPrompt)
         motionIntensity = try c.decode(Float.self, forKey: .motionIntensity)
         beatAligned = try c.decode(Bool.self, forKey: .beatAligned)
         confidenceScore = try c.decode(Float.self, forKey: .confidenceScore)
@@ -142,7 +138,6 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         try c.encode(endTime, forKey: .endTime)
         try c.encode(transitionIn, forKey: .transitionIn)
         try c.encode(transitionOut, forKey: .transitionOut)
-        try c.encode(motionPrompt, forKey: .motionPrompt)
         try c.encode(motionIntensity, forKey: .motionIntensity)
         try c.encode(beatAligned, forKey: .beatAligned)
         try c.encode(confidenceScore, forKey: .confidenceScore)

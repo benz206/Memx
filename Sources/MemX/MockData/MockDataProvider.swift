@@ -81,16 +81,16 @@ enum MockDataProvider {
 
         // Sections
         let sections: [BeatSection] = [
-            BeatSection(type: .intro,     start: 0,    end: 15,   energyAvg: 0.12, cutStyle: .slowFade),
-            BeatSection(type: .verse,     start: 15,   end: 46,   energyAvg: 0.38, cutStyle: .onBeat),
-            BeatSection(type: .preChorus, start: 46,   end: 58,   energyAvg: 0.62, cutStyle: .accelerating),
-            BeatSection(type: .chorus,    start: 58,   end: 90,   energyAvg: 0.82, cutStyle: .onBeat),
-            BeatSection(type: .verse,     start: 90,   end: 120,  energyAvg: 0.40, cutStyle: .onBeat),
-            BeatSection(type: .buildup,   start: 120,  end: 134,  energyAvg: 0.72, cutStyle: .accelerating),
-            BeatSection(type: .drop,      start: 134,  end: 152,  energyAvg: 0.97, cutStyle: .rapidCut),
-            BeatSection(type: .breakdown, start: 152,  end: 168,  energyAvg: 0.18, cutStyle: .singleHold),
-            BeatSection(type: .chorus,    start: 168,  end: 196,  energyAvg: 0.85, cutStyle: .onBeat),
-            BeatSection(type: .outro,     start: 196,  end: duration, energyAvg: 0.1, cutStyle: .kenBurnsDrift),
+            BeatSection(type: .intro,     start: 0,    end: 15,   energyAvg: 0.12),
+            BeatSection(type: .verse,     start: 15,   end: 46,   energyAvg: 0.38),
+            BeatSection(type: .preChorus, start: 46,   end: 58,   energyAvg: 0.62),
+            BeatSection(type: .chorus,    start: 58,   end: 90,   energyAvg: 0.82),
+            BeatSection(type: .verse,     start: 90,   end: 120,  energyAvg: 0.40),
+            BeatSection(type: .buildup,   start: 120,  end: 134,  energyAvg: 0.72),
+            BeatSection(type: .drop,      start: 134,  end: 152,  energyAvg: 0.97),
+            BeatSection(type: .breakdown, start: 152,  end: 168,  energyAvg: 0.18),
+            BeatSection(type: .chorus,    start: 168,  end: 196,  energyAvg: 0.85),
+            BeatSection(type: .outro,     start: 196,  end: duration, energyAvg: 0.1),
         ]
 
         // Energy curve (sampled at 5s intervals)
@@ -239,7 +239,6 @@ enum MockDataProvider {
                 endTime: currentTime + dur,
                 transitionIn: transIn,
                 transitionOut: transOut,
-                motionPrompt: "",
                 motionIntensity: Float(beatmap.energy(at: currentTime)),
                 beatAligned: i % 2 == 0,
                 confidenceScore: asset.analysisScore ?? 0.8,

@@ -176,7 +176,6 @@ final class SequencerService: SequencerServiceProtocol {
                 endTime: itemEnd,
                 transitionIn: transitionIn,
                 transitionOut: transitionOut,
-                motionPrompt: "",
                 motionIntensity: energy,
                 beatAligned: slot.beatAligned,
                 confidenceScore: asset.analysisScore ?? 0.7,

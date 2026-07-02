@@ -263,7 +263,7 @@ final class SequencerServiceTests: XCTestCase {
         let beatmap = Beatmap(
             bpm: 120, durationSeconds: 60,
             energyCurve: [],  // empty energy curve
-            sections: [BeatSection(type: .verse, start: 0, end: 60, energyAvg: 0.5, cutStyle: .onBeat)],
+            sections: [BeatSection(type: .verse, start: 0, end: 60, energyAvg: 0.5)],
             beats: Array(stride(from: 0.0, to: 60.0, by: 0.5)),
             drops: [], vocalPeaks: []
         )
@@ -298,7 +298,7 @@ final class SequencerServiceTests: XCTestCase {
             bpm: 120,
             durationSeconds: 8,
             energyCurve: [EnergyPoint(time: 0, energy: 0.4), EnergyPoint(time: 8, energy: 0.5)],
-            sections: [BeatSection(type: .intro, start: 0, end: 8, energyAvg: 0.4, cutStyle: .onBeat)],
+            sections: [BeatSection(type: .intro, start: 0, end: 8, energyAvg: 0.4)],
             beats: Array(stride(from: 0.0, through: 8.0, by: 0.5)),
             drops: [],
             vocalPeaks: []

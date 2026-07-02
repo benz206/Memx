@@ -3,34 +3,6 @@ import XCTest
 
 final class ScoringDensityTests: XCTestCase {
 
-    // MARK: - videoFrameSamples
-
-    func testVideoFrameSamplesVerySparse() {
-        XCTAssertEqual(ScoringDensity.verySparse.videoFrameSamples, 8)
-    }
-
-    func testVideoFrameSamplesSparse() {
-        XCTAssertEqual(ScoringDensity.sparse.videoFrameSamples, 14)
-    }
-
-    func testVideoFrameSamplesBalanced() {
-        XCTAssertEqual(ScoringDensity.balanced.videoFrameSamples, 20)
-    }
-
-    func testVideoFrameSamplesDense() {
-        XCTAssertEqual(ScoringDensity.dense.videoFrameSamples, 30)
-    }
-
-    func testVideoFrameSamplesVeryDense() {
-        XCTAssertEqual(ScoringDensity.veryDense.videoFrameSamples, 48)
-    }
-
-    func testVideoFrameSamplesMonotonicallyIncreasing() {
-        let ordered: [ScoringDensity] = [.verySparse, .sparse, .balanced, .dense, .veryDense]
-        let samples = ordered.map(\.videoFrameSamples)
-        XCTAssertEqual(samples, samples.sorted(), "Sample counts should increase with density")
-    }
-
     // MARK: - Metadata
 
     func testAllCasesHaveDescription() {
