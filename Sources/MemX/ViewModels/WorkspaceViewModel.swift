@@ -112,6 +112,11 @@ final class WorkspaceViewModel {
     // MARK: Dedup scoring
     private var photosScoredSuccessfully: Bool = false
 
+    // MARK: Import
+    /// The photos-stage view model, registered while ImportView is on screen
+    /// so menu commands (Select All Assets, …) can reach it.
+    weak var activeImportVM: ImportViewModel?
+
     // MARK: Services
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol

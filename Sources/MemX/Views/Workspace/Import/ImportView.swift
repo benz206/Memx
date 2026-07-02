@@ -24,6 +24,7 @@ struct ImportView: View {
             }
         }
         .task {
+            workspaceVM.activeImportVM = importVM
             await importVM.loadRecents()
             await importVM.loadAlbums()
         }
