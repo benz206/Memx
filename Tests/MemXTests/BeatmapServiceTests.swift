@@ -116,6 +116,31 @@ final class BeatmapServiceTests: XCTestCase {
         }
     }
 
+    // MARK: - snapSections
+
+    func testSnapSectionsMovesBoundariesToBarStarts() {
+        let sections = [
+            BeatSection(type: .verse, start: 0, end: 11.3, energyAvg: 0.4),
+            BeatSection(type: .chorus, start: 11.3, end: 24, energyAvg: 0.8),
+        ]
+        let barStarts = stride(from: 0.0, through: 24.0, by: 2.0).map { $0 }
+        let snapped = BeatmapService.snapSections(sections, barStarts: barStarts)
+        XCTAssertEqual(snapped[0].end, 12.0, accuracy: 1e-9)
+        XCTAssertEqual(snapped[1].start, 12.0, accuracy: 1e-9)
+        XCTAssertEqual(snapped[1].end, 24.0, accuracy: 1e-9, "outer edges stay put")
+    }
+
+    func testSnapSectionsNeverCollapsesASection() {
+        // Nearest bar to the 2.0 boundary is 0.0, which would erase section 0.
+        let sections = [
+            BeatSection(type: .intro, start: 0, end: 2.0, energyAvg: 0.2),
+            BeatSection(type: .verse, start: 2.0, end: 20, energyAvg: 0.5),
+        ]
+        let snapped = BeatmapService.snapSections(sections, barStarts: [0.0, 8.0, 16.0])
+        XCTAssertEqual(snapped[0].end, 2.0, accuracy: 1e-9, "unsafe snap must be skipped")
+        XCTAssertEqual(snapped[1].start, 2.0, accuracy: 1e-9)
+    }
+
     // MARK: - Beatmap downbeat helpers
 
     func testBarStartsBeginAtDownbeat() {

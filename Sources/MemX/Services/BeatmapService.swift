@@ -141,7 +141,11 @@ final class BeatmapService: BeatmapServiceProtocol {
 
         onProgress(0.86, "Segmenting sections...")
 
-        let sections = buildSections(energyCurve: energyCurve, duration: duration)
+        let barStartTimes = stride(from: downbeat, to: beats.count, by: 4).map { beats[$0] }
+        let sections = Self.snapSections(
+            buildSections(energyCurve: energyCurve, duration: duration),
+            barStarts: barStartTimes
+        )
         let drops    = Self.selectPeaks(onsets, minStrength: 0.75, maxCount: 6, minSeparation: 5.0)
         let avgStr   = onsets.map(\.strength).reduce(0, +) / Double(max(onsets.count, 1))
         let vocal    = Self.selectPeaks(onsets.filter { $0.strength < 0.75 },
@@ -532,6 +536,26 @@ final class BeatmapService: BeatmapServiceProtocol {
         return accepted
             .sorted { $0.time < $1.time }
             .map { BeatMoment(time: $0.time, intensity: $0.strength) }
+    }
+
+    // MARK: - Section Snapping
+    // Fixed-block segmentation puts boundaries at arbitrary 12s marks, but
+    // musical sections change on bar lines — a chorus that starts at 47s
+    // otherwise gets chopped at 48s and every downstream hero hold inherits
+    // the error. Interior boundaries snap to the nearest bar start.
+
+    static func snapSections(_ sections: [BeatSection], barStarts: [Double]) -> [BeatSection] {
+        guard sections.count > 1, !barStarts.isEmpty else { return sections }
+        var snapped = sections
+        for i in 1..<snapped.count {
+            let boundary = snapped[i].start
+            guard let nearest = barStarts.min(by: { abs($0 - boundary) < abs($1 - boundary) }) else { continue }
+            // Never invert or collapse a section below ~a bar.
+            guard nearest > snapped[i - 1].start + 1.0, nearest < snapped[i].end - 1.0 else { continue }
+            snapped[i - 1].end = nearest
+            snapped[i].start = nearest
+        }
+        return snapped
     }
 
     // MARK: - Grid Quality
