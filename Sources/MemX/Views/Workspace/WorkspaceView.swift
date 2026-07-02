@@ -169,7 +169,7 @@ struct WorkspaceView: View {
                 }
                 MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)", icon: "photo")
                 MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)", icon: "video")
-                MSStatRow(label: "Status", value: statusDisplayName(workspaceVM.project.status), icon: "info.circle")
+                MSStatRow(label: "Status", value: workspaceVM.project.status.displayName, icon: "info.circle")
 
                 if workspaceVM.hasSong && !workspaceVM.assets.isEmpty {
                     MSDivider()
@@ -299,114 +299,88 @@ struct WorkspaceView: View {
         .overlay(alignment: .bottom) { MSDivider() }
     }
 
-    private func stageNavigationBanner(_ message: String) -> some View {
+    /// Shared chrome for the workspace warning banners: orange icon, caption
+    /// message, then banner-specific trailing controls.
+    private func warningBanner<Trailing: View>(
+        icon: String,
+        message: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
         HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "lock.fill")
-                .foregroundStyle(.orange)
+            Image(systemName: icon).foregroundStyle(.orange)
             Text(message)
                 .font(MS.Font.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button {
-                workspaceVM.dismissStageNavigationNotice()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            trailing()
         }
         .padding(.horizontal, MS.Spacing.md)
         .padding(.vertical, MS.Spacing.sm)
         .background(.orange.opacity(0.08))
         .overlay(alignment: .bottom) { MSDivider() }
+    }
+
+    private func bannerLinkButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .font(MS.Font.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+    }
+
+    private func bannerDismissButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func stageNavigationBanner(_ message: String) -> some View {
+        warningBanner(icon: "lock.fill", message: message) {
+            bannerDismissButton { workspaceVM.dismissStageNavigationNotice() }
+        }
     }
 
     private var photosAccessBanner: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text("Photos access is denied. Grant access to load your library.")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Open Settings") {
+        warningBanner(
+            icon: "exclamationmark.triangle.fill",
+            message: "Photos access is denied. Grant access to load your library."
+        ) {
+            bannerLinkButton("Open Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
             }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
         }
-        .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.orange.opacity(0.08))
-        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     private var missingAssetsBanner: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
-            Text("Some assets from this project are no longer available. Add media to continue.")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Pick Media") {
+        warningBanner(
+            icon: "photo.badge.exclamationmark.fill",
+            message: "Some assets from this project are no longer available. Add media to continue."
+        ) {
+            bannerLinkButton("Pick Media") {
                 workspaceVM.goToStage(.photos)
                 showMissingAssetsBanner = false
             }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            Button {
-                showMissingAssetsBanner = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            bannerDismissButton { showMissingAssetsBanner = false }
         }
-        .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.orange.opacity(0.08))
-        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     private func clipShortfallBanner(_ shortfall: SequencerPreflight) -> some View {
         let seconds = Int(shortfall.estimatedShortfallSeconds.rounded())
-        let mins = seconds / 60
-        let secs = seconds % 60
-        let timeStr = String(format: "%d:%02d", mins, secs)
-        return HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
-            Text("Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat).")
-                .font(MS.Font.caption)
-            .foregroundStyle(.secondary)
-            Spacer()
-            Button("Add Photos") {
+        let timeStr = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        return warningBanner(
+            icon: "photo.badge.exclamationmark.fill",
+            message: "Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat)."
+        ) {
+            bannerLinkButton("Add Photos") {
                 workspaceVM.goToStage(.photos)
             }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            Button("Build Anyway") {
+            bannerLinkButton("Build Anyway") {
                 Task { await workspaceVM.acknowledgeShortfallAndBuild() }
             }
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            Button {
-                workspaceVM.dismissShortfall()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            bannerDismissButton { workspaceVM.dismissShortfall() }
         }
-        .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.orange.opacity(0.08))
-        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     // MARK: - Title Field
@@ -457,28 +431,11 @@ struct WorkspaceView: View {
     private var toolbarActions: some View {
         HStack(spacing: MS.Spacing.sm) {
             MSBadge(
-                text: statusDisplayName(workspaceVM.project.status),
-                color: statusColor(workspaceVM.project.status),
+                text: workspaceVM.project.status.displayName,
+                color: workspaceVM.project.status.displayColor,
                 size: .small
             )
         }
     }
 
-    private func statusColor(_ status: ProjectStatus) -> Color {
-        switch status {
-        case .draft:        return .secondary
-        case .importing:    return .blue
-        case .analyzing:    return .orange
-        case .ready:        return .green
-        case .exported:     return .purple
-        case .configuring:  return .teal
-        }
-    }
-
-    private func statusDisplayName(_ status: ProjectStatus) -> String {
-        switch status {
-        case .exported: return "Rendered"
-        default: return status.rawValue
-        }
-    }
 }

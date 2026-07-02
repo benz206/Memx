@@ -172,11 +172,11 @@ struct ProjectRowView: View {
             // Icon
             ZStack {
                 RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .fill(statusColor.opacity(0.15))
+                    .fill(project.status.displayColor.opacity(0.15))
                     .frame(width: 48, height: 48)
                 Image(systemName: "film.stack.fill")
                     .font(.system(size: 22))
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(project.status.displayColor)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -191,7 +191,7 @@ struct ProjectRowView: View {
                 }
 
                 HStack(spacing: MS.Spacing.sm) {
-                    MSBadge(text: statusDisplayName(project.status), color: statusColor, size: .small)
+                    MSBadge(text: project.status.displayName, color: project.status.displayColor, size: .small)
                     if !project.assetIDs.isEmpty {
                         MSBadge(text: "\(project.assetIDs.count) assets", size: .small)
                     }
@@ -215,24 +215,6 @@ struct ProjectRowView: View {
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.15), value: isHovered)
         .msCard()
-    }
-
-    private var statusColor: Color {
-        switch project.status {
-        case .draft:        return .secondary
-        case .importing:    return .blue
-        case .analyzing:    return .orange
-        case .configuring:  return .teal
-        case .ready:        return .green
-        case .exported:     return .purple
-        }
-    }
-
-    private func statusDisplayName(_ status: ProjectStatus) -> String {
-        switch status {
-        case .exported: return "Rendered"
-        default: return status.rawValue
-        }
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {

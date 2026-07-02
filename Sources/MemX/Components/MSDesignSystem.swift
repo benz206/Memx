@@ -292,3 +292,37 @@ struct MSGradientBackground: View {
         .ignoresSafeArea()
     }
 }
+
+// MARK: - Shared Display Mappings
+
+extension ProjectStatus {
+    var displayColor: Color {
+        switch self {
+        case .draft:        return .secondary
+        case .importing:    return .blue
+        case .analyzing:    return .orange
+        case .configuring:  return .teal
+        case .ready:        return .green
+        case .exported:     return .purple
+        }
+    }
+
+    var displayName: String {
+        self == .exported ? "Rendered" : rawValue
+    }
+}
+
+extension SectionType {
+    var displayColor: Color {
+        switch self {
+        case .intro, .outro:  return .gray
+        case .verse:          return .blue
+        case .preChorus:      return .teal
+        case .chorus:         return .indigo
+        case .buildup:        return .orange
+        case .drop:           return .red
+        case .bridge:         return .purple
+        case .breakdown:      return .mint
+        }
+    }
+}

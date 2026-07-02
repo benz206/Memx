@@ -195,10 +195,10 @@ struct SongImportView: View {
                             Text(section.type.rawValue)
                                 .font(MS.Font.micro)
                         }
-                        .foregroundStyle(sectionColor(section.type))
+                        .foregroundStyle(section.type.displayColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(sectionColor(section.type).opacity(0.1), in: Capsule())
+                        .background(section.type.displayColor.opacity(0.1), in: Capsule())
                     }
                 }
             }
@@ -216,22 +216,9 @@ struct SongImportView: View {
     private func sectionStrip(_ section: BeatSection, totalDuration: Double, width: CGFloat) -> some View {
         let ratio = CGFloat(section.duration / totalDuration)
         return RoundedRectangle(cornerRadius: 4, style: .continuous)
-            .fill(sectionColor(section.type).opacity(0.6 + section.energyAvg * 0.4))
+            .fill(section.type.displayColor.opacity(0.6 + section.energyAvg * 0.4))
             .frame(width: max(4, width * ratio - 2), height: 32)
             .help("\(section.type.rawValue) (\(Int(section.start))s–\(Int(section.end))s)")
-    }
-
-    private func sectionColor(_ type: SectionType) -> Color {
-        switch type {
-        case .intro, .outro:  return .gray
-        case .verse:          return .blue
-        case .preChorus:      return .teal
-        case .chorus:         return .indigo
-        case .buildup:        return .orange
-        case .drop:           return .red
-        case .bridge:         return .purple
-        case .breakdown:      return .mint
-        }
     }
 
     private func statChip(icon: String, label: String, value: String, color: Color) -> some View {

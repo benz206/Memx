@@ -748,12 +748,12 @@ struct StoryboardSequenceRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                        .fill(sectionColor(item.sectionType).opacity(0.15))
+                        .fill((item.sectionType?.displayColor ?? .secondary).opacity(0.15))
                         .frame(width: 52, height: 36)
                         .overlay(
                             Image(systemName: item.sectionType?.icon ?? "photo.fill")
                                 .font(.system(size: 13))
-                                .foregroundStyle(sectionColor(item.sectionType).opacity(0.7))
+                                .foregroundStyle((item.sectionType?.displayColor ?? .secondary).opacity(0.7))
                         )
                 }
 
@@ -769,7 +769,7 @@ struct StoryboardSequenceRow: View {
             .frame(width: 52, height: 36)
             .overlay(
                 RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                    .stroke(sectionColor(item.sectionType).opacity(0.45), lineWidth: 1)
+                    .stroke((item.sectionType?.displayColor ?? .secondary).opacity(0.45), lineWidth: 1)
             )
 
             VStack(alignment: .leading, spacing: 3) {
@@ -813,20 +813,6 @@ struct StoryboardSequenceRow: View {
             ConfidenceBadge(score: item.confidenceScore, style: .icon)
         }
         .contentShape(Rectangle())
-    }
-
-    private func sectionColor(_ type: SectionType?) -> Color {
-        switch type {
-        case .intro, .outro:  return .gray
-        case .verse:          return .blue
-        case .preChorus:      return .teal
-        case .chorus:         return .indigo
-        case .buildup:        return .orange
-        case .drop:           return .red
-        case .bridge:         return .purple
-        case .breakdown:      return .mint
-        case .none:           return .secondary
-        }
     }
 
     /// Distinct one-liner per asset. Prefers real OpenRouter output, falls
