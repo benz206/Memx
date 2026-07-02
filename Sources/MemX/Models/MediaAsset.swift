@@ -80,7 +80,7 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var sceneLabels: [String]?          // Vision VNClassifyImage top-N labels above confidence threshold
     var sceneCaption: String?           // Natural-language caption from Foundation Models (nil if unavailable)
     var semanticSummary: String?        // Edit-aware summary used for mood/content matching
-    var semanticEmbedding: [Float]?      // OpenRouter/free embedding for semantic sequencing
+    var semanticEmbedding: [Float]?      // on-device NLEmbedding for semantic sequencing
     var visualEmbedding: [Float]?        // Vision FeaturePrint (free, on-device) for match-cut continuity
     var motionEnergy: Float?             // 0 still … 1 high-action/jumping — matched against audio energy
     var isSelected: Bool = false

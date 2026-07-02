@@ -815,8 +815,8 @@ struct StoryboardSequenceRow: View {
         .contentShape(Rectangle())
     }
 
-    /// Distinct one-liner per asset. Prefers real OpenRouter output, falls
-    /// back to facts derived from the asset itself so the storyboard doesn't
+    /// Distinct one-liner per asset. Prefers analysis captions, falls back
+    /// to facts derived from the asset itself so the storyboard doesn't
     /// show the same string on every row when analysis is unavailable.
     private func secondaryRowText(for asset: MediaAsset?) -> String {
         if let summary = asset?.semanticSummary, !summary.isEmpty { return summary }

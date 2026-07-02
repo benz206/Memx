@@ -23,9 +23,9 @@ struct PrivacySettingsView: View {
                         .font(.system(size: 28))
                         .foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("AI orchestration uses OpenRouter.")
+                        Text("Everything runs on your Mac.")
                             .font(MS.Font.heading)
-                        Text("The Mac handles media access, audio analysis, and final stitching.")
+                        Text("Media access, analysis, sequencing, and rendering never leave the device.")
                             .font(MS.Font.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -36,13 +36,13 @@ struct PrivacySettingsView: View {
                 VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                     privacyRow(
                         icon: "brain",
-                        title: "Scene captions",
-                        detail: "OpenRouter vision model from your configured API key."
+                        title: "Semantic embeddings",
+                        detail: "Apple NLEmbedding + Vision FeaturePrint — on-device only."
                     )
                     privacyRow(
                         icon: "eye",
                         title: "Photo scoring",
-                        detail: "OpenRouter ranks quality, emotion, novelty, and scene fit."
+                        detail: "Derived from your library's metadata — on-device only."
                     )
                     privacyRow(
                         icon: "music.note",
