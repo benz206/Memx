@@ -109,7 +109,10 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                         ? await self.representativeVideoFrame(for: asset)
                         : await self.photoImage(for: asset)
                     let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
-                    let analysis = self.localAnalysis(for: asset)
+                    var analysis = self.localAnalysis(for: asset)
+                    if let image, let warmth = Self.colorTemperature(for: image) {
+                        analysis.colorTemperature = warmth
+                    }
                     return IndexedResult(index: index, analysis: analysis, visualEmbedding: embedding)
                 }
             }
@@ -193,6 +196,39 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         guard norm > 0 else { return nil }
         for i in vector.indices { vector[i] /= norm }
         return vector
+    }
+
+    // MARK: - Color Temperature (on-device)
+
+    /// Approximate warmth of a frame (0 cool … 1 warm) from the red/blue
+    /// balance of a tiny downsample. The 1.5 spread puts golden-hour and
+    /// blue-shade frames far enough apart that the sequencer's warmth
+    /// matching and color-jump transition trigger actually discriminate.
+    static func colorTemperature(for image: CGImage) -> Double? {
+        let side = 16
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil,
+                  width: side,
+                  height: side,
+                  bitsPerComponent: 8,
+                  bytesPerRow: side * 4,
+                  space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        guard let data = context.data else { return nil }
+
+        let pixels = data.bindMemory(to: UInt8.self, capacity: side * side * 4)
+        var r = 0.0, g = 0.0, b = 0.0
+        for i in 0..<(side * side) {
+            r += Double(pixels[i * 4])
+            g += Double(pixels[i * 4 + 1])
+            b += Double(pixels[i * 4 + 2])
+        }
+        let warmth = 0.5 + 1.5 * (r - b) / max(r + g + b, 1e-6)
+        return min(1, max(0, warmth))
     }
 
     private func photoImage(for asset: MediaAsset) async -> CGImage? {

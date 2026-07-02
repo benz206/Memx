@@ -1169,7 +1169,7 @@ final class SequencerService: SequencerServiceProtocol {
         case .breakdown:     warmthTarget = 0.30
         default:             warmthTarget = 0.50
         }
-        let warmthFit = a.colorTemperature.map { 1.0 - abs($0 - warmthTarget) } ?? 0.5
+        let warmthFit = a.colorTemperature.map { 1.0 - min(1.0, abs($0 - warmthTarget) * 2.0) } ?? 0.5
 
         var noveltyVsPrev = 0.0
         if let p = prev {
