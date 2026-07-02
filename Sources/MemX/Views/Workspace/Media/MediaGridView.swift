@@ -52,7 +52,7 @@ struct MediaGridView: View {
                     icon: "photo.stack",
                     title: "No Media Yet",
                     subtitle: "Import photos and videos from Apple Photos to get started.",
-                    action: ("Go to Photos", { workspaceVM.selectedTab = .photos })
+                    action: ("Go to Photos", { workspaceVM.goToStage(.photos) })
                 )
             } else if visibleAssets.isEmpty {
                 EmptyStateView(

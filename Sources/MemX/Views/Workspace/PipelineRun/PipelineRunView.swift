@@ -373,7 +373,7 @@ struct PipelineRunView: View {
                 }
             } else if workspaceVM.montagePlan != nil {
                 MSPrimaryButton("View Storyboard", icon: "film.stack.fill") {
-                    workspaceVM.selectedTab = .storyboard
+                    workspaceVM.goToStage(.storyboard)
                 }
                 MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
                     Task { await workspaceVM.runPipeline() }

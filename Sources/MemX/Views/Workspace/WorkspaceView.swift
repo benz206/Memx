@@ -74,14 +74,22 @@ struct WorkspaceView: View {
     // MARK: - Sidebar
 
     private var sidebarContent: some View {
-        List(WorkspaceTab.allCases, id: \.self, selection: $workspaceVM.selectedTab) { tab in
-            HStack(spacing: MS.Spacing.sm) {
-                stepIcon(for: tab)
-                    .frame(width: 16)
-                Label(tab.rawValue, systemImage: tab.icon)
-                    .font(MS.Font.body)
+        List {
+            Section {
+                ForEach(WorkspaceTab.allCases, id: \.self) { tab in
+                    Button {
+                        workspaceVM.goToStage(tab)
+                    } label: {
+                        stageSidebarRow(tab)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 8, bottom: 5, trailing: 8))
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: MS.Radius.sm)
+                            .fill(workspaceVM.selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear)
+                    )
+                }
             }
-            .tag(tab)
         }
         .listStyle(.sidebar)
         .navigationTitle(workspaceVM.project.title)
@@ -91,37 +99,59 @@ struct WorkspaceView: View {
     }
 
     @ViewBuilder
+    private func stageSidebarRow(_ tab: WorkspaceTab) -> some View {
+        let state = workspaceVM.stageState(for: tab)
+
+        HStack(alignment: .top, spacing: MS.Spacing.sm) {
+            stepIcon(for: tab)
+                .frame(width: 18, height: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: MS.Spacing.xs) {
+                    Text("\(tab.stepNumber). \(tab.rawValue)")
+                        .font(MS.Font.button)
+                        .foregroundStyle(state == .blocked ? .secondary : .primary)
+                    if state == .running {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+
+                Text(workspaceVM.stageSubtitle(for: tab))
+                    .font(MS.Font.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .opacity(state == .blocked ? 0.58 : 1)
+    }
+
+    @ViewBuilder
     private func stepIcon(for tab: WorkspaceTab) -> some View {
-        if isTabComplete(tab) {
+        switch workspaceVM.stageState(for: tab) {
+        case .complete:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(.green)
-        } else if isTabActive(tab) {
+        case .current:
             Image(systemName: "circle.dotted")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.accentColor)
-        } else {
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+        case .available:
+            Image(systemName: "circle")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        case .blocked:
             Image(systemName: "lock.fill")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
-        }
-    }
-
-    private func isTabComplete(_ tab: WorkspaceTab) -> Bool {
-        switch tab {
-        case .song:          return workspaceVM.hasSong
-        case .photos:        return !workspaceVM.assets.isEmpty
-        case .analysis:      return workspaceVM.allAssetsScored && workspaceVM.hasPlan
-        case .storyboard:    return workspaceVM.montagePlan != nil
-        }
-    }
-
-    private func isTabActive(_ tab: WorkspaceTab) -> Bool {
-        switch tab {
-        case .song:          return true
-        case .photos:        return workspaceVM.hasSong
-        case .analysis:      return workspaceVM.hasSong && !workspaceVM.assets.isEmpty
-        case .storyboard:    return !workspaceVM.assets.isEmpty || workspaceVM.hasPlan
         }
     }
 
@@ -203,6 +233,12 @@ struct WorkspaceView: View {
                 clipShortfallBanner(shortfall)
             }
 
+            if let notice = workspaceVM.stageNavigationNotice {
+                stageNavigationBanner(notice)
+            }
+
+            stageOverviewBar
+
             Group {
                 switch workspaceVM.selectedTab {
                 case .song:
@@ -217,6 +253,73 @@ struct WorkspaceView: View {
             }
         }
         .environment(workspaceVM)
+    }
+
+    private var stageOverviewBar: some View {
+        HStack(alignment: .center, spacing: MS.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Step \(workspaceVM.selectedTab.stepNumber) of \(WorkspaceTab.allCases.count): \(workspaceVM.selectedTab.rawValue)")
+                    .font(MS.Font.heading)
+                Text(workspaceVM.stageDetail(for: workspaceVM.selectedTab))
+                    .font(MS.Font.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: MS.Spacing.md)
+
+            ProgressView(value: workspaceVM.workflowProgress)
+                .frame(width: 120)
+
+            if let previous = workspaceVM.previousStage(before: workspaceVM.selectedTab) {
+                Button {
+                    workspaceVM.goToStage(previous)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+                .help("Previous stage")
+            }
+
+            if let next = workspaceVM.nextStage(after: workspaceVM.selectedTab) {
+                Button {
+                    workspaceVM.goToStage(next)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!workspaceVM.canOpenStage(next))
+                .help("Next stage")
+            }
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { MSDivider() }
+    }
+
+    private func stageNavigationBanner(_ message: String) -> some View {
+        HStack(spacing: MS.Spacing.sm) {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(MS.Font.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                workspaceVM.dismissStageNavigationNotice()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, MS.Spacing.sm)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { MSDivider() }
     }
 
     private var photosAccessBanner: some View {
@@ -247,7 +350,7 @@ struct WorkspaceView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Pick Media") {
-                workspaceVM.selectedTab = .photos
+                workspaceVM.goToStage(.photos)
                 showMissingAssetsBanner = false
             }
             .font(MS.Font.caption)
@@ -277,10 +380,10 @@ struct WorkspaceView: View {
             Image(systemName: "photo.badge.exclamationmark.fill").foregroundStyle(.orange)
             Text("Not enough photos to fill the song. Need ~\(shortfall.estimatedShortfall) more clips (\(timeStr) of the song would repeat).")
                 .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
+            .foregroundStyle(.secondary)
             Spacer()
             Button("Add Photos") {
-                workspaceVM.selectedTab = .photos
+                workspaceVM.goToStage(.photos)
             }
             .font(MS.Font.caption)
             .buttonStyle(.plain)

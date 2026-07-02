@@ -275,7 +275,7 @@ struct SongImportView: View {
                 .multilineTextAlignment(.center)
 
             MSPrimaryButton("Choose Photos", icon: "photo.stack.fill") {
-                workspaceVM.selectedTab = .photos
+                workspaceVM.goToStage(.photos)
             }
         }
         .frame(maxWidth: .infinity)
