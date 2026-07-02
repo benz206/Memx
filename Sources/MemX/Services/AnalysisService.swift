@@ -37,23 +37,35 @@ extension PhotoScoringServiceProtocol {
     }
 }
 
+// MARK: - VisualAnalysis
+
+struct VisualAnalysis {
+    var qualityScore: Float
+    var emotionScore: Float
+    var noveltyScore: Float
+    var eventLabel: String?
+    var sceneLabels: [String]
+    var sceneCaption: String
+    var semanticSummary: String
+    var shotType: ShotType
+    var colorTemperature: Double
+    var faceAreaFraction: Double?
+    var clipStartTime: TimeInterval?
+    var faces: Int
+    var motionEnergy: Float
+}
+
 // MARK: - PhotoScoringService
 
-/// Outsourced visual analysis.
-///
-/// This service performs only lightweight media access on the Mac: fetch a
-/// downscaled photo or representative video frame, JPEG-compress it, and send
-/// it to OpenRouter for semantic scoring. The one local exception is a Vision
-/// FeaturePrint (a few ms per image, on-device, free) — the visual embedding
-/// the sequencer uses for match-cut continuity between adjacent clips.
+/// Fully on-device visual analysis: fetch a downscaled photo or
+/// representative video frame, compute a Vision FeaturePrint (the visual
+/// embedding the sequencer uses for match-cut continuity between adjacent
+/// clips), and derive per-asset scores from the asset's own metadata.
 final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     static let shared = PhotoScoringService()
 
-    private let openRouterService: OpenRouterServiceProtocol
-    private init(openRouterService: OpenRouterServiceProtocol = OpenRouterService.shared) {
-        self.openRouterService = openRouterService
-    }
+    private init() {}
 
     private static func concurrencyLimit(for density: ScoringDensity) -> Int {
         switch density {
@@ -74,12 +86,12 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         }
 
         let maxConcurrent = Self.concurrencyLimit(for: density)
-        scoringLog("▶︎ OpenRouter scorePhotos START — \(assets.count) assets, density=\(density.rawValue), concurrency=\(maxConcurrent)")
-        onProgress(0.03, "Preparing \(assets.count) assets for OpenRouter analysis...")
+        scoringLog("▶︎ on-device scorePhotos START — \(assets.count) assets, density=\(density.rawValue), concurrency=\(maxConcurrent)")
+        onProgress(0.03, "Preparing \(assets.count) assets for on-device analysis...")
 
         struct IndexedResult {
             let index: Int
-            let analysis: OpenRouterVisualAnalysis
+            let analysis: VisualAnalysis
             let visualEmbedding: [Float]?
         }
 
@@ -93,10 +105,11 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 let asset = assets[index]
                 group.addTask {
                     try Task.checkCancellation()
-                    let (request, image) = await self.visualRequest(for: asset)
+                    let image = asset.isVideo
+                        ? await self.representativeVideoFrame(for: asset)
+                        : await self.photoImage(for: asset)
                     let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
-                    let analysis = await self.openRouterService.analyzeVisualAsset(request)
-                        ?? self.fallbackAnalysis(for: asset)
+                    let analysis = self.localAnalysis(for: asset)
                     return IndexedResult(index: index, analysis: analysis, visualEmbedding: embedding)
                 }
             }
@@ -110,7 +123,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 results[result.index] = result
                 completed += 1
                 let progress = Double(completed) / Double(max(assets.count, 1))
-                onProgress(0.05 + progress * 0.90, "Analyzed \(completed)/\(assets.count) with OpenRouter...")
+                onProgress(0.05 + progress * 0.90, "Analyzed \(completed)/\(assets.count) on-device...")
 
                 if nextIndex < assets.count {
                     launch(nextIndex)
@@ -158,28 +171,9 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         }
 
         let included = candidates.filter(\.isIncluded).count
-        scoringLog("■ OpenRouter scorePhotos DONE — \(included)/\(candidates.count) candidates included")
-        onProgress(1.0, "OpenRouter visual analysis complete")
+        scoringLog("■ on-device scorePhotos DONE — \(included)/\(candidates.count) candidates included")
+        onProgress(1.0, "Visual analysis complete")
         return PhotoScoringResult(scoredAssets: scoredAssets, candidates: candidates)
-    }
-
-    // MARK: - Media Preparation
-
-    private func visualRequest(for asset: MediaAsset) async -> (OpenRouterVisualAnalysisRequest, CGImage?) {
-        let image = asset.isVideo
-            ? await representativeVideoFrame(for: asset)
-            : await photoImage(for: asset)
-
-        let request = OpenRouterVisualAnalysisRequest(
-            assetID: asset.id,
-            filename: asset.filename,
-            isVideo: asset.isVideo,
-            duration: asset.duration,
-            aspectRatio: asset.aspectRatio,
-            creationDate: asset.creationDate,
-            imageJPEGData: image.flatMap { OpenRouterService.jpegData(from: $0, maxDimension: 896, compressionQuality: 0.70) }
-        )
-        return (request, image)
     }
 
     // MARK: - Visual Embedding (Vision FeaturePrint, on-device)
@@ -263,13 +257,13 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         }
     }
 
-    // MARK: - Fallback
+    // MARK: - Local Analysis
 
-    /// Fallback when OpenRouter is unavailable. Leaves `sceneCaption` and
-    /// `semanticSummary` empty so the UI doesn't render identical boilerplate
-    /// strings across every clip. Basic structural labels and a per-asset
-    /// score still get filled in.
-    private func fallbackAnalysis(for asset: MediaAsset) -> OpenRouterVisualAnalysis {
+    /// Metadata-derived scoring. Leaves `sceneCaption` and `semanticSummary`
+    /// empty so the UI doesn't render identical boilerplate strings across
+    /// every clip. Basic structural labels and a per-asset score still get
+    /// filled in.
+    private func localAnalysis(for asset: MediaAsset) -> VisualAnalysis {
         let labels = fallbackLabels(for: asset)
         let isPortrait = asset.aspectRatio < 0.85
         let shot: ShotType = isPortrait ? .medium : .wide
@@ -279,7 +273,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         let h = abs(asset.id.hashValue)
         let jitter = Double((h % 14) - 7) / 100.0  // -0.07 ... +0.07
 
-        return OpenRouterVisualAnalysis(
+        return VisualAnalysis(
             qualityScore: Float(min(0.95, max(0.45, (asset.isFavorite ? 0.78 : 0.64) + jitter))),
             emotionScore: Float(min(0.95, max(0.40, (asset.isFavorite ? 0.72 : 0.55) + jitter * 0.8))),
             noveltyScore: Float(min(0.90, max(0.35, (asset.isVideo ? 0.64 : 0.50) + jitter * 1.2))),

@@ -67,23 +67,10 @@ struct PipelineRunView: View {
     }
 
     private var stats: some View {
-        let s = workspaceVM.openRouterStats
-        let apiValue: String = {
-            if !workspaceVM.openRouterAvailable { return "Missing key" }
-            if s.success + s.failure == 0 { return "Connected" }
-            return "\(s.success) ok · \(s.failure) failed"
-        }()
-        let apiIcon: String = {
-            if !workspaceVM.openRouterAvailable { return "exclamationmark.triangle.fill" }
-            if s.failure > 0 && s.success == 0 { return "xmark.octagon.fill" }
-            if s.failure > 0 { return "exclamationmark.triangle.fill" }
-            return "checkmark.circle.fill"
-        }()
-        return VStack(alignment: .leading, spacing: MS.Spacing.xs) {
+        VStack(alignment: .leading, spacing: MS.Spacing.xs) {
             Text("Run Stats")
                 .font(MS.Font.caption)
                 .foregroundStyle(.secondary)
-            MSStatRow(label: "OpenRouter", value: apiValue, icon: apiIcon)
             if let song = workspaceVM.songTrack {
                 MSStatRow(label: "Song", value: song.displayTitle, icon: "music.note")
             }
@@ -125,7 +112,6 @@ struct PipelineRunView: View {
                     } else if !workspaceVM.isProcessing && workspaceVM.montagePlan == nil {
                         idleNotice
                     }
-                    openRouterFailureBanner
                     activityLog
                     actionRow
                 }
@@ -235,35 +221,6 @@ struct PipelineRunView: View {
         }
         .padding(MS.Spacing.sm)
         .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-    }
-
-    @ViewBuilder
-    private var openRouterFailureBanner: some View {
-        let s = workspaceVM.openRouterStats
-        if s.failure > 0 {
-            VStack(alignment: .leading, spacing: MS.Spacing.xs) {
-                HStack(spacing: MS.Spacing.sm) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text("OpenRouter rejected \(s.failure) request\(s.failure == 1 ? "" : "s") — falling back to basic metadata for those assets.")
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                }
-                if let last = s.lastFailure {
-                    Text(last)
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                }
-                Text("Tip: set OPENROUTER_VISION_MODEL in .env to a model your account can call (e.g. google/gemini-flash-1.5, openai/gpt-4o-mini).")
-                    .font(MS.Font.micro)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(MS.Spacing.sm)
-            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-        }
     }
 
     private func errorBanner(_ message: String) -> some View {

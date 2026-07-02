@@ -115,7 +115,7 @@ final class WorkspaceViewModel {
     // MARK: Services
     private let beatmapService: BeatmapServiceProtocol
     private let scoringService: PhotoScoringServiceProtocol
-    private let semanticService: OpenRouterServiceProtocol
+    private let semanticService: SemanticEnrichmentServiceProtocol
     private let sequencerService: SequencerServiceProtocol
     private let renderService: VideoRenderServiceProtocol
     private let appVM: AppViewModel
@@ -125,7 +125,7 @@ final class WorkspaceViewModel {
         appVM: AppViewModel,
         beatmapService: BeatmapServiceProtocol = BeatmapService.shared,
         scoringService: PhotoScoringServiceProtocol = PhotoScoringService.shared,
-        semanticService: OpenRouterServiceProtocol = OpenRouterService.shared,
+        semanticService: SemanticEnrichmentServiceProtocol = SemanticEmbeddingService.shared,
         sequencerService: SequencerServiceProtocol = SequencerService.shared,
         renderService: VideoRenderServiceProtocol = VideoRenderService.shared
     ) {
@@ -416,7 +416,7 @@ final class WorkspaceViewModel {
         isProcessing = true
         processingStatus.phase = .scoringPhotos
         processingStatus.progress = max(processingStatus.progress, 0.20)
-        processingStatus.message = "Sending \(assets.count) assets to OpenRouter for visual analysis..."
+        processingStatus.message = "Analyzing \(assets.count) assets on-device..."
         processingStatus.error = nil
         appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
         let density = project.settings.scoringDensity
@@ -577,14 +577,13 @@ final class WorkspaceViewModel {
         logger.info("Full pipeline started: \(self.assets.count) assets")
 
         // Keep completed stages and only fill missing work. This lets users
-        // jump between tabs without paying for earlier OpenRouter calls again.
+        // jump between tabs without repaying earlier analysis work.
         selectedSequenceItem = nil
         clipShortfall = nil
         pendingShortfallAck = false
         processingStatus = ProcessingStatus(projectID: project.id)
         photosScoredSuccessfully = allAssetsScored
         pipelineLog.removeAll()
-        OpenRouterService.resetCounters()
         goToStage(.analysis)
         appendPipelineLog(phase: .idle, progress: 0, message: "Starting pipeline — \(assets.count) assets")
 
@@ -937,10 +936,4 @@ final class WorkspaceViewModel {
     var allAssetsScored: Bool { !assets.isEmpty && assets.allSatisfy { $0.analysisScore != nil } }
     var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
-    var openRouterAvailable: Bool { semanticService.hasAPIKey }
-
-    var openRouterStats: (success: Int, failure: Int, lastFailure: String?) {
-        OpenRouterService.stats
-    }
-
 }
