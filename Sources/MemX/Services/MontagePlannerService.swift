@@ -164,13 +164,9 @@ final class SequencerService: SequencerServiceProtocol {
             let itemEnd   = min(max(itemStart + 0.01, snappedEnd), totalDuration)
 
             let peakBeat = slot.peakBeat ?? slot.startTime
-            let clipOffset: TimeInterval
-            if asset.isVideo {
-                let raw = (asset.clipStartTime ?? 0) - (peakBeat - slot.startTime) + slot.duration * 0.5
-                clipOffset = min(max(0, raw), max(0, asset.duration - slot.duration))
-            } else {
-                clipOffset = 0
-            }
+            let clipOffset = Self.cutOnActionOffset(
+                asset: asset, slotStart: slot.startTime,
+                slotDuration: slot.duration, peakBeat: peakBeat)
 
             let isArcPeak  = isHero && arcIntensity >= 0.95
             let isHookSlot = slot.hookClusterKey != nil
@@ -1229,6 +1225,22 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func clipKey(_ asset: MediaAsset) -> String {
         "\(asset.id)_\(asset.clipStartTime ?? 0)"
+    }
+
+    /// In-point for a video slot. With a motion series, cut on action: the
+    /// source's strongest feasible motion moment lands on the slot's peak
+    /// beat. Without one, fall back to centering the analyzed best window.
+    static func cutOnActionOffset(asset: MediaAsset, slotStart: Double,
+                                  slotDuration: Double, peakBeat: Double) -> TimeInterval {
+        guard asset.isVideo else { return 0 }
+        let maxOffset = max(0, asset.duration - slotDuration)
+        let delta = max(0, peakBeat - slotStart)   // seconds into the slot where the hit lands
+
+        if let peakSource = asset.motionPeakTime(in: delta...(maxOffset + delta)) {
+            return min(max(0, peakSource - delta), maxOffset)
+        }
+        let raw = (asset.clipStartTime ?? 0) - delta + slotDuration * 0.5
+        return min(max(0, raw), maxOffset)
     }
 
     private func minReadableSeconds(for asset: MediaAsset) -> Double {

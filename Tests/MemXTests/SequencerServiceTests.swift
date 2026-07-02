@@ -597,6 +597,48 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertNil(decoded.gradingHint)
     }
 
+    // MARK: - cutOnActionOffset
+
+    func testCutOnActionPlacesMotionPeakOnPeakBeat() {
+        // 16s video, motion peak in sample 10 → source time 10.5s.
+        var asset = MediaAsset(id: "v", mediaType: .video, duration: 16)
+        var samples = [Float](repeating: 0.1, count: 16)
+        samples[10] = 1.0
+        asset.motionSamples = samples
+
+        // Slot 20–22s, peak beat at 21s: the hit lands 1s into the slot, so
+        // the in-point puts source 10.5s at the beat → offset 9.5s.
+        let offset = SequencerService.cutOnActionOffset(
+            asset: asset, slotStart: 20, slotDuration: 2, peakBeat: 21)
+        XCTAssertEqual(offset, 9.5, accuracy: 1e-9)
+    }
+
+    func testCutOnActionClampsToSourceBounds() {
+        var asset = MediaAsset(id: "v", mediaType: .video, duration: 4)
+        var samples = [Float](repeating: 0.1, count: 16)
+        samples[15] = 1.0   // peak at 3.875s, near the end
+        asset.motionSamples = samples
+
+        let offset = SequencerService.cutOnActionOffset(
+            asset: asset, slotStart: 0, slotDuration: 3, peakBeat: 0.5)
+        XCTAssertGreaterThanOrEqual(offset, 0)
+        XCTAssertLessThanOrEqual(offset, 1.0, "slot must stay inside the video")
+    }
+
+    func testCutOnActionFallsBackWithoutMotionData() {
+        var asset = MediaAsset(id: "v", mediaType: .video, duration: 10)
+        asset.clipStartTime = 2
+        let offset = SequencerService.cutOnActionOffset(
+            asset: asset, slotStart: 0, slotDuration: 2, peakBeat: 0)
+        XCTAssertEqual(offset, 3.0, accuracy: 1e-9, "legacy centering path")
+    }
+
+    func testCutOnActionZeroForPhotos() {
+        let asset = MediaAsset(id: "p", mediaType: .photo)
+        XCTAssertEqual(SequencerService.cutOnActionOffset(
+            asset: asset, slotStart: 0, slotDuration: 2, peakBeat: 0), 0)
+    }
+
     // MARK: - buildSequence: hero-first reservation
 
     func testBuildSequenceReservesStandoutAssetForChorusOpener() async {

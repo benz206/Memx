@@ -93,6 +93,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             let index: Int
             let analysis: VisualAnalysis
             let visualEmbedding: [Float]?
+            let motionSamples: [Float]?
         }
 
         var results = [IndexedResult?](repeating: nil, count: assets.count)
@@ -109,11 +110,13 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                         ? await self.representativeVideoFrame(for: asset)
                         : await self.photoImage(for: asset)
                     let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
+                    let motionSamples = asset.isVideo ? await self.motionSeries(for: asset) : nil
                     var analysis = self.localAnalysis(for: asset)
                     if let image, let warmth = Self.colorTemperature(for: image) {
                         analysis.colorTemperature = warmth
                     }
-                    return IndexedResult(index: index, analysis: analysis, visualEmbedding: embedding)
+                    return IndexedResult(index: index, analysis: analysis,
+                                         visualEmbedding: embedding, motionSamples: motionSamples)
                 }
             }
 
@@ -157,6 +160,13 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[result.index].clipStartTime = a.clipStartTime
             scoredAssets[result.index].motionEnergy = a.motionEnergy
             scoredAssets[result.index].visualEmbedding = result.visualEmbedding
+            scoredAssets[result.index].motionSamples = result.motionSamples
+            if let samples = result.motionSamples, !samples.isEmpty {
+                // Measured motion beats the metadata heuristic when we have it.
+                let mean = samples.reduce(0, +) / Float(samples.count)
+                let peak = samples.max() ?? mean
+                scoredAssets[result.index].motionEnergy = min(1, mean * 0.6 + peak * 0.4)
+            }
             faceCounts[result.index] = a.faces
         }
 
@@ -279,6 +289,67 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         let duration = max(0, asset.duration)
         let sampleTime = CMTime(seconds: min(max(duration * 0.35, 0), max(duration - 0.1, 0)), preferredTimescale: 600)
         return try? await generator.image(at: sampleTime).image
+    }
+
+    // MARK: - Motion Series (frame differencing)
+    // Coarse motion energy over time: N+1 tiny grayscale frames at uniform
+    // times, mean absolute difference between consecutive pairs. Sample m
+    // covers (m+0.5)·duration/N — the mapping motionPeakTime(in:) relies on.
+    // This is what lets the sequencer put the jump/splash frame on the beat
+    // instead of guessing the action sits mid-clip.
+
+    private static let motionSampleCount = 16
+
+    private func motionSeries(for asset: MediaAsset) async -> [Float]? {
+        guard asset.duration > 0.5,
+              let phAsset = await PHAssetCache.shared.phAsset(for: asset.id),
+              phAsset.mediaType == .video,
+              let avAsset = await requestAVAsset(for: phAsset) else { return nil }
+
+        let generator = AVAssetImageGenerator(asset: avAsset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 160, height: 160)
+        let tolerance = CMTime(seconds: 0.12, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
+
+        let count = Self.motionSampleCount
+        let step = asset.duration / Double(count)
+        var frames = [[Float]]()
+        frames.reserveCapacity(count + 1)
+        for i in 0...count {
+            let t = min(Double(i) * step, max(asset.duration - 0.1, 0))
+            guard let cg = try? await generator.image(at: CMTime(seconds: t, preferredTimescale: 600)).image,
+                  let gray = Self.grayscalePixels(cg, side: 24) else { return nil }
+            frames.append(gray)
+        }
+
+        var samples = [Float]()
+        samples.reserveCapacity(count)
+        for i in 1..<frames.count {
+            let a = frames[i - 1], b = frames[i]
+            guard a.count == b.count else { return nil }
+            var sum: Float = 0
+            for k in a.indices { sum += abs(a[k] - b[k]) }
+            // ~0.12 mean per-pixel change between samples reads as full
+            // action; the fixed scale keeps values comparable across videos.
+            samples.append(min(1, (sum / Float(a.count)) * 8))
+        }
+        return samples
+    }
+
+    private static func grayscalePixels(_ image: CGImage, side: Int) -> [Float]? {
+        guard let ctx = CGContext(
+            data: nil, width: side, height: side,
+            bitsPerComponent: 8, bytesPerRow: side,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .low
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        guard let data = ctx.data else { return nil }
+        let pixels = data.bindMemory(to: UInt8.self, capacity: side * side)
+        return (0..<(side * side)).map { Float(pixels[$0]) / 255.0 }
     }
 
     private func requestAVAsset(for phAsset: PHAsset) async -> AVAsset? {

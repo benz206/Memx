@@ -83,11 +83,27 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var semanticEmbedding: [Float]?      // on-device NLEmbedding for semantic sequencing
     var visualEmbedding: [Float]?        // Vision FeaturePrint (free, on-device) for match-cut continuity
     var motionEnergy: Float?             // 0 still … 1 high-action/jumping — matched against audio energy
+    var motionSamples: [Float]?          // motion energy over time (videos); sample m covers (m+0.5)·duration/count
     var isSelected: Bool = false
 
     // Derived
     var isVideo: Bool { mediaType == .video || duration > 0 }
     var aspectRatio: Double { pixelWidth > 0 ? Double(pixelWidth) / Double(pixelHeight) : 1.0 }
+
+    /// Source time of the strongest sampled motion within `range` — the
+    /// moment the sequencer places on the beat (cut on action). Nil when no
+    /// motion series exists or no sample falls inside the range.
+    func motionPeakTime(in range: ClosedRange<TimeInterval>) -> TimeInterval? {
+        guard let samples = motionSamples, !samples.isEmpty, duration > 0 else { return nil }
+        let step = duration / Double(samples.count)
+        var best: (time: TimeInterval, motion: Float)? = nil
+        for (m, motion) in samples.enumerated() {
+            let time = (Double(m) + 0.5) * step
+            guard range.contains(time) else { continue }
+            if best == nil || motion > best!.motion { best = (time, motion) }
+        }
+        return best?.time
+    }
 
     var durationString: String {
         guard duration > 0 else { return "" }
@@ -167,7 +183,7 @@ extension MediaAsset {
         case qualityScore, emotionScore, noveltyScore, clipStartTime
         case shotType, colorTemperature, faceAreaFraction
         case sceneLabels, sceneCaption, semanticSummary
-        case semanticEmbedding, visualEmbedding, motionEnergy, isSelected
+        case semanticEmbedding, visualEmbedding, motionEnergy, motionSamples, isSelected
     }
 
     private static func embeddingData(_ v: [Float]?) -> Data? {
@@ -209,6 +225,7 @@ extension MediaAsset {
         semanticEmbedding = try Self.decodeEmbedding(c, .semanticEmbedding)
         visualEmbedding = try Self.decodeEmbedding(c, .visualEmbedding)
         motionEnergy = try c.decodeIfPresent(Float.self, forKey: .motionEnergy)
+        motionSamples = try c.decodeIfPresent([Float].self, forKey: .motionSamples)
         isSelected = try c.decodeIfPresent(Bool.self, forKey: .isSelected) ?? false
     }
 
@@ -238,6 +255,7 @@ extension MediaAsset {
         try c.encodeIfPresent(Self.embeddingData(semanticEmbedding), forKey: .semanticEmbedding)
         try c.encodeIfPresent(Self.embeddingData(visualEmbedding), forKey: .visualEmbedding)
         try c.encodeIfPresent(motionEnergy, forKey: .motionEnergy)
+        try c.encodeIfPresent(motionSamples, forKey: .motionSamples)
         try c.encode(isSelected, forKey: .isSelected)
     }
 }
