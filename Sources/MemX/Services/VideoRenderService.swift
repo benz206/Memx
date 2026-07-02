@@ -19,6 +19,12 @@ protocol VideoRenderServiceProtocol {
 }
 
 // MARK: - VideoRenderService (AVMutableComposition + AVAssetExportSession)
+// Two alternating video tracks (A/B) so adjacent clips can overlap. Every
+// clip is placed at its *plan* startTime — the song timeline — so cuts stay
+// locked to the beatgrid even if an export comes back short or a slot was
+// skipped. Transitions from the storyboard are rendered for real: crossfade /
+// dissolve opacity ramps, flash-white dips, whip-pan pushes, fade-from-black,
+// plus Ken Burns drift and beat punch-ins on photos via transform ramps.
 
 final class VideoRenderService: VideoRenderServiceProtocol {
 
@@ -43,12 +49,15 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         let renderSize = computeRenderSize(for: sequence, assetMap: assetMap, settings: plan.settings)
         let songVolume = Float(max(0, min(1, plan.settings.songVolume)))
+        let segmentPlans = RenderTimeline.plan(sequence)
 
         logger.info("Render started: \(sequence.count) clips, size=\(Int(renderSize.width))x\(Int(renderSize.height)), volume=\(Int(songVolume * 100))%, song=\(songURL.lastPathComponent)")
         onProgress(0.01, "Render size: \(Int(renderSize.width))×\(Int(renderSize.height)) · \(Int(songVolume * 100))% song volume")
         onProgress(0.02, "Exporting \(sequence.count) clips…")
 
-        // Step 1 — Export clips concurrently (bounded at exportConcurrencyLimit)
+        // Step 1 — Export clips concurrently (bounded at exportConcurrencyLimit).
+        // Each clip is exported long enough to cover its visible window plus
+        // the outgoing tail it holds under the next clip's transition.
         var clipURLs: [URL?] = [URL?](repeating: nil, count: sequence.count)
 
         try await withThrowingTaskGroup(of: (Int, URL).self) { group in
@@ -59,30 +68,27 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 while inFlight < exportConcurrencyLimit && nextIndex < sequence.count {
                     let i = nextIndex
                     let item = sequence[i]
+                    let neededDuration = segmentPlans[i].sourceDuration
                     group.addTask {
-                        let peakFraction: Double = {
-                            guard let pk = item.peakTime, item.duration > 0 else { return 0.5 }
-                            return min(1, max(0, (pk - item.startTime) / item.duration))
-                        }()
                         let url: URL
                         if let asset = assetMap[item.assetID], asset.isVideo {
                             do {
                                 url = try await self.exportVideoClip(
-                                    assetID: item.assetID, startTime: item.clipOffset, duration: item.duration)
+                                    assetID: item.assetID,
+                                    startTime: item.clipOffset,
+                                    duration: neededDuration + 0.15)
                             } catch {
                                 logger.warning("Video export failed for \(item.assetID), falling back to thumbnail: \(error)")
                                 url = try await self.exportPhotoClip(
                                     assetID: item.assetID,
-                                    duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale),
-                                    renderSize: renderSize,
-                                    peakFraction: peakFraction)
+                                    duration: CMTime(seconds: neededDuration, preferredTimescale: self.timescale),
+                                    renderSize: renderSize)
                             }
                         } else {
                             url = try await self.exportPhotoClip(
                                 assetID: item.assetID,
-                                duration: CMTime(seconds: item.duration, preferredTimescale: self.timescale),
-                                renderSize: renderSize,
-                                peakFraction: peakFraction)
+                                duration: CMTime(seconds: neededDuration, preferredTimescale: self.timescale),
+                                renderSize: renderSize)
                         }
                         return (i, url)
                     }
@@ -99,62 +105,92 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             }
         }
 
-        let resolvedURLs = clipURLs.compactMap { $0 }
-
         defer {
-            for url in resolvedURLs { try? FileManager.default.removeItem(at: url) }
+            for url in clipURLs.compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }
         }
 
-        onProgress(0.54, "Assembling composition (AVMutableComposition)…")
+        onProgress(0.54, "Assembling composition (A/B transition tracks)…")
 
-        // Step 2 — Build AVMutableComposition
+        // Step 2 — Build AVMutableComposition with two alternating video tracks.
         let composition = AVMutableComposition()
-        guard let videoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else { throw RenderError.compositionFailed }
-
-        struct Segment {
-            let srcNaturalSize: CGSize
-            let srcTransform: CGAffineTransform
-            let compositionRange: CMTimeRange
+        var videoTracks = [AVMutableCompositionTrack]()
+        for _ in 0..<2 {
+            guard let t = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else { throw RenderError.compositionFailed }
+            videoTracks.append(t)
         }
-        var segments: [Segment] = []
-        var insertTime = CMTime.zero
+        var trackCursors = [CMTime](repeating: .zero, count: videoTracks.count)
 
-        for (clipURL, item) in zip(resolvedURLs, sequence) {
-            let clipAsset   = AVURLAsset(url: clipURL)
-            let clipDuration = CMTime(seconds: item.duration, preferredTimescale: timescale)
+        struct PlacedSegment {
+            let plan: RenderSegmentPlan
+            let item: MontageSequenceItem
+            let track: AVMutableCompositionTrack
+            let baseTransform: CGAffineTransform
+            let motion: SegmentMotion?
+            let insertedEnd: Double     // start + actually inserted media duration
+
+            var effectiveVisibleEnd: Double { min(plan.visibleEnd, insertedEnd) }
+            var effectivePresenceEnd: Double { min(plan.presenceEnd, insertedEnd) }
+        }
+        var placed = [PlacedSegment]()
+
+        for (i, segPlan) in segmentPlans.enumerated() {
+            guard let clipURL = clipURLs[i] else { continue }
+            let item = sequence[i]
+            let clipAsset = AVURLAsset(url: clipURL)
             guard let srcTrack = try? await clipAsset.loadTracks(withMediaType: .video).first else {
-                logger.error("No video track in exported clip for asset \(item.assetID) — inserting gap")
-                insertTime = CMTimeAdd(insertTime, clipDuration)
+                logger.error("No video track in exported clip for asset \(item.assetID) — skipping segment")
                 continue
             }
-            let assetDur = (try? await clipAsset.load(.duration)) ?? clipDuration
-            let range = CMTimeRange(start: .zero, duration: min(clipDuration, assetDur))
-            let clipStart = insertTime
+            let neededDuration = CMTime(seconds: segPlan.sourceDuration, preferredTimescale: timescale)
+            let assetDur = (try? await clipAsset.load(.duration)) ?? neededDuration
+            let range = CMTimeRange(start: .zero, duration: min(neededDuration, assetDur))
+            guard range.duration.seconds > 0.02 else { continue }
+
+            let trackIdx = i % videoTracks.count
+            let track = videoTracks[trackIdx]
+            let targetStart = CMTime(seconds: segPlan.start, preferredTimescale: timescale)
+
+            // Pad the track up to the segment's start so the media lands at
+            // its exact song-timeline position (beat lock).
+            if CMTimeCompare(trackCursors[trackIdx], targetStart) < 0 {
+                track.insertEmptyTimeRange(CMTimeRange(start: trackCursors[trackIdx], end: targetStart))
+            }
             do {
-                try videoTrack.insertTimeRange(range, of: srcTrack, at: insertTime)
+                try track.insertTimeRange(range, of: srcTrack, at: targetStart)
             } catch {
                 logger.error("insertTimeRange failed for asset \(item.assetID): \(error)")
-                insertTime = CMTimeAdd(insertTime, range.duration)
                 continue
             }
+            trackCursors[trackIdx] = CMTimeAdd(targetStart, range.duration)
+
             let naturalSize = (try? await srcTrack.load(.naturalSize)) ?? renderSize
             let srcTransform = (try? await srcTrack.load(.preferredTransform)) ?? .identity
-            segments.append(Segment(
-                srcNaturalSize: naturalSize,
-                srcTransform: srcTransform,
-                compositionRange: CMTimeRange(start: clipStart, duration: range.duration)
+            let isPhoto = !(assetMap[item.assetID]?.isVideo ?? false)
+
+            placed.append(PlacedSegment(
+                plan: segPlan,
+                item: item,
+                track: track,
+                baseTransform: aspectFitTransform(
+                    naturalSize: naturalSize,
+                    preferredTransform: srcTransform,
+                    into: renderSize),
+                motion: RenderTimeline.motion(for: item, isPhoto: isPhoto,
+                                              headTransition: segPlan.headTransition),
+                insertedEnd: segPlan.start + range.duration.seconds
             ))
-            insertTime = CMTimeAdd(insertTime, range.duration)
         }
 
-        let totalDuration = insertTime
+        guard !placed.isEmpty else { throw RenderError.compositionFailed }
+        let totalEnd = placed.map(\.effectivePresenceEnd).max() ?? 0
+        let totalDuration = CMTime(seconds: totalEnd, preferredTimescale: timescale)
 
         onProgress(0.56, "Attaching audio track (volume \(Int(songVolume * 100))%)…")
 
-        // Step 3 — Add audio from song
+        // Step 3 — Add audio from song, with a gentle fade-out at the end.
         let songAsset = AVURLAsset(url: songURL)
         var audioMix: AVMutableAudioMix? = nil
         if let songAudioTrack = try? await songAsset.loadTracks(withMediaType: .audio).first,
@@ -166,30 +202,140 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             let mix = AVMutableAudioMix()
             let params = AVMutableAudioMixInputParameters(track: audioTrack)
             params.setVolume(songVolume, at: .zero)
+            let fadeLen = min(1.2, audioDur.seconds * 0.2)
+            if fadeLen > 0.1 {
+                let fadeStart = CMTime(seconds: audioDur.seconds - fadeLen, preferredTimescale: timescale)
+                params.setVolumeRamp(fromStartVolume: songVolume, toEndVolume: 0,
+                                     timeRange: CMTimeRange(start: fadeStart, duration: CMTime(seconds: fadeLen, preferredTimescale: timescale)))
+            }
             mix.inputParameters = [params]
             audioMix = mix
         }
 
-        onProgress(0.58, "Building video composition (\(Int(renderSize.width))×\(Int(renderSize.height)) @ \(fps)fps)…")
+        onProgress(0.58, "Building transitions (\(Int(renderSize.width))×\(Int(renderSize.height)) @ \(fps)fps)…")
 
-        // Build video composition with aspect-fit per-segment transforms
+        // Step 4 — Instruction timeline. Split at every segment knot so each
+        // interval has a constant layer set, then emit exact opacity /
+        // transform ramps per interval.
+        let epsilon = 1e-3
+        var knots: Set<Int> = [0]  // milliseconds for stable dedupe
+        func addKnot(_ t: Double) { knots.insert(Int((t * 1000).rounded())) }
+        for seg in placed {
+            addKnot(seg.plan.start)
+            if seg.plan.headOverlap > 0 { addKnot(seg.plan.start + seg.plan.headOverlap) }
+            if seg.plan.headTransition == .fadeFromBlack {
+                addKnot(seg.plan.start + fadeFromBlackDuration(seg.plan))
+            }
+            if let m = seg.motion, m.punchDuration > 0 { addKnot(seg.plan.start + m.punchDuration) }
+            addKnot(seg.effectiveVisibleEnd)
+            addKnot(seg.effectivePresenceEnd)
+        }
+        addKnot(totalEnd)
+        let times = knots.map { Double($0) / 1000 }.sorted().filter { $0 <= totalEnd + epsilon }
+
+        func opacity(for seg: PlacedSegment, at t: Double) -> Float {
+            var o: Float = 1
+            let p = seg.plan
+            switch p.headTransition {
+            case .crossfade, .dissolve, .kenBurnsDrift, .flashWhite:
+                if p.headOverlap > 0, t < p.start + p.headOverlap {
+                    o = min(o, Float(max(0, (t - p.start) / p.headOverlap)))
+                }
+            case .fadeFromBlack:
+                let d = fadeFromBlackDuration(p)
+                if d > 0, t < p.start + d {
+                    o = min(o, Float(max(0, (t - p.start) / d)))
+                }
+            case .hardCut, .whipPan:
+                break
+            }
+            if p.tailTransition == .flashWhite, p.tailOverlap > 0, t > p.visibleEnd {
+                o = min(o, Float(max(0, 1 - (t - p.visibleEnd) / p.tailOverlap)))
+            }
+            return o
+        }
+
+        func transform(for seg: PlacedSegment, at t: Double) -> CGAffineTransform {
+            var result = seg.baseTransform
+            let p = seg.plan
+            if let m = seg.motion {
+                let s = m.scale(atRelative: t - p.start, duration: p.sourceDuration)
+                if abs(s - 1) > 0.0005 || m.panDX != 0 || m.panDY != 0 {
+                    let cx = renderSize.width / 2, cy = renderSize.height / 2
+                    let px = CGFloat(m.panDX * (s - 1) * 0.25) * renderSize.width
+                    let py = CGFloat(m.panDY * (s - 1) * 0.25) * renderSize.height
+                    let zoom = CGAffineTransform(translationX: cx + px, y: cy + py)
+                        .scaledBy(x: CGFloat(s), y: CGFloat(s))
+                        .translatedBy(x: -cx, y: -cy)
+                    result = result.concatenating(zoom)
+                }
+            }
+            if p.headTransition == .whipPan, p.headOverlap > 0, t < p.start + p.headOverlap {
+                let f = max(0, (t - p.start) / p.headOverlap)
+                let dir = RenderTimeline.whipDirection(boundaryIndex: p.index)
+                result = result.concatenating(
+                    CGAffineTransform(translationX: CGFloat(dir) * renderSize.width * CGFloat(1 - f), y: 0))
+            }
+            if p.tailTransition == .whipPan, p.tailOverlap > 0, t > p.visibleEnd {
+                let f = min(1, (t - p.visibleEnd) / p.tailOverlap)
+                let dir = RenderTimeline.whipDirection(boundaryIndex: p.index + 1)
+                result = result.concatenating(
+                    CGAffineTransform(translationX: CGFloat(-dir) * renderSize.width * CGFloat(f), y: 0))
+            }
+            return result
+        }
+
         var instructions: [AVVideoCompositionInstruction] = []
-        for seg in segments {
-            var layerConfig = AVVideoCompositionLayerInstruction.Configuration(assetTrack: videoTrack)
-            let t = aspectFitTransform(
-                naturalSize: seg.srcNaturalSize,
-                preferredTransform: seg.srcTransform,
-                into: renderSize
-            )
-            layerConfig.setTransform(t, at: seg.compositionRange.start)
-            let layer = AVVideoCompositionLayerInstruction(configuration: layerConfig)
+        for ti in 0..<max(0, times.count - 1) {
+            let t0 = times[ti], t1 = times[ti + 1]
+            guard t1 - t0 > epsilon else { continue }
+            let mid = (t0 + t1) / 2
+
+            let active = placed
+                .filter { $0.plan.start - epsilon <= mid && mid < $0.effectivePresenceEnd - 0 }
+                .sorted { $0.plan.start > $1.plan.start }   // newest first = top layer
+
+            let intervalRange = CMTimeRange(
+                start: CMTime(seconds: t0, preferredTimescale: timescale),
+                end: CMTime(seconds: t1, preferredTimescale: timescale))
+
+            // Flash-white boundaries dip through a white background.
+            let flashActive = active.contains {
+                $0.plan.headTransition == .flashWhite
+                    && mid >= $0.plan.start - epsilon
+                    && mid <= $0.plan.start + $0.plan.headOverlap + epsilon
+            }
+
+            var layers = [AVVideoCompositionLayerInstruction]()
+            for seg in active {
+                var config = AVVideoCompositionLayerInstruction.Configuration(assetTrack: seg.track)
+
+                let o0 = opacity(for: seg, at: t0)
+                let o1 = opacity(for: seg, at: t1)
+                if abs(o0 - o1) < 0.001 {
+                    config.setOpacity(o0, at: intervalRange.start)
+                } else {
+                    config.addOpacityRamp(.init(timeRange: intervalRange, start: o0, end: o1))
+                }
+
+                let tr0 = transform(for: seg, at: t0)
+                let tr1 = transform(for: seg, at: t1)
+                if transformsEqual(tr0, tr1) {
+                    config.setTransform(tr0, at: intervalRange.start)
+                } else {
+                    config.addTransformRamp(.init(timeRange: intervalRange, start: tr0, end: tr1))
+                }
+                layers.append(AVVideoCompositionLayerInstruction(configuration: config))
+            }
+
             let instConfig = AVVideoCompositionInstruction.Configuration(
-                backgroundColor: CGColor(gray: 0, alpha: 1),
-                layerInstructions: [layer],
-                timeRange: seg.compositionRange
+                backgroundColor: flashActive ? CGColor(gray: 1, alpha: 1) : CGColor(gray: 0, alpha: 1),
+                layerInstructions: layers,
+                timeRange: intervalRange
             )
             instructions.append(AVVideoCompositionInstruction(configuration: instConfig))
         }
+
         var videoCompositionConfig = AVVideoComposition.Configuration()
         videoCompositionConfig.renderSize = renderSize
         videoCompositionConfig.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
@@ -198,7 +344,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         onProgress(0.60, "Exporting via AVAssetExportSession…")
 
-        // Step 4 — Export
+        // Step 5 — Export
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("memx-\(UUID().uuidString).mp4")
 
@@ -221,9 +367,21 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         try await exportSession.export(to: outputURL, as: .mp4)
 
-        logger.info("Render complete: \(self.formatDuration(totalDuration.seconds)), output=\(outputURL.lastPathComponent)")
-        onProgress(1.0, "Render complete — \(formatDuration(totalDuration.seconds))")
+        logger.info("Render complete: \(self.formatDuration(totalEnd)), output=\(outputURL.lastPathComponent)")
+        onProgress(1.0, "Render complete — \(formatDuration(totalEnd))")
         return outputURL
+    }
+
+    // MARK: - Transition Helpers
+
+    private func fadeFromBlackDuration(_ plan: RenderSegmentPlan) -> Double {
+        min(0.8, plan.visibleDuration * 0.5)
+    }
+
+    private func transformsEqual(_ a: CGAffineTransform, _ b: CGAffineTransform) -> Bool {
+        abs(a.a - b.a) < 1e-5 && abs(a.b - b.b) < 1e-5
+            && abs(a.c - b.c) < 1e-5 && abs(a.d - b.d) < 1e-5
+            && abs(a.tx - b.tx) < 0.01 && abs(a.ty - b.ty) < 0.01
     }
 
     // MARK: - Render Size Selection
@@ -318,24 +476,29 @@ final class VideoRenderService: VideoRenderServiceProtocol {
     }
 
     // MARK: - Photo → Video Clip
+    // Static two-frame clip; all motion (Ken Burns, punch-ins) is applied via
+    // transform ramps in the composition, so the compositor interpolates it
+    // per output frame at zero export cost. Exported ~20% above render size
+    // so zoom-ins never go soft.
 
     private func exportPhotoClip(
         assetID: String,
         duration: CMTime,
-        renderSize: CGSize,
-        peakFraction: Double
+        renderSize: CGSize
     ) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("memx-\(UUID().uuidString).mp4")
 
-        let cgImage = await fetchCGImageFromPhotos(assetID: assetID, renderSize: renderSize)
-            ?? createPlaceholderImage(assetID: assetID, renderSize: renderSize)
+        let clipSize = evenSize(CGSize(width: renderSize.width * 1.2, height: renderSize.height * 1.2))
+
+        let cgImage = await fetchCGImageFromPhotos(assetID: assetID, renderSize: clipSize)
+            ?? createPlaceholderImage(assetID: assetID, renderSize: clipSize)
         guard let image = cgImage else { throw RenderError.assetNotFound(assetID) }
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: Int(renderSize.width),
-            AVVideoHeightKey: Int(renderSize.height),
+            AVVideoWidthKey: Int(clipSize.width),
+            AVVideoHeightKey: Int(clipSize.height),
         ]
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         let input  = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -345,8 +508,8 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             assetWriterInput: input,
             sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                kCVPixelBufferWidthKey as String: Int(renderSize.width),
-                kCVPixelBufferHeightKey as String: Int(renderSize.height),
+                kCVPixelBufferWidthKey as String: Int(clipSize.width),
+                kCVPixelBufferHeightKey as String: Int(clipSize.height),
             ]
         )
         writer.add(input)
@@ -355,9 +518,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
         writer.startSession(atSourceTime: .zero)
 
-        _ = peakFraction
-
-        let pixelBuffer = try createPixelBuffer(from: image, renderSize: renderSize)
+        let pixelBuffer = try createPixelBuffer(from: image, renderSize: clipSize)
 
         while !input.isReadyForMoreMediaData {
             try? await Task.sleep(nanoseconds: 5_000_000)

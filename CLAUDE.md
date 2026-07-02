@@ -58,13 +58,13 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 - **`MotionPromptService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) for one-to-two-sentence cinematographer directions. Weaves `asset.sceneCaption` + `sceneLabels` into a text prompt. Falls back to a deterministic mock when the model is unavailable or times out (6s).
 - **`SequencerService`** (in `MontagePlannerService.swift`) — builds the `MontagePlan` from beatmap + scored assets. Hook-aware (see below). Exposes a `preflight(...)` call so the UI can warn before building.
 - **`MusicSuggestionService`** — matches songs to mood arc via vibe/genre/energy scoring; uses a hardcoded mock catalog.
-- **`VideoRenderService`** — real `AVMutableComposition` stitching, Ken Burns over video-toolbox frames, transitions, and `AVAssetExportSession` output.
+- **`VideoRenderService`** — real `AVMutableComposition` stitching on two alternating A/B video tracks so adjacent clips overlap. Every clip is placed at its plan `startTime` (song timeline) so cuts stay beat-locked. Storyboard transitions are rendered for real via `AVVideoCompositionLayerInstruction.Configuration` opacity/transform ramps: crossfade, dissolve, flash-white (dip through white background), whip-pan push, fade-from-black, plus Ken Burns drift and beat punch-ins on photos (pure timing/motion math lives in `RenderTimeline.swift`, unit-tested). Output via `AVAssetExportSession`.
 
 ### Key Models
 
 - **`Project`** — root container; status flows `draft → configuring → importing → analyzing → ready → exported`. `MontageSettings` now includes `scoringDensity` (decoded with `decodeIfPresent` for backward compatibility with older saved projects).
 - **`ScoringDensity`** (`verySparse / sparse / balanced / dense / veryDense`) — controls `videoFrameSamples` and service concurrency. `balanced` is the default.
-- **`MediaAsset`** — wraps a `PHAsset`; post-analysis fields include `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels: [String]?`, and `sceneCaption: String?`.
+- **`MediaAsset`** — wraps a `PHAsset`; post-analysis fields include `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels: [String]?`, `sceneCaption: String?`, `motionEnergy: Float?` (0 still … 1 jumping/action; matched against audio energy in the sequencer), `semanticEmbedding: [Float]?` (Apple `NLEmbedding` sentence embedding, fully on-device), and `visualEmbedding: [Float]?` (Vision FeaturePrint, on-device, used for match-cut continuity).
 - **`Beatmap`** — BPM, duration, energy curve, `[BeatSection]`, `[Double]` beats, drops/vocal peaks, `phraseStarts`, `beatStrengths`, and `hooks: [HookMoment]`.
 - **`HookMoment`** — `startTime`, `endTime`, `repeatIndex` (chronological order within the cluster), `signatureBeats` (4 strongest beats), `similarity` (max cosine to a cluster-mate).
 - **`MontagePlan`** — final storyboard: `[MontageSequenceItem]`, `moodArc`, `suggestedSongs`. Sequence items carry `isHookMoment`, `isAnticipationHold`, `hookRepeatIndex`, and a `GradingHint` (vibe + section-aware color grading suggestion).
@@ -104,4 +104,4 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
 - **MusicKit**: `MusicSuggestionService` still uses a hardcoded mock catalog. Real MusicKit integration is a follow-up.
 - **Foundation Models image input**: resolved — `SceneCaptionService` now routes actual image pixels through `LocalVLMService` (MLX + Qwen2-VL-2B-Instruct-4bit) instead of the text-only `LanguageModelSession` path.
-- **AVFoundation deprecations**: `AVMutableVideoCompositionInstruction` / `AVMutableVideoCompositionLayerInstruction` are deprecated in macOS 26 in favor of the `*.Configuration` types. The render pipeline still uses the old types (functional, with warnings). Migrating is cosmetic cleanup.
+- **AVFoundation deprecations**: resolved — the render pipeline uses the macOS 26 `*.Configuration` types throughout, including `addOpacityRamp`/`addTransformRamp` for transitions and Ken Burns motion.

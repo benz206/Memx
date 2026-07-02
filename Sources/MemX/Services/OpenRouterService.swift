@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import NaturalLanguage
 import OSLog
 
 private let openRouterLogger = Logger(subsystem: "com.memx.app", category: "openrouter")
@@ -36,6 +37,7 @@ struct OpenRouterVisualAnalysis {
     var faceAreaFraction: Double?
     var clipStartTime: TimeInterval?
     var faces: Int
+    var motionEnergy: Float
 }
 
 // MARK: - OpenRouterService
@@ -46,7 +48,6 @@ final class OpenRouterService: OpenRouterServiceProtocol {
     private let session: URLSession
     private let apiKeyProvider: () -> String?
 
-    static let embeddingModel = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 
     /// Default to a free vision-language model so the pipeline works without
     /// burning paid credits. The same NVIDIA VL model handles text-only
@@ -151,15 +152,10 @@ final class OpenRouterService: OpenRouterServiceProtocol {
         guard !Task.isCancelled else { return enriched }
 
         onProgress(0.35, "Embedding visual semantics...")
-        if let remote = await embed(inputs) {
-            for i in enriched.indices where i < remote.count {
-                enriched[i].semanticEmbedding = normalized(remote[i])
-            }
-        } else {
-            openRouterLogger.info("OpenRouter embeddings unavailable; using local semantic fallback")
-            for i in enriched.indices {
-                enriched[i].semanticEmbedding = localEmbedding(for: inputs[i])
-            }
+        // Embeddings are always computed on-device (Apple NLEmbedding) —
+        // no remote call, and every asset lives in the same vector space.
+        for i in enriched.indices {
+            enriched[i].semanticEmbedding = localEmbedding(for: inputs[i])
         }
 
         onProgress(1.0, "Semantic enrichment complete")
@@ -182,6 +178,7 @@ final class OpenRouterService: OpenRouterServiceProtocol {
         colorTemperature: 0 cool/night, 0.5 neutral, 1 warm/golden.
         faceAreaFraction: null or 0...1.
         faces: integer visible faces.
+        motionEnergy: 0...1 kinetic energy — 0 static/posed, 0.5 walking/gesturing, 1 jumping/dancing/sports/action.
         clipStartTime: best source start time in seconds for a \(Int(max(1, min(6, request.duration)))) second clip; use 0 for photos.
 
         Filename: \(request.filename ?? "unknown")
@@ -211,7 +208,8 @@ final class OpenRouterService: OpenRouterServiceProtocol {
             colorTemperature: clampedDouble(json["colorTemperature"], min: 0, max: 1, fallback: 0.5),
             faceAreaFraction: optionalClampedDouble(json["faceAreaFraction"], min: 0, max: 1),
             clipStartTime: request.isVideo ? clampedDouble(json["clipStartTime"], min: 0, max: max(0, request.duration), fallback: 0) : nil,
-            faces: max(0, Int(clampedDouble(json["faces"], min: 0, max: 100, fallback: 0)))
+            faces: max(0, Int(clampedDouble(json["faces"], min: 0, max: 100, fallback: 0))),
+            motionEnergy: clampedFloat(json["motionEnergy"], fallback: request.isVideo ? 0.55 : 0.35)
         )
     }
 
@@ -227,36 +225,6 @@ final class OpenRouterService: OpenRouterServiceProtocol {
     }
 
     // MARK: - Remote Calls
-
-    private func embed(_ inputs: [String]) async -> [[Float]]? {
-        guard let key = apiKeyProvider(), !key.isEmpty else { return nil }
-        guard let url = URL(string: "https://openrouter.ai/api/v1/embeddings") else { return nil }
-
-        let body = EmbeddingRequest(input: inputs, model: Self.embeddingModel, encodingFormat: "float")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 30
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("MemX", forHTTPHeaderField: "X-Title")
-        request.httpBody = try? JSONEncoder().encode(body)
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            guard status == 200 else {
-                Self.logHTTPFailure(label: "embed", status: status, model: Self.embeddingModel, data: data)
-                return nil
-            }
-            let decoded = try JSONDecoder().decode(EmbeddingResponse.self, from: data)
-            Self.bumpSuccess()
-            return decoded.data.sorted { $0.index < $1.index }.map(\.embedding)
-        } catch {
-            openRouterLogger.warning("Embedding request error: \(error.localizedDescription, privacy: .public)")
-            Self.bumpFailure()
-            return nil
-        }
-    }
 
     private func generateBatchSummaries(for assets: [MediaAsset]) async -> [String]? {
         guard apiKeyProvider()?.isEmpty == false else { return nil }
@@ -394,6 +362,14 @@ final class OpenRouterService: OpenRouterServiceProtocol {
     }
 
     private func localEmbedding(for text: String) -> [Float] {
+        // Apple's on-device sentence embedding (free, ~512-dim, real semantic
+        // geometry). The hash bag-of-words below only covers the edge case
+        // where the embedding model asset isn't available on this Mac.
+        if let sentence = NLEmbedding.sentenceEmbedding(for: .english),
+           !text.isEmpty,
+           let vec = sentence.vector(for: String(text.prefix(300)).lowercased()) {
+            return normalized(vec.map(Float.init))
+        }
         var vector = Array(repeating: Float(0), count: 96)
         let words = text
             .lowercased()
@@ -487,26 +463,6 @@ final class OpenRouterService: OpenRouterServiceProtocol {
 }
 
 // MARK: - DTOs
-
-private struct EmbeddingRequest: Encodable {
-    let input: [String]
-    let model: String
-    let encodingFormat: String
-
-    enum CodingKeys: String, CodingKey {
-        case input, model
-        case encodingFormat = "encoding_format"
-    }
-}
-
-private struct EmbeddingResponse: Decodable {
-    let data: [EmbeddingData]
-}
-
-private struct EmbeddingData: Decodable {
-    let embedding: [Float]
-    let index: Int
-}
 
 private struct ChatRequest: Encodable {
     let model: String

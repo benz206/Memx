@@ -780,6 +780,8 @@ final class WorkspaceViewModel {
             merged.sceneCaption = analyzed.sceneCaption
             merged.semanticSummary = analyzed.semanticSummary
             merged.semanticEmbedding = analyzed.semanticEmbedding
+            merged.visualEmbedding = analyzed.visualEmbedding
+            merged.motionEnergy = analyzed.motionEnergy
             merged.shotType = analyzed.shotType
             merged.motionVector = analyzed.motionVector
             merged.colorTemperature = analyzed.colorTemperature

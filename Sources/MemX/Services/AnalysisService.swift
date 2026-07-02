@@ -4,6 +4,7 @@ import CoreGraphics
 import Foundation
 import OSLog
 import Photos
+import Vision
 
 private let logger = Logger(subsystem: "com.memx.app", category: "scoring")
 
@@ -42,8 +43,9 @@ extension PhotoScoringServiceProtocol {
 ///
 /// This service performs only lightweight media access on the Mac: fetch a
 /// downscaled photo or representative video frame, JPEG-compress it, and send
-/// it to OpenRouter for semantic scoring. No Vision, Foundation Models, or
-/// local VLM work happens here; final stitching remains the local heavy lift.
+/// it to OpenRouter for semantic scoring. The one local exception is a Vision
+/// FeaturePrint (a few ms per image, on-device, free) — the visual embedding
+/// the sequencer uses for match-cut continuity between adjacent clips.
 final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     static let shared = PhotoScoringService()
@@ -78,6 +80,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         struct IndexedResult {
             let index: Int
             let analysis: OpenRouterVisualAnalysis
+            let visualEmbedding: [Float]?
         }
 
         var results = [IndexedResult?](repeating: nil, count: assets.count)
@@ -90,10 +93,11 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 let asset = assets[index]
                 group.addTask {
                     try Task.checkCancellation()
-                    let request = await self.visualRequest(for: asset)
+                    let (request, image) = await self.visualRequest(for: asset)
+                    let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
                     let analysis = await self.openRouterService.analyzeVisualAsset(request)
                         ?? self.fallbackAnalysis(for: asset)
-                    return IndexedResult(index: index, analysis: analysis)
+                    return IndexedResult(index: index, analysis: analysis, visualEmbedding: embedding)
                 }
             }
 
@@ -136,6 +140,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[result.index].colorTemperature = a.colorTemperature
             scoredAssets[result.index].faceAreaFraction = a.faceAreaFraction
             scoredAssets[result.index].clipStartTime = a.clipStartTime
+            scoredAssets[result.index].motionEnergy = a.motionEnergy
+            scoredAssets[result.index].visualEmbedding = result.visualEmbedding
             faceCounts[result.index] = a.faces
         }
 
@@ -160,12 +166,12 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     // MARK: - Media Preparation
 
-    private func visualRequest(for asset: MediaAsset) async -> OpenRouterVisualAnalysisRequest {
+    private func visualRequest(for asset: MediaAsset) async -> (OpenRouterVisualAnalysisRequest, CGImage?) {
         let image = asset.isVideo
             ? await representativeVideoFrame(for: asset)
             : await photoImage(for: asset)
 
-        return OpenRouterVisualAnalysisRequest(
+        let request = OpenRouterVisualAnalysisRequest(
             assetID: asset.id,
             filename: asset.filename,
             isVideo: asset.isVideo,
@@ -174,6 +180,26 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             creationDate: asset.creationDate,
             imageJPEGData: image.flatMap { OpenRouterService.jpegData(from: $0, maxDimension: 896, compressionQuality: 0.70) }
         )
+        return (request, image)
+    }
+
+    // MARK: - Visual Embedding (Vision FeaturePrint, on-device)
+
+    static func featurePrintEmbedding(for image: CGImage) -> [Float]? {
+        let request = VNGenerateImageFeaturePrintRequest()
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let observation = request.results?.first as? VNFeaturePrintObservation,
+              observation.elementType == .float,
+              observation.elementCount > 0 else { return nil }
+
+        var vector = observation.data.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: Float.self))
+        }
+        let norm = sqrt(vector.reduce(Float(0)) { $0 + $1 * $1 })
+        guard norm > 0 else { return nil }
+        for i in vector.indices { vector[i] /= norm }
+        return vector
     }
 
     private func photoImage(for asset: MediaAsset) async -> CGImage? {
@@ -266,7 +292,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             colorTemperature: 0.5,
             faceAreaFraction: nil,
             clipStartTime: asset.isVideo ? min(max(asset.duration * 0.20, 0), max(asset.duration - 3, 0)) : nil,
-            faces: 0
+            faces: 0,
+            motionEnergy: Float(min(0.9, max(0.1, (asset.isVideo ? 0.55 : 0.32) + jitter)))
         )
     }
 

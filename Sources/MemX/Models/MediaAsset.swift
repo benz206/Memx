@@ -90,6 +90,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var sceneCaption: String?           // Natural-language caption from Foundation Models (nil if unavailable)
     var semanticSummary: String?        // Edit-aware summary used for mood/content matching
     var semanticEmbedding: [Float]?      // OpenRouter/free embedding for semantic sequencing
+    var visualEmbedding: [Float]?        // Vision FeaturePrint (free, on-device) for match-cut continuity
+    var motionEnergy: Float?             // 0 still … 1 high-action/jumping — matched against audio energy
     var isSelected: Bool = false
 
     // Derived
@@ -138,7 +140,9 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         sceneLabels: [String]? = nil,
         sceneCaption: String? = nil,
         semanticSummary: String? = nil,
-        semanticEmbedding: [Float]? = nil
+        semanticEmbedding: [Float]? = nil,
+        visualEmbedding: [Float]? = nil,
+        motionEnergy: Float? = nil
     ) {
         self.id = id
         self.mediaType = mediaType
@@ -157,6 +161,8 @@ struct MediaAsset: MediaAssetProtocol, Codable {
         self.sceneCaption = sceneCaption
         self.semanticSummary = semanticSummary
         self.semanticEmbedding = semanticEmbedding
+        self.visualEmbedding = visualEmbedding
+        self.motionEnergy = motionEnergy
     }
 }
 

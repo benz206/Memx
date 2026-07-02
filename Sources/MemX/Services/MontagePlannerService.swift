@@ -1090,6 +1090,15 @@ final class SequencerService: SequencerServiceProtocol {
             return .dissolve
         }
 
+        // Whip-pan push between two high-motion clips at peak energy —
+        // every third cut so it stays a spice, not a tic.
+        if vibe == .hype || vibe == .travel,
+           slot.section.type == .chorus || slot.section.type == .drop,
+           let p = prev, (p.motionEnergy ?? 0) > 0.55, (next.motionEnergy ?? 0) > 0.55,
+           position % 3 == 2 {
+            return .whipPan
+        }
+
         if let pct = prev?.colorTemperature, let nct = next.colorTemperature,
            abs(pct - nct) > 0.4 {
             return .crossfade
@@ -1117,10 +1126,12 @@ final class SequencerService: SequencerServiceProtocol {
     // MARK: - Asset Selection
 
     private func visualEnergy(_ asset: MediaAsset) -> Float {
-        let e          = asset.emotionScore ?? 0.5
-        let n          = asset.noveltyScore ?? 0.5
-        let videoBoost: Float = asset.isVideo ? 0.1 : 0
-        return min(1.0, e * 0.6 + n * 0.4 + videoBoost)
+        let e = asset.emotionScore ?? 0.5
+        let n = asset.noveltyScore ?? 0.5
+        // Kinetic energy dominates: a jumping/dancing clip should land on a
+        // drop even if a posed portrait scores higher on emotion.
+        let kinetic = asset.motionEnergy ?? (asset.isVideo ? 0.6 : 0.35)
+        return min(1.0, e * 0.40 + n * 0.25 + kinetic * 0.35)
     }
 
     private func clipKey(_ asset: MediaAsset) -> String {
@@ -1231,11 +1242,19 @@ final class SequencerService: SequencerServiceProtocol {
     private func continuityFit(_ asset: MediaAsset, prev: MediaAsset?, slot: TimeSlot) -> Double {
         guard let prev else { return 0.65 }
         var score = 0.5
+        let calmSection = slot.section.type == .verse || slot.section.type == .intro || slot.section.type == .outro
 
         if let sim = cosine(asset.semanticEmbedding, prev.semanticEmbedding) {
-            let sameSectionSweetSpot = slot.section.type == .verse || slot.section.type == .intro || slot.section.type == .outro
-            let target = sameSectionSweetSpot ? 0.62 : 0.42
-            score += 0.35 * (1.0 - min(1.0, abs(sim - target)))
+            let target = calmSection ? 0.62 : 0.42
+            score += 0.22 * (1.0 - min(1.0, abs(sim - target)))
+        }
+        // Visual (FeaturePrint) match-cut: calm sections want related frames,
+        // high-energy sections want visual contrast. Near-duplicates (>0.9)
+        // read as a stutter, so both targets sit well below that.
+        if let vsim = cosine(asset.visualEmbedding, prev.visualEmbedding) {
+            let target = calmSection ? 0.55 : 0.30
+            score += 0.25 * (1.0 - min(1.0, abs(vsim - target)))
+            if vsim > 0.92 { score -= 0.3 }   // jump-cut penalty
         }
         if asset.eventLabel != nil, asset.eventLabel == prev.eventLabel {
             score += 0.1
