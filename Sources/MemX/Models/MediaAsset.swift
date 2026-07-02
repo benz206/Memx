@@ -189,8 +189,12 @@ struct MSAlbum: Identifiable, Hashable {
     init(collection: PHAssetCollection) {
         self.id = collection.localIdentifier
         self.title = collection.localizedTitle ?? "Untitled"
-        let fetchResult = PHAsset.fetchAssets(in: collection, options: nil)
-        self.count = fetchResult.count
+        // estimatedAssetCount avoids a full asset fetch per album; smart
+        // albums can report NSNotFound, where the real fetch is required.
+        let estimated = collection.estimatedAssetCount
+        self.count = estimated == NSNotFound
+            ? PHAsset.fetchAssets(in: collection, options: nil).count
+            : estimated
         self.startDate = collection.startDate
         self.endDate = collection.endDate
         switch collection.assetCollectionType {

@@ -4,20 +4,6 @@ import AppKit
 import AVFoundation
 import OSLog
 
-// MARK: - PhotosLibraryServiceProtocol
-
-protocol PhotosLibraryServiceProtocol {
-    func requestPermission() async -> PHAuthorizationStatus
-    func authorizationStatus() -> PHAuthorizationStatus
-    func fetchRecentAssets(limit: Int) async -> [MediaAsset]
-    func fetchAlbums() async -> [MSAlbum]
-    func fetchAssets(in album: MSAlbum, limit: Int) async -> [MediaAsset]
-    func fetchThumbnail(for assetID: String, size: CGSize) async -> NSImage?
-    func exportAssetForProcessing(_ assetID: String) async throws -> URL
-    func fetchAsset(for id: String) -> PHAsset?
-    func resolveAssets(for localIdentifiers: [String]) async -> [MediaAsset]
-}
-
 // MARK: - PHAssetCache (serial-queue-protected)
 
 actor PHAssetCache {
@@ -44,7 +30,7 @@ actor PHAssetCache {
 
 // MARK: - PhotosLibraryService (real PhotoKit integration)
 
-final class PhotosLibraryService: PhotosLibraryServiceProtocol {
+final class PhotosLibraryService {
 
     static let shared = PhotosLibraryService()
     private let imageManager = PHCachingImageManager()
@@ -231,10 +217,6 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
 
     // MARK: - Helpers
 
-    func fetchAsset(for id: String) -> PHAsset? {
-        PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
-    }
-
     private func extractAssets(from result: PHFetchResult<PHAsset>) -> [MediaAsset] {
         var assets: [MediaAsset] = []
         result.enumerateObjects { phAsset, _, _ in
@@ -277,54 +259,18 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
     }
 
     func exportVideoClip(assetID: String, startTime: TimeInterval, duration: TimeInterval) async throws -> URL {
-        logger.info("exportVideoClip started: \(assetID, privacy: .public) start=\(String(format: "%.2f", startTime))s duration=\(String(format: "%.2f", duration))s")
         guard let asset = await PHAssetCache.shared.phAsset(for: assetID) else {
             throw PhotosServiceError.assetNotFound(assetID)
         }
-
-        let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
-        options.version = .current
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("memx-\(UUID().uuidString)")
-            .appendingPathExtension("mov")
-
         let timescale: CMTimeScale = 600
         let timeRange = CMTimeRange(
             start:    CMTime(seconds: startTime, preferredTimescale: timescale),
             duration: CMTime(seconds: duration,  preferredTimescale: timescale)
         )
-
-        let session: AVAssetExportSession = try await withCheckedThrowingContinuation { continuation in
-            imageManager.requestExportSession(
-                forVideo: asset,
-                options: options,
-                exportPreset: AVAssetExportPreset1920x1080
-            ) { [logger] session, _ in
-                if let session {
-                    continuation.resume(returning: session)
-                } else {
-                    logger.error("exportVideoClip: requestExportSession returned nil for \(assetID, privacy: .public)")
-                    continuation.resume(throwing: PhotosServiceError.exportFailed)
-                }
-            }
-        }
-
-        let start = Date()
-        session.timeRange = timeRange
-        do {
-            try await session.export(to: tempURL, as: .mov)
-        } catch {
-            logger.error("exportVideoClip failed for \(assetID, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            throw error
-        }
-        logger.info("exportVideoClip complete: \(assetID, privacy: .public) (\(String(format: "%.2f", Date().timeIntervalSince(start)))s)")
-        return tempURL
+        return try await exportVideo(asset, timeRange: timeRange)
     }
 
-    private func exportVideo(_ asset: PHAsset) async throws -> URL {
+    private func exportVideo(_ asset: PHAsset, timeRange: CMTimeRange? = nil) async throws -> URL {
         logger.info("exportVideo started: \(asset.localIdentifier, privacy: .public)")
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
@@ -351,6 +297,7 @@ final class PhotosLibraryService: PhotosLibraryServiceProtocol {
         }
 
         let start = Date()
+        if let timeRange { session.timeRange = timeRange }
         do {
             try await session.export(to: tempURL, as: .mov)
         } catch {

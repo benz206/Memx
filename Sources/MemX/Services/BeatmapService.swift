@@ -145,13 +145,12 @@ final class BeatmapService: BeatmapServiceProtocol {
         let vocal     = onsets.filter { $0.strength > avgStr * 1.2 && $0.strength < 0.75 }.prefix(12).map { BeatMoment(time: $0.time, intensity: $0.strength) }
 
         let phraseSize = bpm > 140 ? 8 : 4
-        let phraseStarts = stride(from: 0, to: beats.count, by: 4 * phraseSize).map { beats[$0] }
+        let phraseIndices = Set(stride(from: 0, to: beats.count, by: 4 * phraseSize))
+        let phraseStarts = phraseIndices.sorted().map { beats[$0] }
 
-        let bd = 60.0 / max(bpm, 1)
-        let beatStrengths: [Double] = beats.enumerated().map { i, beatTime in
-            let base: Double = (i % 4) == 0 ? 0.75 : (i % 4) == 2 ? 0.5 : 0.35
-            let isPhrase = phraseStarts.contains(where: { abs($0 - beatTime) < bd * 0.5 })
-            return isPhrase ? 1.0 : base
+        let beatStrengths: [Double] = beats.indices.map { i in
+            if phraseIndices.contains(i) { return 1.0 }
+            return (i % 4) == 0 ? 0.75 : (i % 4) == 2 ? 0.5 : 0.35
         }
 
         onProgress(0.92, "Detecting hooks…")
@@ -334,6 +333,9 @@ final class BeatmapService: BeatmapServiceProtocol {
         var envelope: [Float] = []
         var energyCurve: [EnergyPoint] = []
         let n = mono.count
+        let hopCount = max(0, (n - winSamples) / hopSamples + 1)
+        envelope.reserveCapacity(hopCount)
+        energyCurve.reserveCapacity(hopCount)
 
         mono.withUnsafeBufferPointer { ptr in
             var i = 0
@@ -353,7 +355,9 @@ final class BeatmapService: BeatmapServiceProtocol {
         var scale = 1.0 / maxVal
         vDSP_vsmul(envelope, 1, &scale, &envelope, 1, vDSP_Length(envelope.count))
         let invMax = 1.0 / Double(maxVal)
-        energyCurve = energyCurve.map { EnergyPoint(time: $0.time, energy: min(1, $0.energy * invMax)) }
+        for i in energyCurve.indices {
+            energyCurve[i].energy = min(1, energyCurve[i].energy * invMax)
+        }
 
         return (envelope, energyCurve)
     }

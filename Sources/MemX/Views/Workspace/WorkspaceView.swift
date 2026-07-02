@@ -206,8 +206,8 @@ struct WorkspaceView: View {
     @ViewBuilder
     private var detailContent: some View {
         VStack(spacing: 0) {
-            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .denied
-                || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .restricted {
+            let photosStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            if photosStatus == .denied || photosStatus == .restricted {
                 photosAccessBanner
             }
 

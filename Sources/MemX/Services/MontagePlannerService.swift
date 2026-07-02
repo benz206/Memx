@@ -76,6 +76,10 @@ final class SequencerService: SequencerServiceProtocol {
         logger.info("Sequencer: \(timeSlots.count) time slots across \(beatmap.sections.count) sections, \(beatmap.hooks.count) hooks")
 
         let pool          = candidates.isEmpty ? fallbackCandidates : candidates
+        // Searchable text per asset is slot-independent; build it once instead
+        // of per (slot × asset) inside scoring.
+        let semanticTexts = Dictionary(pool.map { ($0.id, semanticText(for: $0)) },
+                                       uniquingKeysWith: { first, _ in first })
         var usedKeys      = Set<String>()
         var sequence      = [MontageSequenceItem]()
         let totalDuration = beatmap.durationSeconds
@@ -115,7 +119,7 @@ final class SequencerService: SequencerServiceProtocol {
                 asset = forced
             } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
                                                prev: prevAsset, arcIntensity: arcIntensity,
-                                               settings: settings) {
+                                               settings: settings, semanticTexts: semanticTexts) {
                 asset = picked
             } else {
                 continue
@@ -1147,7 +1151,7 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func scoreAsset(_ a: MediaAsset, for slot: TimeSlot,
                              prev: MediaAsset?, arcIntensity: Double,
-                             settings: MontageSettings) -> Double {
+                             keywords: [String], semanticTexts: [String: String]) -> Double {
         let isHero      = slot.section.type == .chorus || slot.section.type == .drop
         let target      = targetEnergy(for: slot, arcIntensity: arcIntensity)
         let energy      = visualEnergy(a)
@@ -1174,7 +1178,7 @@ final class SequencerService: SequencerServiceProtocol {
 
         let isHeroOrPre = isHero || slot.section.type == .preChorus
         let peakFit: Double = (isHeroOrPre && (a.emotionScore ?? 0) > 0.7) ? 0.15 : 0.0
-        let semanticFit = semanticFit(a, slot: slot, settings: settings)
+        let semanticFit = semanticFit(a, keywords: keywords, text: semanticTexts[a.id] ?? "")
         let continuityFit = continuityFit(a, prev: prev, slot: slot)
 
         return 0.28 * energyFit
@@ -1190,12 +1194,13 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func selectAsset(for slot: TimeSlot, from pool: [MediaAsset],
                               used: Set<String>, prev: MediaAsset?, arcIntensity: Double,
-                              settings: MontageSettings) -> MediaAsset? {
+                              settings: MontageSettings, semanticTexts: [String: String]) -> MediaAsset? {
         let isHero = slot.section.type == .chorus || slot.section.type == .drop
         let unused = pool.filter { !used.contains(clipKey($0)) }
 
         if !unused.isEmpty {
-            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, settings: settings)) }
+            let keywords = semanticKeywords(for: slot, settings: settings)
+            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, keywords: keywords, semanticTexts: semanticTexts)) }
             if let (best, score) = scored.max(by: { $0.1 < $1.1 }), score > 0.35 {
                 return best
             }
@@ -1205,9 +1210,7 @@ final class SequencerService: SequencerServiceProtocol {
         return isHero ? pool.first : pool.last
     }
 
-    private func semanticFit(_ asset: MediaAsset, slot: TimeSlot, settings: MontageSettings) -> Double {
-        let target = semanticKeywords(for: slot, settings: settings)
-        let text = semanticText(for: asset)
+    private func semanticFit(_ asset: MediaAsset, keywords target: [String], text: String) -> Double {
         guard !target.isEmpty, !text.isEmpty else { return 0.5 }
 
         let targetHits = target.reduce(0) { partial, word in

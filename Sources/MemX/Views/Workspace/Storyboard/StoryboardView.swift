@@ -107,11 +107,15 @@ struct StoryboardContentView: View {
         return plan.sequence.first(where: { $0.id == id })
     }
 
-    /// Asset IDs that appear in more than one sequence item. Computed once.
+    /// Asset IDs that appear in more than one sequence item.
     private var repeatedAssetIDs: Set<String> {
         var counts = [String: Int]()
         for item in plan.sequence { counts[item.assetID, default: 0] += 1 }
         return Set(counts.compactMap { $0.value > 1 ? $0.key : nil })
+    }
+
+    private var assetsByID: [String: MediaAsset] {
+        Dictionary(workspaceVM.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     var body: some View {
@@ -175,11 +179,12 @@ struct StoryboardContentView: View {
 
             List(selection: $selectedItemID) {
                 let repeated = repeatedAssetIDs
+                let assetMap = assetsByID
                 ForEach(Array(plan.sequence.enumerated()), id: \.element.id) { idx, item in
                     StoryboardSequenceRow(
                         item: item,
                         position: idx + 1,
-                        asset: workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                        asset: assetMap[item.assetID],
                         isSelected: selectedItemID == item.id,
                         isRepeatedClip: repeated.contains(item.assetID)
                     )
@@ -243,6 +248,7 @@ struct StoryboardContentView: View {
     @ViewBuilder
     private func itemDetailPanel(_ item: MontageSequenceItem) -> some View {
         let displayPosition = (plan.sequence.firstIndex(where: { $0.id == item.id }) ?? item.position) + 1
+        let itemAsset = assetsByID[item.assetID]
         ScrollView {
             VStack(alignment: .leading, spacing: MS.Spacing.md) {
                 HStack {
@@ -255,7 +261,7 @@ struct StoryboardContentView: View {
                     ConfidenceBadge(score: item.confidenceScore)
                 }
 
-                if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }) {
+                if let asset = itemAsset {
                     AssetThumbnailView(asset: asset, size: 200, cornerRadius: MS.Radius.md, isSelected: false, showOverlay: true)
                         .id(asset.id)
                         .frame(maxWidth: .infinity)
@@ -271,7 +277,7 @@ struct StoryboardContentView: View {
 
                 // Scene card — only shown when analysis populated caption or
                 // labels. Skipped entirely for assets that were never analyzed.
-                if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                if let asset = itemAsset,
                    (asset.sceneCaption?.isEmpty == false) || (asset.sceneLabels?.isEmpty == false) {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                         MSSectionHeader(title: "Scene")
@@ -292,7 +298,7 @@ struct StoryboardContentView: View {
                     .msCard()
                 }
 
-                if let asset = workspaceVM.assets.first(where: { $0.id == item.assetID }),
+                if let asset = itemAsset,
                    let summary = asset.semanticSummary, !summary.isEmpty {
                     VStack(alignment: .leading, spacing: MS.Spacing.sm) {
                         MSSectionHeader(title: "Embedding Read")
