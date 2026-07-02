@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # Run tests
 
 `swift test` must be prefixed with `DEVELOPER_DIR` because XCTest is only available from Xcode, not Command Line Tools. Build and run benefit from the same `DEVELOPER_DIR` prefix when the Xcode 26 toolchain isn't selected system-wide (`xcode-select -s /Applications/Xcode.app/Contents/Developer`).
 
-The app is opened in Xcode via the `.swiftpm` wrapper. There are **no third-party SPM dependencies**. Apple frameworks: Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, NaturalLanguage. Visual analysis and captioning go through **OpenRouter** (`OpenRouterService`); the API key is read from `.env` at the package root (via `DotEnv`) or `UserDefaults`. Audio analysis, sequencing, and rendering are fully local.
+The app is opened in Xcode via the `.swiftpm` wrapper. There are **no third-party SPM dependencies**. Apple frameworks: Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, NaturalLanguage. The entire pipeline — analysis, embeddings, sequencing, rendering — runs on-device with no network calls.
 
 ## Platform
 
@@ -28,7 +28,7 @@ Three targets:
 
 ## What This Is
 
-**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage. It imports a song and a set of photos/videos, analyzes the track locally (BPM, sections, onsets, repeating hooks), scores the visuals with an OpenRouter vision model (quality/emotion/novelty/eventLabel/caption/semanticSummary), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4.
+**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage. It imports a song and a set of photos/videos, analyzes the track locally (BPM, sections, onsets, repeating hooks), scores the visuals on-device (metadata heuristics + Vision/NLEmbedding embeddings), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4.
 
 ## Architecture
 
@@ -52,8 +52,8 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
 - **`PhotosLibraryService`** — PhotoKit wrapper; `PHCachingImageManager` + `ThumbnailCache` (MainActor singleton) + `PHAssetCache`; falls back to mock data when permissions are denied. Album counts use `estimatedAssetCount` (full fetch only when PhotoKit reports NSNotFound).
 - **`BeatmapService`** — real `AVAudioFile` + `vDSP` audio analysis. Downsamples to mono 22 kHz, builds an RMS envelope, estimates BPM via autocorrelation (capped at the first ~90s of envelope for speed), detects onsets via positive energy flux on the envelope, segments the track into sections (intro / verse / preChorus / chorus / drop / buildup / bridge / breakdown / outro), and clusters repeating chorus/drop sections into `HookMoment`s using an 8-dim envelope fingerprint + cosine similarity.
-- **`PhotoScoringService`** (in `AnalysisService.swift`) — sends one representative frame per asset to OpenRouter for semantic scoring (`qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneCaption`, `semanticSummary`, `motionEnergy`); computes a Vision FeaturePrint (`visualEmbedding`) locally for match-cut continuity. Concurrency scales with `ScoringDensity`.
-- **`OpenRouterService`** — chat + multimodal requests against a free vision-language model (see `visionModel`/`textModel` in the file), plus `NLEmbedding`-based local sentence embeddings (`semanticEmbedding`) with a hashed-bag fallback. Tracks success/failure counters surfaced in the pipeline UI.
+- **`PhotoScoringService`** (in `AnalysisService.swift`) — fully on-device: fetches one representative frame per asset, computes a Vision FeaturePrint (`visualEmbedding`) for match-cut continuity, and derives heuristic scores from asset metadata (`qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `motionEnergy`; `sceneCaption`/`semanticSummary` stay empty — the storyboard falls back to basic asset facts). Concurrency scales with `ScoringDensity`.
+- **`SemanticEmbeddingService`** — `NLEmbedding`-based local sentence embeddings (`semanticEmbedding`) built from asset metadata, with a hashed-bag fallback when the embedding model asset is unavailable.
 - **`SequencerService`** (in `MontagePlannerService.swift`) — builds the `MontagePlan` from beatmap + scored assets. Hook-aware (see below). Exposes a `preflight(...)` call so the UI can warn before building.
 - **`VideoRenderService`** — real `AVMutableComposition` stitching on two alternating A/B video tracks so adjacent clips overlap. Every clip is placed at its plan `startTime` (song timeline) so cuts stay beat-locked. Storyboard transitions are rendered for real via `AVVideoCompositionLayerInstruction.Configuration` opacity/transform ramps: crossfade, dissolve, flash-white (dip through white background), whip-pan push, fade-from-black, plus Ken Burns drift and beat punch-ins on photos (pure timing/motion math lives in `RenderTimeline.swift`, unit-tested). Output via `AVAssetExportSession`.
 
@@ -71,10 +71,10 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 `WorkspaceViewModel.runPipeline()` orchestrates; each service reports progress via a `(Double, String)` callback that the view-model splits into a global 0.0–1.0 range:
 
 1. `analyzeAudio` → `BeatmapService`
-2. `scorePhotos` → `PhotoScoringService` (OpenRouter, bounded concurrency)
+2. `scorePhotos` → `PhotoScoringService` (on-device, bounded concurrency), then `SemanticEmbeddingService` for semantic embeddings
 3. `buildSequence` → `SequencerService`. Preflighted first — if the plan would run out of unique clips, `clipShortfall` is populated and `pendingShortfallAck` gates the build until the user confirms (Add Photos / Build Anyway / Dismiss).
 
-Analysis results are persisted on the project (`analyzedAssets`) so tab switches and relaunches don't repay OpenRouter calls.
+Analysis results are persisted on the project (`analyzedAssets`) so tab switches and relaunches don't repay analysis work.
 
 ### Sequencer / Emotional Edit Logic
 
@@ -102,3 +102,4 @@ Analysis results are persisted on the project (`analyzedAssets`) so tab switches
 
 - **Music suggestions/MusicKit**: removed — users import their own song file.
 - **Grading hints** are display-only; `VideoRenderService` does not apply color grading yet.
+- **VLM scoring (OpenRouter)**: removed for now — scores are metadata heuristics, and `sceneCaption`/`semanticSummary` are never populated.
