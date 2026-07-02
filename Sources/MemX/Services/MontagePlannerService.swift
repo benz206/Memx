@@ -92,6 +92,8 @@ final class SequencerService: SequencerServiceProtocol {
         var hookAnchorAssets = [Double: [Int: MediaAsset]]()
 
         let sectionFirstIDs = buildSectionFirstSlotIDs(from: timeSlots)
+        let flashAllowed    = flashBudgetSlotIDs(slots: timeSlots, beatmap: beatmap,
+                                                 vibe: settings.vibe)
         let totalSlots      = timeSlots.count
 
         for (slotIndex, slot) in timeSlots.enumerated() {
@@ -144,7 +146,7 @@ final class SequencerService: SequencerServiceProtocol {
                                    prevSlotStart: prevSlotStart, next: asset,
                                    slot: slot, position: position,
                                    isFirstOfSection: isFirst, beatmap: beatmap,
-                                   vibe: settings.vibe)
+                                   vibe: settings.vibe, flashAllowed: flashAllowed)
 
             let itemStart = max(0, beatmap.nearestBeat(to: slot.startTime))
             let snappedEnd = slot.isFlash ? slot.endTime : beatmap.nearestBeat(to: slot.endTime)
@@ -164,12 +166,12 @@ final class SequencerService: SequencerServiceProtocol {
             let isHookReturn = isHookSlot && (slot.hookRepeatIndex ?? 0) > 0
 
             // Anticipation and sustained vocal holds use their spec'd
-            // transition shapes; major hits get impact exits.
+            // transition shapes. Flash exits belong to the anticipation hold
+            // alone — entry flashes are budgeted in transition().
             let transitionIn: TransitionType = slot.isAnticipationHold ? .dissolve : trans
             let transitionOut: TransitionType = {
                 if slot.isAnticipationHold { return .flashWhite }
                 if slot.isVocalHold { return .crossfade }
-                if isMajorImpact(slot: slot, beatmap: beatmap) { return .flashWhite }
                 return .hardCut
             }()
 
@@ -1035,6 +1037,52 @@ final class SequencerService: SequencerServiceProtocol {
         return firsts
     }
 
+    // MARK: - Flash Budget
+    // Editors use a white flash 2–4 times per video, saved for the biggest
+    // hits. The old rule flashed on every phrase start (~every 8 seconds).
+    // Candidates in priority order: the anticipation hold's exit is implicit
+    // (always flashes); this budget covers entries — each drop section, the
+    // final chorus, hype-vibe hook returns, then the strongest detected hits.
+
+    private static let maxFlashCount = 4
+
+    private func flashBudgetSlotIDs(slots: [TimeSlot], beatmap: Beatmap,
+                                    vibe: MontageVibe) -> Set<UUID> {
+        var candidates = [(priority: Int, time: Double, id: UUID)]()
+
+        var seenSections = Set<UUID>()
+        let lastChorusID = slots.last(where: { $0.section.type == .chorus })?.section.id
+        for slot in slots {
+            if slot.hookClusterKey != nil, slot.hookSignatureIndex == 0,
+               (slot.hookRepeatIndex ?? 0) > 0, vibe == .hype {
+                candidates.append((1, slot.startTime, slot.id))
+            }
+            guard seenSections.insert(slot.section.id).inserted else { continue }
+            if slot.section.type == .drop {
+                candidates.append((0, slot.startTime, slot.id))
+            } else if slot.section.id == lastChorusID {
+                candidates.append((0, slot.startTime, slot.id))
+            }
+        }
+
+        let tolerance = beatmap.beatDuration * 0.35
+        for drop in beatmap.drops.sorted(by: { $0.intensity > $1.intensity }) where drop.intensity >= 0.85 {
+            if let slot = slots.min(by: { abs($0.startTime - drop.time) < abs($1.startTime - drop.time) }),
+               abs(slot.startTime - drop.time) <= tolerance {
+                candidates.append((2, slot.startTime, slot.id))
+            }
+        }
+
+        var allowed = Set<UUID>()
+        for candidate in candidates.sorted(by: {
+            $0.priority == $1.priority ? $0.time < $1.time : $0.priority < $1.priority
+        }) {
+            guard allowed.count < Self.maxFlashCount else { break }
+            allowed.insert(candidate.id)
+        }
+        return allowed
+    }
+
     // MARK: - Transitions
 
     private func sectionEnergyRank(_ type: SectionType) -> Int {
@@ -1053,25 +1101,19 @@ final class SequencerService: SequencerServiceProtocol {
     private func transition(prev: MediaAsset?, prevSection: BeatSection?, prevSlotStart: Double?,
                             next: MediaAsset, slot: TimeSlot,
                             position: Int, isFirstOfSection: Bool,
-                            beatmap: Beatmap, vibe: MontageVibe) -> TransitionType {
+                            beatmap: Beatmap, vibe: MontageVibe,
+                            flashAllowed: Set<UUID>) -> TransitionType {
         if position == 0 { return .fadeFromBlack }
 
         if slot.isVocalHold { return .crossfade }
-        if isMajorImpact(slot: slot, beatmap: beatmap) {
-            return slot.section.type == .drop ? .flashWhite : .hardCut
-        }
 
-        // Vibe: .hype flashes on every hook repeat entry (signature-beat 0).
-        if vibe == .hype, slot.hookClusterKey != nil, slot.hookSignatureIndex == 0 {
-            return .flashWhite
-        }
+        // Flash-white only on budgeted moments — see flashBudgetSlotIDs.
+        if flashAllowed.contains(slot.id) { return .flashWhite }
 
         // Vibe: .nostalgic prefers kenBurnsDrift on section boundaries.
         if vibe == .nostalgic, isFirstOfSection, position > 0 {
             return .kenBurnsDrift
         }
-
-        if isFirstOfSection && slot.section.type == .drop { return .flashWhite }
 
         if isFirstOfSection, let ps = prevSection,
            sectionEnergyRank(ps.type) > sectionEnergyRank(slot.section.type) {
@@ -1086,6 +1128,11 @@ final class SequencerService: SequencerServiceProtocol {
            position % 3 == 2 {
             return .whipPan
         }
+
+        // High-energy sections cut hard: a 0.5s crossfade mid-chorus kills
+        // the percussive feel, and strong beats deserve a clean hit.
+        if slot.section.type == .chorus || slot.section.type == .drop { return .hardCut }
+        if isMajorImpact(slot: slot, beatmap: beatmap) { return .hardCut }
 
         if let pct = prev?.colorTemperature, let nct = next.colorTemperature,
            abs(pct - nct) > 0.4 {

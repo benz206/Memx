@@ -597,6 +597,40 @@ final class SequencerServiceTests: XCTestCase {
         XCTAssertNil(decoded.gradingHint)
     }
 
+    // MARK: - buildSequence: flash budget & high-energy cuts
+
+    func testBuildSequenceKeepsFlashWhiteRare() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+
+        let plan = await sequencer.buildSequence(
+            title: "Test", settings: settings, assets: assets,
+            beatmap: beatmap, onProgress: { _, _ in }
+        )
+
+        let flashIns = plan.sequence.filter { $0.transitionIn == .flashWhite }.count
+        let flashOuts = plan.sequence.filter { $0.transitionOut == .flashWhite }.count
+        // Budgeted entries (≤4) plus the anticipation hold's exit.
+        XCTAssertLessThanOrEqual(flashIns + flashOuts, 5,
+                                 "flash-white must stay a rare accent, not a tic")
+    }
+
+    func testBuildSequenceDropSectionsAvoidSoftTransitions() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+
+        let plan = await sequencer.buildSequence(
+            title: "Test", settings: settings, assets: assets,
+            beatmap: beatmap, onProgress: { _, _ in }
+        )
+
+        for item in plan.sequence where item.sectionType == .drop {
+            XCTAssertNotEqual(item.transitionIn, .crossfade,
+                              "soft transitions kill the percussive feel mid-drop")
+            XCTAssertNotEqual(item.transitionIn, .dissolve)
+        }
+    }
+
     // MARK: - buildSequence: confidence scores
 
     func testBuildSequenceConfidenceScoresAreSet() async {
