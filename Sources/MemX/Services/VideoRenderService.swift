@@ -55,7 +55,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
         let renderSize = computeRenderSize(for: sequence, assetMap: assetMap, settings: plan.settings)
         let songVolume = Float(max(0, min(1, plan.settings.songVolume)))
-        let segmentPlans = RenderTimeline.plan(sequence)
+        let segmentPlans = RenderTimeline.plan(sequence, beatDuration: beatmap?.beatDuration)
 
         logger.info("Render started: \(sequence.count) clips, size=\(Int(renderSize.width))x\(Int(renderSize.height)), volume=\(Int(songVolume * 100))%, song=\(songURL.lastPathComponent)")
         onProgress(0.01, "Render size: \(Int(renderSize.width))×\(Int(renderSize.height)) · \(Int(songVolume * 100))% song volume")

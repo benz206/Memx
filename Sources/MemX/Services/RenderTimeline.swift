@@ -63,18 +63,28 @@ enum RenderTimeline {
         return nextIn
     }
 
+    /// Visual cuts lead the beat by ~1 frame: the new image must already be
+    /// onscreen when the transient hits, and AVFoundation quantizes each cut
+    /// to the *next* frame boundary. Cutting exactly on the beat therefore
+    /// reads 0–33ms late; audio is untouched.
+    static let cutLead = 0.04
+
     /// Overlap window at a boundary, clamped so short beat-burst clips never
-    /// spend more than ~half their screen time inside a transition.
+    /// spend more than ~half their screen time inside a transition. With a
+    /// beat duration, soft transitions are expressed in musical time
+    /// (1-beat crossfade, 2-beat dissolve) so they read the same at 90 and
+    /// 170 BPM; flash-white stays wall-clock — it's percussive, not melodic.
     static func overlapDuration(for transition: TransitionType,
-                                prevVisible: Double, currVisible: Double) -> Double {
+                                prevVisible: Double, currVisible: Double,
+                                beatDuration: Double? = nil) -> Double {
         let base: Double
         switch transition {
         case .hardCut, .fadeFromBlack: return 0
         case .flashWhite:    base = 0.15
-        case .whipPan:       base = 0.25
-        case .crossfade:     base = 0.5
-        case .dissolve:      base = 0.9   // longer + slower curve than crossfade
-        case .kenBurnsDrift: base = 0.8
+        case .whipPan:       base = beatDuration.map { min(0.35, $0 * 0.5) } ?? 0.25
+        case .crossfade:     base = beatDuration.map { min(0.8, $0) } ?? 0.5
+        case .dissolve:      base = beatDuration.map { min(1.6, $0 * 2) } ?? 0.9
+        case .kenBurnsDrift: base = beatDuration.map { min(1.4, $0 * 1.5) } ?? 0.8
         }
         return max(0, min(base, prevVisible * 0.45, currVisible * 0.45))
     }
@@ -280,15 +290,21 @@ enum RenderTimeline {
         return max(0, min(1, o))
     }
 
-    static func plan(_ sequence: [MontageSequenceItem]) -> [RenderSegmentPlan] {
+    static func plan(_ sequence: [MontageSequenceItem],
+                     beatDuration: Double? = nil) -> [RenderSegmentPlan] {
         guard !sequence.isEmpty else { return [] }
+
+        // Cut lead only applies against a real beat grid (beatDuration set);
+        // the first clip starts wherever it was planned.
+        let lead = beatDuration != nil ? cutLead : 0
 
         // Starts must be strictly increasing for the two-track overlap model.
         var starts = [Double]()
         starts.reserveCapacity(sequence.count)
         var cursor = -Double.greatestFiniteMagnitude
-        for item in sequence {
-            let s = max(item.startTime, cursor + 0.05)
+        for (i, item) in sequence.enumerated() {
+            let planned = i == 0 ? item.startTime : item.startTime - lead
+            let s = max(planned, cursor + 0.05)
             starts.append(s)
             cursor = s
         }
@@ -315,7 +331,8 @@ enum RenderTimeline {
             headOverlaps[i] = overlapDuration(
                 for: t,
                 prevVisible: visibleEnds[i - 1] - starts[i - 1],
-                currVisible: visibleEnds[i] - starts[i]
+                currVisible: visibleEnds[i] - starts[i],
+                beatDuration: beatDuration
             )
         }
 

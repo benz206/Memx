@@ -68,6 +68,29 @@ final class RenderTimelineTests: XCTestCase {
         XCTAssertEqual(d, 0.4 * 0.45, accuracy: 1e-9)
     }
 
+    func testOverlapScalesWithBeatDuration() {
+        // 1-beat crossfade, 2-beat dissolve at 150 BPM (0.4s beat).
+        XCTAssertEqual(
+            RenderTimeline.overlapDuration(for: .crossfade, prevVisible: 4, currVisible: 4, beatDuration: 0.4),
+            0.4, accuracy: 1e-9)
+        XCTAssertEqual(
+            RenderTimeline.overlapDuration(for: .dissolve, prevVisible: 4, currVisible: 4, beatDuration: 0.4),
+            0.8, accuracy: 1e-9)
+    }
+
+    func testOverlapCapsAtSlowTempo() {
+        // 50 BPM: a 2-beat dissolve would be 2.4s — capped at 1.6s.
+        XCTAssertEqual(
+            RenderTimeline.overlapDuration(for: .dissolve, prevVisible: 8, currVisible: 8, beatDuration: 1.2),
+            1.6, accuracy: 1e-9)
+    }
+
+    func testFlashWhiteStaysWallClockRegardlessOfTempo() {
+        XCTAssertEqual(
+            RenderTimeline.overlapDuration(for: .flashWhite, prevVisible: 4, currVisible: 4, beatDuration: 1.0),
+            0.15, accuracy: 1e-9)
+    }
+
     // MARK: - Easing & transition opacity
 
     private func plan(
@@ -268,6 +291,22 @@ final class RenderTimelineTests: XCTestCase {
         ]
         let plans = RenderTimeline.plan(seq)
         XCTAssertEqual(plans.map(\.start), [0.0, 2.0, 4.0])
+    }
+
+    func testPlanLeadsTheBeatWhenGridIsKnown() {
+        // With a beat grid, every cut after the first lands cutLead early so
+        // the new image is onscreen when the transient hits. Audio placement
+        // is unaffected; visible ends follow the shifted starts.
+        let seq = [
+            item(position: 0, start: 0.0, end: 2.0, transitionIn: .fadeFromBlack),
+            item(position: 1, start: 2.0, end: 4.0, transitionIn: .hardCut),
+            item(position: 2, start: 4.0, end: 6.0, transitionIn: .hardCut),
+        ]
+        let plans = RenderTimeline.plan(seq, beatDuration: 0.5)
+        XCTAssertEqual(plans[0].start, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(plans[1].start, 2.0 - RenderTimeline.cutLead, accuracy: 1e-9)
+        XCTAssertEqual(plans[2].start, 4.0 - RenderTimeline.cutLead, accuracy: 1e-9)
+        XCTAssertEqual(plans[0].visibleEnd, plans[1].start, accuracy: 1e-9)
     }
 
     func testPlanCoversGapsFromSkippedSlots() {
