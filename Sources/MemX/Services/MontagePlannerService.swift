@@ -164,9 +164,16 @@ final class SequencerService: SequencerServiceProtocol {
             let itemEnd   = min(max(itemStart + 0.01, snappedEnd), totalDuration)
 
             let peakBeat = slot.peakBeat ?? slot.startTime
+            // Slow-motion holds: 0.75× keeps effective frame rate cinematic
+            // on 30fps sources while clearly reading as a slow-mo moment.
+            let speedFactor: Double = {
+                guard asset.isVideo, slot.isAnticipationHold || slot.isVocalHold else { return 1.0 }
+                return asset.duration >= slot.duration * 0.75 + 0.3 ? 0.75 : 1.0
+            }()
             let clipOffset = Self.cutOnActionOffset(
                 asset: asset, slotStart: slot.startTime,
-                slotDuration: slot.duration, peakBeat: peakBeat)
+                slotDuration: slot.duration, peakBeat: peakBeat,
+                rate: speedFactor)
 
             let isArcPeak  = isHero && arcIntensity >= 0.95
             let isHookSlot = slot.hookClusterKey != nil
@@ -197,13 +204,15 @@ final class SequencerService: SequencerServiceProtocol {
                                                   isHero: isHero,
                                                   isArcPeak: isArcPeak,
                                                   isHookSlot: isHookSlot,
-                                                  isHookReturn: isHookReturn),
+                                                  isHookReturn: isHookReturn,
+                                                  isSlowMotion: speedFactor < 1),
                 clipOffset: clipOffset,
                 peakTime: peakBeat,
                 isHookMoment: isHookSlot,
                 isAnticipationHold: slot.isAnticipationHold,
                 hookRepeatIndex: slot.hookRepeatIndex,
-                gradingHint: gradingHint(for: settings.vibe, sectionType: slot.section.type)
+                gradingHint: gradingHint(for: settings.vibe, sectionType: slot.section.type),
+                speedFactor: speedFactor
             )
             sequence.append(item)
             position      += 1
@@ -1230,16 +1239,20 @@ final class SequencerService: SequencerServiceProtocol {
     /// In-point for a video slot. With a motion series, cut on action: the
     /// source's strongest feasible motion moment lands on the slot's peak
     /// beat. Without one, fall back to centering the analyzed best window.
+    /// `rate` is the playback speed — a slow-mo slot consumes fewer source
+    /// seconds and its peak-beat delta shrinks accordingly.
     static func cutOnActionOffset(asset: MediaAsset, slotStart: Double,
-                                  slotDuration: Double, peakBeat: Double) -> TimeInterval {
+                                  slotDuration: Double, peakBeat: Double,
+                                  rate: Double = 1.0) -> TimeInterval {
         guard asset.isVideo else { return 0 }
-        let maxOffset = max(0, asset.duration - slotDuration)
-        let delta = max(0, peakBeat - slotStart)   // seconds into the slot where the hit lands
+        let sourceSpan = slotDuration * rate
+        let maxOffset = max(0, asset.duration - sourceSpan)
+        let delta = max(0, peakBeat - slotStart) * rate   // source seconds until the hit
 
         if let peakSource = asset.motionPeakTime(in: delta...(maxOffset + delta)) {
             return min(max(0, peakSource - delta), maxOffset)
         }
-        let raw = (asset.clipStartTime ?? 0) - delta + slotDuration * 0.5
+        let raw = (asset.clipStartTime ?? 0) - delta + sourceSpan * 0.5
         return min(max(0, raw), maxOffset)
     }
 
@@ -1461,7 +1474,8 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func selectionReason(for asset: MediaAsset, slot: TimeSlot,
                                   isHero: Bool, isArcPeak: Bool,
-                                  isHookSlot: Bool = false, isHookReturn: Bool = false) -> String {
+                                  isHookSlot: Bool = false, isHookReturn: Bool = false,
+                                  isSlowMotion: Bool = false) -> String {
         var reasons = [String]()
         if let q = asset.qualityScore, q > 0.8  { reasons.append("sharp & well-exposed") }
         if let e = asset.emotionScore, e > 0.75 { reasons.append("strong emotional valence") }
@@ -1470,6 +1484,7 @@ final class SequencerService: SequencerServiceProtocol {
         if isArcPeak                            { reasons.append("arc peak") }
         if slot.isAnticipationHold              { reasons.append("anticipation hold") }
         if slot.isVocalHold                     { reasons.append("sustained vocal hold") }
+        if isSlowMotion                         { reasons.append("slow-motion") }
         if isHookReturn                         { reasons.append("hook return") }
         else if isHookSlot                      { reasons.append("hook signature") }
         if slot.isBreath                        { reasons.append("breath") }

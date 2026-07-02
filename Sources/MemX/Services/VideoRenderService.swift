@@ -79,10 +79,12 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                         let url: URL
                         if let asset = assetMap[item.assetID], asset.isVideo {
                             do {
+                                // Slow-mo (speedFactor < 1) consumes fewer
+                                // source seconds than it fills on screen.
                                 url = try await self.exportVideoClip(
                                     assetID: item.assetID,
                                     startTime: item.clipOffset,
-                                    duration: neededDuration + 0.15)
+                                    duration: neededDuration * item.speedFactor + 0.15)
                             } catch {
                                 logger.warning("Video export failed for \(item.assetID), falling back to thumbnail: \(error)")
                                 url = try await self.exportPhotoClip(
@@ -150,7 +152,10 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 logger.error("No video track in exported clip for asset \(item.assetID) — skipping segment")
                 continue
             }
-            let neededDuration = CMTime(seconds: segPlan.sourceDuration, preferredTimescale: timescale)
+            let isVideoAsset = assetMap[item.assetID]?.isVideo ?? false
+            let speed = isVideoAsset ? max(0.1, min(item.speedFactor, 4.0)) : 1.0
+            let neededDuration = CMTime(seconds: segPlan.sourceDuration * speed,
+                                        preferredTimescale: timescale)
             let assetDur = (try? await clipAsset.load(.duration)) ?? neededDuration
             let range = CMTimeRange(start: .zero, duration: min(neededDuration, assetDur))
             guard range.duration.seconds > 0.02 else { continue }
@@ -170,7 +175,17 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 logger.error("insertTimeRange failed for asset \(item.assetID): \(error)")
                 continue
             }
-            trackCursors[trackIdx] = CMTimeAdd(targetStart, range.duration)
+            // Slow-mo hold: stretch the inserted media to its on-screen
+            // duration. Cuts stay beat-locked; only playback rate changes.
+            var presentedDuration = range.duration
+            if abs(speed - 1) > 0.001 {
+                let scaled = CMTime(seconds: range.duration.seconds / speed,
+                                    preferredTimescale: timescale)
+                track.scaleTimeRange(CMTimeRange(start: targetStart, duration: range.duration),
+                                     toDuration: scaled)
+                presentedDuration = scaled
+            }
+            trackCursors[trackIdx] = CMTimeAdd(targetStart, presentedDuration)
 
             let naturalSize = (try? await srcTrack.load(.naturalSize)) ?? renderSize
             let srcTransform = (try? await srcTrack.load(.preferredTransform)) ?? .identity
@@ -186,7 +201,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                     into: renderSize),
                 motion: RenderTimeline.motion(for: item, isPhoto: isPhoto,
                                               headTransition: segPlan.headTransition),
-                insertedEnd: segPlan.start + range.duration.seconds
+                insertedEnd: segPlan.start + presentedDuration.seconds
             ))
         }
 

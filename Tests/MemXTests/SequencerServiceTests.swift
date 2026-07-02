@@ -639,6 +639,54 @@ final class SequencerServiceTests: XCTestCase {
             asset: asset, slotStart: 0, slotDuration: 2, peakBeat: 0), 0)
     }
 
+    func testCutOnActionAccountsForPlaybackRate() {
+        // 16s video, motion peak at 10.5s. Slot 20–22s, peak beat 21s, at
+        // 0.75×: the hit is 0.75 source-seconds in, so offset = 9.75s.
+        var asset = MediaAsset(id: "v", mediaType: .video, duration: 16)
+        var samples = [Float](repeating: 0.1, count: 16)
+        samples[10] = 1.0
+        asset.motionSamples = samples
+
+        let offset = SequencerService.cutOnActionOffset(
+            asset: asset, slotStart: 20, slotDuration: 2, peakBeat: 21, rate: 0.75)
+        XCTAssertEqual(offset, 9.75, accuracy: 1e-9)
+    }
+
+    func testBuildSequenceOnlyHoldsGetSlowMotion() async {
+        let assets = MockDataProvider.mockAssets()
+        let beatmap = MockDataProvider.mockBeatmapWithHooks()
+
+        let plan = await sequencer.buildSequence(
+            title: "Test", settings: settings, assets: assets,
+            beatmap: beatmap, onProgress: { _, _ in }
+        )
+
+        for item in plan.sequence {
+            if item.speedFactor < 1.0 {
+                XCTAssertTrue(item.isAnticipationHold || item.selectionReason.contains("vocal hold"),
+                              "slow-mo is reserved for hold moments")
+                XCTAssertEqual(item.speedFactor, 0.75, accuracy: 1e-9)
+            } else {
+                XCTAssertEqual(item.speedFactor, 1.0, accuracy: 1e-9)
+            }
+        }
+    }
+
+    func testMontageSequenceItemSpeedFactorRoundTripsAndDefaults() throws {
+        let item = MontageSequenceItem(
+            position: 0, assetID: "a", startTime: 0, endTime: 2, speedFactor: 0.75)
+        let data = try JSONEncoder().encode(item)
+        let decoded = try JSONDecoder().decode(MontageSequenceItem.self, from: data)
+        XCTAssertEqual(decoded.speedFactor, 0.75, accuracy: 1e-9)
+
+        var json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        json.removeValue(forKey: "speedFactor")
+        let legacy = try JSONDecoder().decode(
+            MontageSequenceItem.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(legacy.speedFactor, 1.0, accuracy: 1e-9, "legacy plans decode at normal speed")
+    }
+
     // MARK: - buildSequence: hero-first reservation
 
     func testBuildSequenceReservesStandoutAssetForChorusOpener() async {

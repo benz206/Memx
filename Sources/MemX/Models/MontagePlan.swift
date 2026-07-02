@@ -52,6 +52,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
     var isAnticipationHold: Bool = false    // the slot is the pre-final-chorus hold
     var hookRepeatIndex: Int? = nil         // 0 = first time, 1 = second, ...
     var gradingHint: GradingHint? = nil     // passthrough for future color grading
+    var speedFactor: Double = 1.0           // video playback rate (0.75 = slow-mo hold)
 
     var duration: TimeInterval { endTime - startTime }
 
@@ -73,7 +74,8 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         isHookMoment: Bool = false,
         isAnticipationHold: Bool = false,
         hookRepeatIndex: Int? = nil,
-        gradingHint: GradingHint? = nil
+        gradingHint: GradingHint? = nil,
+        speedFactor: Double = 1.0
     ) {
         self.id = id
         self.position = position
@@ -93,6 +95,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         self.isAnticipationHold = isAnticipationHold
         self.hookRepeatIndex = hookRepeatIndex
         self.gradingHint = gradingHint
+        self.speedFactor = speedFactor
     }
 
     // MARK: - Codable (decodeIfPresent for new fields so legacy plans still decode)
@@ -105,6 +108,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         case sectionType, selectionReason
         case clipOffset, peakTime
         case isHookMoment, isAnticipationHold, hookRepeatIndex, gradingHint
+        case speedFactor
     }
 
     init(from decoder: Decoder) throws {
@@ -127,6 +131,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         isAnticipationHold = try c.decodeIfPresent(Bool.self, forKey: .isAnticipationHold) ?? false
         hookRepeatIndex = try c.decodeIfPresent(Int.self, forKey: .hookRepeatIndex)
         gradingHint = try c.decodeIfPresent(GradingHint.self, forKey: .gradingHint)
+        speedFactor = try c.decodeIfPresent(Double.self, forKey: .speedFactor) ?? 1.0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -149,6 +154,7 @@ struct MontageSequenceItem: Identifiable, Codable, Hashable {
         try c.encode(isAnticipationHold, forKey: .isAnticipationHold)
         try c.encodeIfPresent(hookRepeatIndex, forKey: .hookRepeatIndex)
         try c.encodeIfPresent(gradingHint, forKey: .gradingHint)
+        try c.encode(speedFactor, forKey: .speedFactor)
     }
 }
 
