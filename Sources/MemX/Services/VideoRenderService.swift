@@ -233,6 +233,14 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             audioMix = mix
         }
 
+        // Debug: audible metronome over the montage to verify beat alignment
+        // by ear. Enable with MEMX_CLICK_TRACK=1 or
+        // `defaults write <bundle> MemXClickTrack -bool YES`.
+        if Self.clickTrackEnabled, let beatmap {
+            onProgress(0.57, "Adding debug click track…")
+            await addClickTrack(to: composition, beatmap: beatmap, totalEnd: totalEnd)
+        }
+
         onProgress(0.58, "Building transitions (\(Int(renderSize.width))×\(Int(renderSize.height)) @ \(fps)fps)…")
 
         // Step 4 — Instruction timeline. Split at every segment knot so each
@@ -424,6 +432,68 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         logger.info("Render complete: \(self.formatDuration(totalEnd)), output=\(outputURL.lastPathComponent)")
         onProgress(1.0, "Render complete — \(formatDuration(totalEnd))")
         return outputURL
+    }
+
+    // MARK: - Click Track (debug)
+    // Metronome overlay for verifying the beat grid by ear: accented click
+    // on downbeats, quieter click elsewhere. Diagnostic only — gated off by
+    // default.
+
+    private static var clickTrackEnabled: Bool {
+        ProcessInfo.processInfo.environment["MEMX_CLICK_TRACK"] == "1"
+            || UserDefaults.standard.bool(forKey: "MemXClickTrack")
+    }
+
+    private func addClickTrack(to composition: AVMutableComposition,
+                               beatmap: Beatmap, totalEnd: Double) async {
+        do {
+            // The composition reads these lazily during export, so the temp
+            // files must outlive this call (tiny; left for temp cleanup).
+            let strongURL = try makeClickFile(frequency: 1568, amplitude: 0.9)
+            let weakURL = try makeClickFile(frequency: 1046, amplitude: 0.45)
+            guard let strongSrc = try await AVURLAsset(url: strongURL).loadTracks(withMediaType: .audio).first,
+                  let weakSrc = try await AVURLAsset(url: weakURL).loadTracks(withMediaType: .audio).first,
+                  let clickTrack = composition.addMutableTrack(
+                      withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+            else { return }
+
+            let clickRange = CMTimeRange(
+                start: .zero,
+                duration: CMTime(seconds: 0.05, preferredTimescale: timescale))
+            var inserted = 0
+            for (i, beat) in beatmap.beats.enumerated() where beat < totalEnd {
+                let isDownbeat = ((i - beatmap.downbeatIndex) % 4 + 4) % 4 == 0
+                try? clickTrack.insertTimeRange(
+                    clickRange,
+                    of: isDownbeat ? strongSrc : weakSrc,
+                    at: CMTime(seconds: beat, preferredTimescale: timescale))
+                inserted += 1
+            }
+            logger.info("Click track (debug): \(inserted) clicks inserted")
+        } catch {
+            logger.warning("Click track failed: \(error)")
+        }
+    }
+
+    /// Short decaying sine burst written to a temp CAF.
+    private func makeClickFile(frequency: Double, amplitude: Double) throws -> URL {
+        let sampleRate = 44100.0
+        let frames = AVAudioFrameCount(sampleRate * 0.05)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("memx-click-\(UUID().uuidString).caf")
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+              let samples = buffer.floatChannelData?[0]
+        else { throw RenderError.compositionFailed }
+
+        buffer.frameLength = frames
+        for i in 0..<Int(frames) {
+            let t = Double(i) / sampleRate
+            samples[i] = Float(sin(2 * .pi * frequency * t) * exp(-t * 60) * amplitude)
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+        return file.url
     }
 
     // MARK: - Transition Helpers
