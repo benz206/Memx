@@ -129,31 +129,40 @@ struct ImportView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                TextField("Search...", text: $importVM.searchText)
+                TextField("Search", text: $importVM.searchText)
                     .textFieldStyle(.plain)
                     .font(MS.Font.body)
                     .frame(width: 160)
+                if !importVM.searchText.isEmpty {
+                    Button {
+                        importVM.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, MS.Spacing.sm)
-            .padding(.vertical, 5)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-
-            Divider().frame(height: 18)
+            .padding(.vertical, 4)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
+                    .strokeBorder(.separator.opacity(0.6), lineWidth: 1)
+            )
 
             // Filter
-            ForEach(AssetFilterType.allCases, id: \.self) { filter in
-                Button {
-                    importVM.filterType = filter
-                } label: {
+            Picker("Filter", selection: $importVM.filterType) {
+                ForEach(AssetFilterType.allCases, id: \.self) { filter in
                     Image(systemName: filter.icon)
-                        .font(.system(size: 13))
-                        .foregroundStyle(importVM.filterType == filter ? Color.accentColor : Color.secondary)
+                        .help(filter.rawValue)
+                        .tag(filter)
                 }
-                .buttonStyle(.plain)
-                .help(filter.rawValue)
             }
-
-            Divider().frame(height: 18)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
 
             // Sort
             Picker("Sort", selection: $importVM.sortOrder) {
@@ -162,22 +171,24 @@ struct ImportView: View {
                 }
             }
             .pickerStyle(.menu)
-            .font(MS.Font.caption)
-            .frame(width: 120)
+            .labelsHidden()
+            .fixedSize()
 
             Spacer()
-
-            // Import from Photos picker
-            MSSecondaryButton("Open Photos", icon: "photo.stack") {
-                showPhotoPicker = true
-            }
 
             if importVM.hasSelection {
                 Text("\(importVM.selectionCount) selected")
                     .font(MS.Font.caption)
                     .foregroundStyle(.secondary)
-                MSSecondaryButton("All") { importVM.selectAll() }
-                MSSecondaryButton("None") { importVM.deselectAll() }
+                MSSecondaryButton("Select All") { importVM.selectAll() }
+                    .help("Select All Assets (⇧⌘A)")
+                MSSecondaryButton("Deselect") { importVM.deselectAll() }
+                    .help("Deselect All Assets (⇧⌘D)")
+            }
+
+            // Import from Photos picker
+            MSSecondaryButton("Open Photos", icon: "photo.stack") {
+                showPhotoPicker = true
             }
         }
         .padding(.horizontal, MS.Spacing.md)

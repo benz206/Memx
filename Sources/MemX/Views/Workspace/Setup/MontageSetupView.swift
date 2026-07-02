@@ -59,14 +59,13 @@ struct SongImportView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Pick a Song")
+                Text("Song")
                     .font(MS.Font.title)
-                Text("The song is the director. Every cut, hold, and transition flows from the music.")
+                Text("Every cut, hold, and transition is timed to this track.")
                     .font(MS.Font.body)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            MSBadge(text: "Step 1", color: .accentColor)
         }
     }
 
@@ -90,9 +89,9 @@ struct SongImportView: View {
                     ZStack {
                         Circle()
                             .fill(Color.accentColor.opacity(0.1))
-                            .frame(width: 72, height: 72)
+                            .frame(width: 56, height: 56)
                         Image(systemName: "music.note")
-                            .font(.system(size: 30))
+                            .font(.system(size: 24))
                             .foregroundStyle(Color.accentColor)
                     }
 
@@ -134,11 +133,10 @@ struct SongImportView: View {
         HStack(spacing: MS.Spacing.md) {
             ZStack {
                 RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .fill(LinearGradient(colors: [.accentColor.opacity(0.3), .purple.opacity(0.2)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 56, height: 56)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 48, height: 48)
                 Image(systemName: song.fileFormatIcon)
-                    .font(.system(size: 22))
+                    .font(.system(size: 20))
                     .foregroundStyle(Color.accentColor)
             }
 
@@ -255,18 +253,19 @@ struct SongImportView: View {
     // MARK: - Continue Card
 
     private var continueCard: some View {
-        VStack(spacing: MS.Spacing.sm) {
+        HStack {
             Text("Song imported. Next: pick your photos.")
                 .font(MS.Font.body)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
 
-            MSPrimaryButton("Choose Photos", icon: "photo.stack.fill") {
+            Spacer()
+
+            MSPrimaryButton("Continue", icon: "arrow.right") {
                 workspaceVM.goToStage(.photos)
             }
+            .keyboardShortcut(.defaultAction)
         }
-        .frame(maxWidth: .infinity)
-        .msCard(padding: MS.Spacing.lg)
+        .msCard()
     }
 
     // MARK: - Helpers
@@ -298,181 +297,84 @@ struct SettingsSheet: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
     @Environment(\.dismiss) private var dismiss
 
+    /// Writes go straight through to the project so edits apply immediately,
+    /// matching the previous chip-based sheet's behavior.
+    private var settings: Binding<MontageSettings> {
+        Binding(
+            get: { workspaceVM.project.settings },
+            set: { workspaceVM.updateSettings($0) }
+        )
+    }
+
     var body: some View {
-        VStack(spacing: MS.Spacing.lg) {
-            Text("Montage Settings")
-                .font(MS.Font.title)
-
-            settingCard(title: "Vibe", icon: "sparkles") {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: MS.Spacing.sm) {
-                    ForEach(MontageVibe.allCases, id: \.self) { vibe in
-                        vibeChip(vibe)
-                    }
-                }
+        VStack(spacing: 0) {
+            HStack {
+                Text("Montage Settings")
+                    .font(MS.Font.title)
+                Spacer()
             }
+            .padding(.horizontal, MS.Spacing.lg)
+            .padding(.top, MS.Spacing.lg)
+            .padding(.bottom, MS.Spacing.sm)
 
-            settingCard(title: "Focus", icon: "viewfinder") {
-                HStack(spacing: MS.Spacing.sm) {
-                    ForEach(MontageFocus.allCases, id: \.self) { focus in
-                        selectionChip(
-                            title: focus.rawValue,
-                            icon: focus.icon,
-                            isSelected: workspaceVM.project.settings.focus == focus
-                        ) {
-                            var s = workspaceVM.project.settings
-                            s.focus = focus
-                            workspaceVM.updateSettings(s)
+            Form {
+                Section("Style") {
+                    Picker("Vibe", selection: settings.vibe) {
+                        ForEach(MontageVibe.allCases, id: \.self) { vibe in
+                            Label(vibe.rawValue, systemImage: vibe.icon).tag(vibe)
+                        }
+                    }
+                    Text(settings.wrappedValue.vibe.description)
+                        .font(MS.Font.caption)
+                        .foregroundStyle(.secondary)
+
+                    Picker("Focus", selection: settings.focus) {
+                        ForEach(MontageFocus.allCases, id: \.self) { focus in
+                            Label(focus.rawValue, systemImage: focus.icon).tag(focus)
                         }
                     }
                 }
-            }
 
-            settingCard(title: "Render Quality", icon: "cpu") {
-                VStack(spacing: MS.Spacing.sm) {
-                    ForEach(RenderQuality.allCases, id: \.self) { quality in
-                        Button {
-                            var s = workspaceVM.project.settings
-                            s.renderQuality = quality
-                            workspaceVM.updateSettings(s)
-                        } label: {
-                            HStack(spacing: MS.Spacing.sm) {
-                                Image(systemName: quality.icon)
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(workspaceVM.project.settings.renderQuality == quality ? Color.accentColor : Color.secondary)
-                                    .frame(width: 24)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(quality.rawValue)
-                                        .font(MS.Font.caption)
-                                        .foregroundStyle(workspaceVM.project.settings.renderQuality == quality ? .primary : .secondary)
-                                    Text(quality.description)
-                                        .font(MS.Font.micro)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                if workspaceVM.project.settings.renderQuality == quality {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                }
-                            }
-                            .padding(MS.Spacing.sm)
-                            .background(
-                                workspaceVM.project.settings.renderQuality == quality ? Color.accentColor.opacity(0.08) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                            )
+                Section("Output") {
+                    Picker("Aspect Ratio", selection: settings.aspectRatio) {
+                        ForEach(AspectRatio.allCases, id: \.self) { ratio in
+                            Text(ratio.rawValue).tag(ratio)
                         }
-                        .buttonStyle(.plain)
                     }
-                }
-            }
 
-            settingCard(title: "Scoring Density", icon: "slider.horizontal.3") {
-                VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-                    HStack(spacing: MS.Spacing.xs) {
+                    Picker("Render Quality", selection: settings.renderQuality) {
+                        ForEach(RenderQuality.allCases, id: \.self) { quality in
+                            Text(quality.rawValue).tag(quality)
+                        }
+                    }
+                    Text(settings.wrappedValue.renderQuality.description)
+                        .font(MS.Font.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Analysis") {
+                    Picker("Scoring Density", selection: settings.scoringDensity) {
                         ForEach(ScoringDensity.allCases, id: \.self) { density in
-                            densityChip(density)
+                            Text(density.rawValue).tag(density)
                         }
                     }
-                    Text("Denser scoring picks stronger moments but takes longer. Balanced is recommended.")
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(workspaceVM.project.settings.scoringDensity.description)
-                        .font(MS.Font.micro)
+                    Text(settings.wrappedValue.scoringDensity.description)
+                        .font(MS.Font.caption)
                         .foregroundStyle(.secondary)
                 }
             }
+            .formStyle(.grouped)
 
-            MSSecondaryButton("Done") { dismiss() }
-        }
-        .padding(MS.Spacing.xl)
-        .frame(width: 420)
-    }
+            Divider()
 
-    @ViewBuilder
-    private func settingCard<C: View>(title: String, icon: String, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            Label(title, systemImage: icon).font(MS.Font.heading)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .msCard()
-    }
-
-    private func vibeChip(_ vibe: MontageVibe) -> some View {
-        let isSelected = workspaceVM.project.settings.vibe == vibe
-        return Button {
-            var s = workspaceVM.project.settings
-            s.vibe = vibe
-            workspaceVM.updateSettings(s)
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: vibe.icon).font(.system(size: 16))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                Text(vibe.rawValue).font(MS.Font.micro)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, MS.Spacing.sm)
-            .background(
-                RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1.5)
-                    .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-            )
+            .padding(MS.Spacing.md)
         }
-        .buttonStyle(.plain)
-    }
-
-    private func selectionChip(title: String, icon: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 14))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                Text(title).font(MS.Font.micro)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, MS.Spacing.sm)
-            .background(
-                isSelected ? Color.accentColor.opacity(0.08) : Color.clear,
-                in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func densityChip(_ density: ScoringDensity) -> some View {
-        let isSelected = workspaceVM.project.settings.scoringDensity == density
-        return Button {
-            var s = workspaceVM.project.settings
-            s.scoringDensity = density
-            workspaceVM.updateSettings(s)
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: density.icon).font(.system(size: 14))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                Text(density.rawValue).font(MS.Font.micro)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, MS.Spacing.sm)
-            .padding(.horizontal, 2)
-            .background(
-                isSelected ? Color.accentColor.opacity(0.08) : Color.clear,
-                in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
+        .frame(width: 440, height: 500)
     }
 }
