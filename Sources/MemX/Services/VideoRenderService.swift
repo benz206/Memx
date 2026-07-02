@@ -222,9 +222,20 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         func addKnot(_ t: Double) { knots.insert(Int((t * 1000).rounded())) }
         for seg in placed {
             addKnot(seg.plan.start)
-            if seg.plan.headOverlap > 0 { addKnot(seg.plan.start + seg.plan.headOverlap) }
+            if seg.plan.headOverlap > 0 {
+                addKnot(seg.plan.start + seg.plan.headOverlap)
+                // Interior knots so eased opacity/whip curves survive
+                // AVFoundation's linear ramp interpolation.
+                for f in RenderTimeline.easedKnotFractions {
+                    addKnot(seg.plan.start + seg.plan.headOverlap * f)
+                }
+            }
             if seg.plan.headTransition == .fadeFromBlack {
-                addKnot(seg.plan.start + fadeFromBlackDuration(seg.plan))
+                let d = RenderTimeline.fadeFromBlackDuration(seg.plan)
+                addKnot(seg.plan.start + d)
+                for f in RenderTimeline.easedKnotFractions {
+                    addKnot(seg.plan.start + d * f)
+                }
             }
             if let m = seg.motion, m.punchDuration > 0 { addKnot(seg.plan.start + m.punchDuration) }
             addKnot(seg.effectiveVisibleEnd)
@@ -245,25 +256,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         boundaries.append(compositionEnd)
 
         func opacity(for seg: PlacedSegment, at t: Double) -> Float {
-            var o: Float = 1
-            let p = seg.plan
-            switch p.headTransition {
-            case .crossfade, .dissolve, .kenBurnsDrift, .flashWhite:
-                if p.headOverlap > 0, t < p.start + p.headOverlap {
-                    o = min(o, Float(max(0, (t - p.start) / p.headOverlap)))
-                }
-            case .fadeFromBlack:
-                let d = fadeFromBlackDuration(p)
-                if d > 0, t < p.start + d {
-                    o = min(o, Float(max(0, (t - p.start) / d)))
-                }
-            case .hardCut, .whipPan:
-                break
-            }
-            if p.tailTransition == .flashWhite, p.tailOverlap > 0, t > p.visibleEnd {
-                o = min(o, Float(max(0, 1 - (t - p.visibleEnd) / p.tailOverlap)))
-            }
-            return o
+            Float(RenderTimeline.transitionOpacity(for: seg.plan, at: t))
         }
 
         func transform(for seg: PlacedSegment, at t: Double) -> CGAffineTransform {
@@ -282,16 +275,16 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 }
             }
             if p.headTransition == .whipPan, p.headOverlap > 0, t < p.start + p.headOverlap {
-                let f = max(0, (t - p.start) / p.headOverlap)
+                let g = RenderTimeline.whipProgress((t - p.start) / p.headOverlap)
                 let dir = RenderTimeline.whipDirection(boundaryIndex: p.index)
                 result = result.concatenating(
-                    CGAffineTransform(translationX: CGFloat(dir) * renderSize.width * CGFloat(1 - f), y: 0))
+                    CGAffineTransform(translationX: CGFloat(dir) * renderSize.width * CGFloat(1 - g), y: 0))
             }
             if p.tailTransition == .whipPan, p.tailOverlap > 0, t > p.visibleEnd {
-                let f = min(1, (t - p.visibleEnd) / p.tailOverlap)
+                let g = RenderTimeline.whipProgress((t - p.visibleEnd) / p.tailOverlap)
                 let dir = RenderTimeline.whipDirection(boundaryIndex: p.index + 1)
                 result = result.concatenating(
-                    CGAffineTransform(translationX: CGFloat(-dir) * renderSize.width * CGFloat(f), y: 0))
+                    CGAffineTransform(translationX: CGFloat(-dir) * renderSize.width * CGFloat(g), y: 0))
             }
             return result
         }
@@ -391,10 +384,6 @@ final class VideoRenderService: VideoRenderServiceProtocol {
     }
 
     // MARK: - Transition Helpers
-
-    private func fadeFromBlackDuration(_ plan: RenderSegmentPlan) -> Double {
-        min(0.8, plan.visibleDuration * 0.5)
-    }
 
     private func transformsEqual(_ a: CGAffineTransform, _ b: CGAffineTransform) -> Bool {
         abs(a.a - b.a) < 1e-5 && abs(a.b - b.b) < 1e-5

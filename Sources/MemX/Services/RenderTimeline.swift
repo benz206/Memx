@@ -73,10 +73,77 @@ enum RenderTimeline {
         case .flashWhite:    base = 0.15
         case .whipPan:       base = 0.25
         case .crossfade:     base = 0.5
-        case .dissolve:      base = 0.6
+        case .dissolve:      base = 0.9   // longer + slower curve than crossfade
         case .kenBurnsDrift: base = 0.8
         }
         return max(0, min(base, prevVisible * 0.45, currVisible * 0.45))
+    }
+
+    // MARK: - Easing
+    // AVFoundation lerps linearly between ramp endpoints, so eased curves are
+    // sampled at `easedKnotFractions` inside each transition window and the
+    // compositor connects the chords.
+
+    static func easeInOut(_ x: Double) -> Double {
+        let t = min(1, max(0, x))
+        return t * t * (3 - 2 * t)          // smoothstep
+    }
+
+    static func easeInQuad(_ x: Double) -> Double {
+        let t = min(1, max(0, x))
+        return t * t
+    }
+
+    static func easeOutCubic(_ x: Double) -> Double {
+        let t = min(1, max(0, x))
+        return 1 - pow(1 - t, 3)
+    }
+
+    /// Interior sample points inside an eased window; two knots keep the
+    /// piecewise-linear chord within ~2% of the smooth curve.
+    static let easedKnotFractions: [Double] = [1.0 / 3.0, 2.0 / 3.0]
+
+    static func fadeFromBlackDuration(_ plan: RenderSegmentPlan) -> Double {
+        min(0.8, plan.visibleDuration * 0.5)
+    }
+
+    /// Whip-pan slide progress — fast out, settling in.
+    static func whipProgress(_ fraction: Double) -> Double {
+        easeOutCubic(fraction)
+    }
+
+    /// Opacity of a segment at absolute time `t`: its eased head transition
+    /// combined with a flash-white tail exit.
+    ///
+    /// With stacked A/B tracks a frame composes as
+    /// `a·In + (1−a)·b·Out + (1−a)(1−b)·bg`, so the only exact cross-dissolve
+    /// is the outgoing clip held at 1.0 while the incoming eases up — fading
+    /// both would dip toward the background mid-transition. Flash-white
+    /// exploits that dip deliberately: the incoming blooms in late while the
+    /// outgoing drops fast, letting the white background flash through.
+    static func transitionOpacity(for plan: RenderSegmentPlan, at t: Double) -> Double {
+        var o = 1.0
+        switch plan.headTransition {
+        case .crossfade, .kenBurnsDrift:
+            if plan.headOverlap > 0, t < plan.start + plan.headOverlap {
+                o = min(o, easeInOut((t - plan.start) / plan.headOverlap))
+            }
+        case .dissolve, .flashWhite:
+            if plan.headOverlap > 0, t < plan.start + plan.headOverlap {
+                o = min(o, easeInQuad((t - plan.start) / plan.headOverlap))
+            }
+        case .fadeFromBlack:
+            let d = fadeFromBlackDuration(plan)
+            if d > 0, t < plan.start + d {
+                o = min(o, easeInOut((t - plan.start) / d))
+            }
+        case .hardCut, .whipPan:
+            break
+        }
+        if plan.tailTransition == .flashWhite, plan.tailOverlap > 0, t > plan.visibleEnd {
+            o = min(o, 1 - easeOutCubic((t - plan.visibleEnd) / plan.tailOverlap))
+        }
+        return max(0, min(1, o))
     }
 
     static func plan(_ sequence: [MontageSequenceItem]) -> [RenderSegmentPlan] {

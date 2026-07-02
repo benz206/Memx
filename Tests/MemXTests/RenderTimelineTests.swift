@@ -68,6 +68,86 @@ final class RenderTimelineTests: XCTestCase {
         XCTAssertEqual(d, 0.4 * 0.45, accuracy: 1e-9)
     }
 
+    // MARK: - Easing & transition opacity
+
+    private func plan(
+        head: TransitionType,
+        headOverlap: Double = 0,
+        tail: TransitionType? = nil,
+        tailOverlap: Double = 0,
+        start: Double = 0,
+        visibleEnd: Double = 4
+    ) -> RenderSegmentPlan {
+        RenderSegmentPlan(
+            index: 1,
+            start: start,
+            visibleEnd: visibleEnd,
+            presenceEnd: visibleEnd + tailOverlap,
+            headTransition: head,
+            headOverlap: headOverlap,
+            tailTransition: tail,
+            tailOverlap: tailOverlap
+        )
+    }
+
+    func testEasingCurvesHitEndpointsAndStayMonotonic() {
+        for ease in [RenderTimeline.easeInOut, RenderTimeline.easeInQuad, RenderTimeline.easeOutCubic] {
+            XCTAssertEqual(ease(0), 0, accuracy: 1e-9)
+            XCTAssertEqual(ease(1), 1, accuracy: 1e-9)
+            XCTAssertEqual(ease(-0.5), 0, accuracy: 1e-9)
+            XCTAssertEqual(ease(1.5), 1, accuracy: 1e-9)
+            var prev = -1.0
+            for step in 0...20 {
+                let v = ease(Double(step) / 20)
+                XCTAssertGreaterThanOrEqual(v, prev)
+                prev = v
+            }
+        }
+    }
+
+    func testCrossfadeEntryIsEased() {
+        let p = plan(head: .crossfade, headOverlap: 0.5)
+        // Smoothstep sits below linear early in the window…
+        XCTAssertLessThan(RenderTimeline.transitionOpacity(for: p, at: 0.125), 0.25)
+        // …and reaches full opacity at the end of the overlap.
+        XCTAssertEqual(RenderTimeline.transitionOpacity(for: p, at: 0.5), 1, accuracy: 1e-9)
+    }
+
+    func testOutgoingClipHoldsFullOpacityThroughCrossfadeTail() {
+        // The only exact cross-dissolve on stacked tracks: outgoing stays at
+        // 1.0 while the incoming eases up; fading both would dip to background.
+        let p = plan(head: .hardCut, tail: .crossfade, tailOverlap: 0.5)
+        XCTAssertEqual(RenderTimeline.transitionOpacity(for: p, at: 4.25), 1, accuracy: 1e-9)
+    }
+
+    func testDissolveStartsSlowerThanCrossfadeAndOverlapsLonger() {
+        let cross = plan(head: .crossfade, headOverlap: 0.5)
+        let diss = plan(head: .dissolve, headOverlap: 0.5)
+        XCTAssertLessThan(
+            RenderTimeline.transitionOpacity(for: diss, at: 0.125),
+            RenderTimeline.transitionOpacity(for: cross, at: 0.125)
+        )
+        XCTAssertGreaterThan(
+            RenderTimeline.overlapDuration(for: .dissolve, prevVisible: 4, currVisible: 4),
+            RenderTimeline.overlapDuration(for: .crossfade, prevVisible: 4, currVisible: 4)
+        )
+    }
+
+    func testFlashWhiteLeaksBackgroundAtMidOverlap() {
+        // Incoming blooms late, outgoing drops fast: the white background
+        // term (1-a)(1-b) must dominate at the middle of the flash window.
+        let incoming = plan(head: .flashWhite, headOverlap: 0.15, start: 4, visibleEnd: 8)
+        let outgoing = plan(head: .hardCut, tail: .flashWhite, tailOverlap: 0.15, start: 0, visibleEnd: 4)
+        let mid = 4.075
+        let a = RenderTimeline.transitionOpacity(for: incoming, at: mid)
+        let b = RenderTimeline.transitionOpacity(for: outgoing, at: mid)
+        XCTAssertGreaterThan((1 - a) * (1 - b), 0.4)
+    }
+
+    func testWhipProgressIsFastOutSlowIn() {
+        XCTAssertEqual(RenderTimeline.whipProgress(0.5), 0.875, accuracy: 1e-9)
+    }
+
     // MARK: - plan: beat lock
 
     func testPlanPreservesPlannedStartTimes() {
@@ -121,7 +201,7 @@ final class RenderTimelineTests: XCTestCase {
             item(position: 1, start: 2.0, end: 4.0, transitionIn: .dissolve),
         ]
         let plans = RenderTimeline.plan(seq)
-        XCTAssertEqual(plans[0].sourceDuration, 2.0 + 0.6, accuracy: 1e-9)
+        XCTAssertEqual(plans[0].sourceDuration, 2.0 + 0.9, accuracy: 1e-9)
     }
 
     func testNonMonotonicStartsAreRepaired() {
