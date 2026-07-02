@@ -127,7 +127,7 @@ final class BeatmapService: BeatmapServiceProtocol {
 
         onProgress(0.52, "Estimating BPM via autocorrelation...")
 
-        let bpm = estimateBPM(envelope: envelope, hopRate: hopRate)
+        let bpm = Self.estimateBPM(envelope: envelope, hopRate: hopRate)
 
         onProgress(0.66, "Detecting onsets...")
 
@@ -135,22 +135,26 @@ final class BeatmapService: BeatmapServiceProtocol {
 
         onProgress(0.76, "Generating beat grid...")
 
-        let beats = buildBeatGrid(bpm: bpm, onsets: onsets, duration: duration)
+        let beats = Self.buildBeatGrid(bpm: bpm, onsets: onsets, duration: duration)
+        let downbeat = Self.downbeatIndex(beats: beats, onsets: onsets, interval: 60.0 / bpm)
+        logGridQuality(beats: beats, onsets: onsets, bpm: bpm, downbeat: downbeat)
 
         onProgress(0.86, "Segmenting sections...")
 
         let sections = buildSections(energyCurve: energyCurve, duration: duration)
-        let drops     = onsets.filter { $0.strength > 0.75 }.prefix(6).map { BeatMoment(time: $0.time, intensity: $0.strength) }
-        let avgStr    = onsets.map(\.strength).reduce(0, +) / Double(max(onsets.count, 1))
-        let vocal     = onsets.filter { $0.strength > avgStr * 1.2 && $0.strength < 0.75 }.prefix(12).map { BeatMoment(time: $0.time, intensity: $0.strength) }
+        let drops    = Self.selectPeaks(onsets, minStrength: 0.75, maxCount: 6, minSeparation: 5.0)
+        let avgStr   = onsets.map(\.strength).reduce(0, +) / Double(max(onsets.count, 1))
+        let vocal    = Self.selectPeaks(onsets.filter { $0.strength < 0.75 },
+                                        minStrength: avgStr * 1.2, maxCount: 12, minSeparation: 3.0)
 
         let phraseSize = bpm > 140 ? 8 : 4
-        let phraseIndices = Set(stride(from: 0, to: beats.count, by: 4 * phraseSize))
+        let phraseIndices = Set(stride(from: downbeat, to: beats.count, by: 4 * phraseSize))
         let phraseStarts = phraseIndices.sorted().map { beats[$0] }
 
         let beatStrengths: [Double] = beats.indices.map { i in
             if phraseIndices.contains(i) { return 1.0 }
-            return (i % 4) == 0 ? 0.75 : (i % 4) == 2 ? 0.5 : 0.35
+            let pos = ((i - downbeat) % 4 + 4) % 4
+            return pos == 0 ? 0.75 : pos == 2 ? 0.5 : 0.35
         }
 
         onProgress(0.92, "Detecting hooks…")
@@ -170,11 +174,12 @@ final class BeatmapService: BeatmapServiceProtocol {
             energyCurve: energyCurve,
             sections: sections,
             beats: beats,
-            drops: Array(drops),
-            vocalPeaks: Array(vocal),
+            drops: drops,
+            vocalPeaks: vocal,
             phraseStarts: phraseStarts,
             beatStrengths: beatStrengths,
-            hooks: hooks
+            hooks: hooks,
+            downbeatIndex: downbeat
         )
     }
 
@@ -364,7 +369,7 @@ final class BeatmapService: BeatmapServiceProtocol {
 
     // MARK: - BPM via Autocorrelation
 
-    private func estimateBPM(envelope: [Float], hopRate: Double) -> Double {
+    static func estimateBPM(envelope: [Float], hopRate: Double) -> Double {
         // BPM is stable enough that the first ~90s resolves it.
         let n = min(envelope.count, Int(hopRate * 90.0))
         guard n > 200 else { return 120 }
@@ -373,26 +378,47 @@ final class BeatmapService: BeatmapServiceProtocol {
         let maxLag = min(n - 1, Int(hopRate * 60.0 / 50.0))
         guard minLag < maxLag else { return 120 }
 
-        var bestLag = minLag
-        var bestCorr: Float = -1
-
+        var corrs = [Double](repeating: 0, count: maxLag + 1)
         envelope.withUnsafeBufferPointer { ptr in
             for lag in minLag...maxLag {
                 let count = vDSP_Length(n - lag)
                 var corr: Float = 0
                 vDSP_dotpr(ptr.baseAddress!, 1, ptr.baseAddress! + lag, 1, &corr, count)
-                corr /= Float(n - lag)
-                if corr > bestCorr { bestCorr = corr; bestLag = lag }
+                corrs[lag] = Double(corr) / Double(n - lag)
             }
         }
 
-        let beatPeriod = Double(bestLag) / hopRate
+        // Raw autocorrelation is blind to the half/double-time ambiguity — a
+        // 140 BPM track correlates almost as well at 70. A log-Gaussian prior
+        // centered on 120 BPM (σ ≈ 0.45 octaves) picks the perceptual octave.
+        var bestLag = minLag
+        var bestScore = -Double.infinity
+        for lag in minLag...maxLag {
+            let lagBPM = 60.0 * hopRate / Double(lag)
+            let octaves = log2(lagBPM / 120.0)
+            let score = corrs[lag] * exp(-0.5 * pow(octaves / 0.45, 2))
+            if score > bestScore { bestScore = score; bestLag = lag }
+        }
+
+        // Parabolic interpolation on the raw correlation for sub-hop lag
+        // precision — a fraction of a hop per beat compounds over minutes.
+        var refinedLag = Double(bestLag)
+        if bestLag > minLag && bestLag < maxLag {
+            let y0 = corrs[bestLag - 1], y1 = corrs[bestLag], y2 = corrs[bestLag + 1]
+            let denom = y0 - 2 * y1 + y2
+            if abs(denom) > 1e-12 {
+                let delta = 0.5 * (y0 - y2) / denom
+                if abs(delta) < 1 { refinedLag += delta }
+            }
+        }
+
+        let beatPeriod = refinedLag / hopRate
         return max(60, min(180, 60.0 / beatPeriod))
     }
 
     // MARK: - Onset Detection (positive energy flux on the RMS envelope)
 
-    private struct Onset { let time: Double; let strength: Double }
+    struct Onset { let time: Double; let strength: Double }
 
     private func detectOnsets(envelope: [Float], hopRate: Double) -> [Onset] {
         guard envelope.count > 2 else { return [] }
@@ -427,18 +453,101 @@ final class BeatmapService: BeatmapServiceProtocol {
     }
 
     // MARK: - Beat Grid
+    // Phase-locked grid: each beat is predicted one interval ahead, then
+    // snapped to the strongest onset within ±12% of the beat period. The
+    // correction carries forward, so BPM estimation error and real tempo
+    // drift stop compounding — a rigid metronome grid drifts audibly off the
+    // kicks within a minute at 0.5% BPM error.
 
-    private func buildBeatGrid(bpm: Double, onsets: [Onset], duration: Double) -> [Double] {
+    static func buildBeatGrid(bpm: Double, onsets: [Onset], duration: Double) -> [Double] {
         let interval = 60.0 / bpm
+        guard interval > 0, duration > 0 else { return [] }
+
         var phase = 0.0
         let earlyWindow = duration * 0.2
         if let anchor = onsets.filter({ $0.time < earlyWindow }).max(by: { $0.strength < $1.strength }) {
             phase = anchor.time.truncatingRemainder(dividingBy: interval)
         }
+
+        let tolerance = interval * 0.12
         var beats: [Double] = []
         var t = phase < 0 ? phase + interval : phase
-        while t < duration { beats.append(t); t += interval }
+        var onsetIdx = 0
+        while t < duration {
+            while onsetIdx < onsets.count && onsets[onsetIdx].time < t - tolerance { onsetIdx += 1 }
+            var j = onsetIdx
+            var snapped: Onset? = nil
+            while j < onsets.count && onsets[j].time <= t + tolerance {
+                if snapped == nil || onsets[j].strength > snapped!.strength { snapped = onsets[j] }
+                j += 1
+            }
+            let placed = snapped?.time ?? t
+            beats.append(placed)
+            t = placed + interval
+        }
         return beats
+    }
+
+    // MARK: - Downbeat Phase
+    // The grid alone doesn't say which beat is the "1". Score the 4 candidate
+    // phases by summing onset strength landing on their beats; the phase the
+    // percussion accents wins. Bar-anchored cut patterns, phrase starts, and
+    // peak alignment all hang off this.
+
+    static func downbeatIndex(beats: [Double], onsets: [Onset], interval: Double) -> Int {
+        guard beats.count >= 8, !onsets.isEmpty, interval > 0 else { return 0 }
+        let tolerance = interval * 0.15
+        var scores = [Double](repeating: 0, count: 4)
+        var onsetIdx = 0
+        for (i, beat) in beats.enumerated() {
+            while onsetIdx < onsets.count && onsets[onsetIdx].time < beat - tolerance { onsetIdx += 1 }
+            var j = onsetIdx
+            var strength = 0.0
+            while j < onsets.count && onsets[j].time <= beat + tolerance {
+                strength = max(strength, onsets[j].strength)
+                j += 1
+            }
+            scores[i % 4] += strength
+        }
+        return scores.indices.max(by: { scores[$0] < scores[$1] }) ?? 0
+    }
+
+    // MARK: - Peak Selection
+    // Strongest-first with a minimum spacing, returned in time order. A
+    // chronological prefix would spend the whole budget on the first verse
+    // and miss the biggest hit of the final chorus.
+
+    static func selectPeaks(_ onsets: [Onset], minStrength: Double,
+                            maxCount: Int, minSeparation: Double) -> [BeatMoment] {
+        let ranked = onsets
+            .filter { $0.strength > minStrength }
+            .sorted { $0.strength > $1.strength }
+        var accepted = [Onset]()
+        for onset in ranked {
+            guard accepted.count < maxCount else { break }
+            if accepted.allSatisfy({ abs($0.time - onset.time) >= minSeparation }) {
+                accepted.append(onset)
+            }
+        }
+        return accepted
+            .sorted { $0.time < $1.time }
+            .map { BeatMoment(time: $0.time, intensity: $0.strength) }
+    }
+
+    // MARK: - Grid Quality
+
+    /// Mean absolute error between grid beats and the strong onsets they
+    /// should be explaining — the number to watch when tuning beat tracking.
+    private func logGridQuality(beats: [Double], onsets: [Onset], bpm: Double, downbeat: Int) {
+        let strong = onsets.filter { $0.strength >= 0.5 }
+        guard !beats.isEmpty, !strong.isEmpty else { return }
+        var totalError = 0.0
+        for onset in strong {
+            let nearest = beats.min(by: { abs($0 - onset.time) < abs($1 - onset.time) }) ?? onset.time
+            totalError += abs(nearest - onset.time)
+        }
+        let meanMs = totalError / Double(strong.count) * 1000
+        logger.info("Beat grid: BPM=\(bpm, format: .fixed(precision: 2)), downbeat=beat[\(downbeat)], grid-vs-onset error=\(meanMs, format: .fixed(precision: 1))ms over \(strong.count) strong onsets")
     }
 
     // MARK: - Section Segmentation (O(n) two-pointer sweep)

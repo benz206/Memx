@@ -13,6 +13,7 @@ struct Beatmap: Codable, Hashable {
     var phraseStarts: [Double] = []
     var beatStrengths: [Double] = []
     var hooks: [HookMoment] = []
+    var downbeatIndex: Int = 0          // beat index of the first true "1"
 
     var beatDuration: Double { 60.0 / max(bpm, 1) }
 
@@ -23,7 +24,8 @@ struct Beatmap: Codable, Hashable {
     var finalHookStart: Double? { hooks.map(\.startTime).max() }
 
     func barStarts(beatsPerBar: Int = 4) -> [Double] {
-        stride(from: 0, to: beats.count, by: beatsPerBar).map { beats[$0] }
+        let first = min(max(downbeatIndex, 0), max(beats.count - 1, 0))
+        return stride(from: first, to: beats.count, by: beatsPerBar).map { beats[$0] }
     }
 
     func nearestBeat(to time: Double) -> Double {
@@ -81,7 +83,7 @@ struct Beatmap: Codable, Hashable {
     }
 
     private func synthesizedStrength(beatIndex i: Int) -> Double {
-        let pos = i % 4
+        let pos = ((i - downbeatIndex) % 4 + 4) % 4
         let base: Double = pos == 0 ? 0.75 : pos == 2 ? 0.5 : 0.35
         let beatTime = i < beats.count ? beats[i] : Double(i) * beatDuration
         let half = beatDuration * 0.5
@@ -94,7 +96,7 @@ struct Beatmap: Codable, Hashable {
 extension Beatmap {
     private enum CodingKeys: String, CodingKey {
         case bpm, durationSeconds, energyCurve, sections, beats, drops, vocalPeaks
-        case phraseStarts, beatStrengths, hooks
+        case phraseStarts, beatStrengths, hooks, downbeatIndex
     }
 
     init(from decoder: Decoder) throws {
@@ -109,6 +111,7 @@ extension Beatmap {
         phraseStarts = try c.decodeIfPresent([Double].self, forKey: .phraseStarts) ?? []
         beatStrengths = try c.decodeIfPresent([Double].self, forKey: .beatStrengths) ?? []
         hooks = try c.decodeIfPresent([HookMoment].self, forKey: .hooks) ?? []
+        downbeatIndex = try c.decodeIfPresent(Int.self, forKey: .downbeatIndex) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -123,6 +126,7 @@ extension Beatmap {
         try c.encode(phraseStarts, forKey: .phraseStarts)
         try c.encode(beatStrengths, forKey: .beatStrengths)
         try c.encode(hooks, forKey: .hooks)
+        try c.encode(downbeatIndex, forKey: .downbeatIndex)
     }
 }
 
