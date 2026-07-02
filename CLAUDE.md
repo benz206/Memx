@@ -12,11 +12,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # Run tests
 
 `swift test` must be prefixed with `DEVELOPER_DIR` because XCTest is only available from Xcode, not Command Line Tools. Build and run benefit from the same `DEVELOPER_DIR` prefix when the Xcode 26 toolchain isn't selected system-wide (`xcode-select -s /Applications/Xcode.app/Contents/Developer`).
 
-The app is opened in Xcode via the `.swiftpm` wrapper. Third-party SPM dependencies: **mlx-swift** and **mlx-swift-lm** (Apple ML Research, MIT-licensed; on-device VLM inference), **swift-huggingface** and **swift-transformers** (Hugging Face, Apache-2.0; model download and tokenisation). Apple frameworks: Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, FoundationModels. All AI inference runs on-device — the only network use is a one-time download of the MLX VLM weights from Hugging Face on first launch (cached to `~/Library/Caches/huggingface`).
+The app is opened in Xcode via the `.swiftpm` wrapper. There are **no third-party SPM dependencies**. Apple frameworks: Photos, PhotosUI, AVFoundation, AppKit, SwiftUI, Vision, Accelerate, NaturalLanguage. Visual analysis and captioning go through **OpenRouter** (`OpenRouterService`); the API key is read from `.env` at the package root (via `DotEnv`) or `UserDefaults`. Audio analysis, sequencing, and rendering are fully local.
 
 ## Platform
 
-- **macOS 26+ (Tahoe)** is the minimum deployment target — the Foundation Models framework, `AVVideoComposition.Configuration` (et al.), and a handful of SwiftUI affordances require it.
+- **macOS 26+ (Tahoe)** is the minimum deployment target — `AVVideoComposition.Configuration` (et al.) and a handful of SwiftUI affordances require it.
 - `swift-tools-version: 6.2`, `swiftLanguageModes: [.v5]`. Swift 5 language mode is intentional: it keeps strict-concurrency warnings from cascading across the existing SwiftUI `Task { }` sites.
 
 ## Package Structure
@@ -24,11 +24,11 @@ The app is opened in Xcode via the `.swiftpm` wrapper. Third-party SPM dependenc
 Three targets:
 - **`MemXCore`** (`Sources/MemX/`) — library with all models, services, views, and ViewModels.
 - **`MemX`** (`Sources/MemXApp/`) — thin executable that calls `MemXApp.main()`.
-- **`MemXTests`** (`Tests/MemXTests/`) — XCTest suite (227 tests as of this writing).
+- **`MemXTests`** (`Tests/MemXTests/`) — XCTest suite.
 
 ## What This Is
 
-**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage using on-device AI. It imports a song and a set of photos/videos, analyzes the track (BPM, sections, onsets, repeating hooks), scores the visuals with Vision, generates per-asset scene captions and cinematographer-style motion prompts (both via Apple Foundation Models running locally), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4. All processing — audio analysis, photo scoring, captioning, motion prompt generation, and rendering — runs entirely on-device.
+**MemX** is a macOS 26 SwiftUI app that turns a user's Photos library into a cinematic music video montage. It imports a song and a set of photos/videos, analyzes the track locally (BPM, sections, onsets, repeating hooks), scores the visuals with an OpenRouter vision model (quality/emotion/novelty/eventLabel/caption/semanticSummary), and assembles a beat-synchronized storyboard that a real `AVFoundation` render pipeline turns into an MP4.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Three targets:
 
 ```
 App (MemXApp + ContentView)
-  └── ViewModels (@Observable) ── Services (Protocol + Singleton)
+  └── ViewModels (@Observable) ── Services (Singletons)
         └── Views                    └── Models (Structs/Enums)
 ```
 
@@ -45,38 +45,36 @@ App (MemXApp + ContentView)
 Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
 - **`AppViewModel`** — global project list, navigation state (`landing → projects → workspace(Project)`), Photos permission, on-disk persistence via `ProjectStore`.
-- **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, motion prompts, montage plan, render state, clip-shortage preflight, cancellation.
+- **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, montage plan, render state, clip-shortage preflight, cancellation, pipeline log.
 - **`ImportViewModel`** — import tab: album browsing, asset selection, filtering/sorting, PhotosPicker integration.
 
-### Services (all protocol-based singletons)
+### Services (singletons)
 
-- **`PhotosLibraryService`** — PhotoKit wrapper; `PHCachingImageManager` + `ThumbnailCache` (MainActor singleton); falls back to mock data when permissions are denied.
-- **`BeatmapService`** — real `AVAudioFile` + `vDSP` audio analysis. Downsamples to mono 22 kHz, builds an RMS envelope, estimates BPM via autocorrelation (capped at the first ~90s of envelope for speed), detects onsets via positive spectral flux, segments the track into sections (intro / verse / preChorus / chorus / drop / buildup / bridge / breakdown / outro), and clusters repeating chorus/drop sections into `HookMoment`s using an 8-dim envelope fingerprint + cosine similarity.
-- **`PhotoScoringService`** (in `AnalysisService.swift`) — Vision-powered: face rectangles, attention-based saliency, and `VNClassifyImageRequest` labels. Emits `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, plus scene labels on each `MediaAsset`. Concurrency scales with `ScoringDensity`.
-- **`VideoAnalysisService`** — samples N frames per video (N = `ScoringDensity.videoFrameSamples`, 8/14/20/30/48), scores each, and returns best-segment metadata.
-- **`SceneCaptionService`** — Generates one-sentence evocative captions using `LocalVLMService`, which runs **Qwen2-VL-2B-Instruct (4-bit)** via MLX on Apple Silicon. The actual `CGImage` pixels are fed to the model; `sceneLabels` from Vision are appended as supplementary hint text. Times out at 20 s. Returns `nil` on error or timeout so the pipeline degrades gracefully.
-- **`MotionPromptService`** — Apple Foundation Models (`SystemLanguageModel` + `LanguageModelSession`) for one-to-two-sentence cinematographer directions. Weaves `asset.sceneCaption` + `sceneLabels` into a text prompt. Falls back to a deterministic mock when the model is unavailable or times out (6s).
+- **`PhotosLibraryService`** — PhotoKit wrapper; `PHCachingImageManager` + `ThumbnailCache` (MainActor singleton) + `PHAssetCache`; falls back to mock data when permissions are denied. Album counts use `estimatedAssetCount` (full fetch only when PhotoKit reports NSNotFound).
+- **`BeatmapService`** — real `AVAudioFile` + `vDSP` audio analysis. Downsamples to mono 22 kHz, builds an RMS envelope, estimates BPM via autocorrelation (capped at the first ~90s of envelope for speed), detects onsets via positive energy flux on the envelope, segments the track into sections (intro / verse / preChorus / chorus / drop / buildup / bridge / breakdown / outro), and clusters repeating chorus/drop sections into `HookMoment`s using an 8-dim envelope fingerprint + cosine similarity.
+- **`PhotoScoringService`** (in `AnalysisService.swift`) — sends one representative frame per asset to OpenRouter for semantic scoring (`qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneCaption`, `semanticSummary`, `motionEnergy`); computes a Vision FeaturePrint (`visualEmbedding`) locally for match-cut continuity. Concurrency scales with `ScoringDensity`.
+- **`OpenRouterService`** — chat + multimodal requests against a free vision-language model (see `visionModel`/`textModel` in the file), plus `NLEmbedding`-based local sentence embeddings (`semanticEmbedding`) with a hashed-bag fallback. Tracks success/failure counters surfaced in the pipeline UI.
 - **`SequencerService`** (in `MontagePlannerService.swift`) — builds the `MontagePlan` from beatmap + scored assets. Hook-aware (see below). Exposes a `preflight(...)` call so the UI can warn before building.
-- **`MusicSuggestionService`** — matches songs to mood arc via vibe/genre/energy scoring; uses a hardcoded mock catalog.
 - **`VideoRenderService`** — real `AVMutableComposition` stitching on two alternating A/B video tracks so adjacent clips overlap. Every clip is placed at its plan `startTime` (song timeline) so cuts stay beat-locked. Storyboard transitions are rendered for real via `AVVideoCompositionLayerInstruction.Configuration` opacity/transform ramps: crossfade, dissolve, flash-white (dip through white background), whip-pan push, fade-from-black, plus Ken Burns drift and beat punch-ins on photos (pure timing/motion math lives in `RenderTimeline.swift`, unit-tested). Output via `AVAssetExportSession`.
 
 ### Key Models
 
-- **`Project`** — root container; status flows `draft → configuring → importing → analyzing → ready → exported`. `MontageSettings` now includes `scoringDensity` (decoded with `decodeIfPresent` for backward compatibility with older saved projects).
-- **`ScoringDensity`** (`verySparse / sparse / balanced / dense / veryDense`) — controls `videoFrameSamples` and service concurrency. `balanced` is the default.
-- **`MediaAsset`** — wraps a `PHAsset`; post-analysis fields include `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels: [String]?`, `sceneCaption: String?`, `motionEnergy: Float?` (0 still … 1 jumping/action; matched against audio energy in the sequencer), `semanticEmbedding: [Float]?` (Apple `NLEmbedding` sentence embedding, fully on-device), and `visualEmbedding: [Float]?` (Vision FeaturePrint, on-device, used for match-cut continuity).
+- **`Project`** — root container; status flows `draft → configuring → importing → analyzing → ready → exported`. `MontageSettings` includes `scoringDensity` (decoded with `decodeIfPresent` for backward compatibility with older saved projects).
+- **`ScoringDensity`** (`verySparse / sparse / balanced / dense / veryDense`) — controls service concurrency. `balanced` is the default.
+- **`MediaAsset`** — wraps a `PHAsset`; post-analysis fields include `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels: [String]?`, `sceneCaption: String?`, `semanticSummary: String?`, `motionEnergy: Float?` (0 still … 1 jumping/action; matched against audio energy in the sequencer), `semanticEmbedding: [Float]?` and `visualEmbedding: [Float]?`. The two embeddings are persisted as base64 Float32 blobs via custom Codable (legacy `[Float]` JSON still decodes).
 - **`Beatmap`** — BPM, duration, energy curve, `[BeatSection]`, `[Double]` beats, drops/vocal peaks, `phraseStarts`, `beatStrengths`, and `hooks: [HookMoment]`.
 - **`HookMoment`** — `startTime`, `endTime`, `repeatIndex` (chronological order within the cluster), `signatureBeats` (4 strongest beats), `similarity` (max cosine to a cluster-mate).
-- **`MontagePlan`** — final storyboard: `[MontageSequenceItem]`, `moodArc`, `suggestedSongs`. Sequence items carry `isHookMoment`, `isAnticipationHold`, `hookRepeatIndex`, and a `GradingHint` (vibe + section-aware color grading suggestion).
+- **`MontagePlan`** — final storyboard: `[MontageSequenceItem]`, `moodArc`. Sequence items carry `isHookMoment`, `isAnticipationHold`, `hookRepeatIndex`, and a `GradingHint` (vibe + section-aware color grading suggestion; display-only today).
 
 ### Analysis Pipeline
 
-`WorkspaceViewModel` orchestrates the pipeline; each service reports progress via a `(Double, String)` callback that the view-model splits into a global 0.0–1.0 range:
+`WorkspaceViewModel.runPipeline()` orchestrates; each service reports progress via a `(Double, String)` callback that the view-model splits into a global 0.0–1.0 range:
 
-1. `analyzeAudio` → `BeatmapService` (0.00 → 0.33)
-2. `scorePhotos` → `PhotoScoringService` + `VideoAnalysisService` + `SceneCaptionService` (0.33 → 0.55)
-3. `generateAllMotionPrompts` → `MotionPromptService` (0.55 → 0.77); runs **4-wide bounded concurrency** — throughput is bounded by on-device Foundation Models inference.
-4. `buildSequence` → `SequencerService` (0.77 → 1.00). Preflighted first — if the plan would run out of unique clips, `clipShortfall` is populated and `pendingShortfallAck` gates the build until the user confirms (Add Photos / Build Anyway / Dismiss).
+1. `analyzeAudio` → `BeatmapService`
+2. `scorePhotos` → `PhotoScoringService` (OpenRouter, bounded concurrency)
+3. `buildSequence` → `SequencerService`. Preflighted first — if the plan would run out of unique clips, `clipShortfall` is populated and `pendingShortfallAck` gates the build until the user confirms (Add Photos / Build Anyway / Dismiss).
+
+Analysis results are persisted on the project (`analyzedAssets`) so tab switches and relaunches don't repay OpenRouter calls.
 
 ### Sequencer / Emotional Edit Logic
 
@@ -85,23 +83,22 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 - **Vibe-aware base cut patterns.** Nostalgic lengthens durations ×1.4 with softer transitions; hype emits sub-beat bursts in drops; cinematic favors on-beat match-cuts; balanced mixes pacing.
 - **Hook anchoring (déjà vu).** The first occurrence of a hook cluster binds each signature-beat position to a specific asset. On repeat hooks, the sequencer force-reuses those assets at the same signature-beat offsets, creating a recall/payoff effect. Reused assets show a `⟲ Repeat` badge.
 - **Anticipation hold.** One bar before the final chorus/drop, a single asset holds with a dissolve-in and flash-white-out, creating a moment of suspense.
-- **Grading hints.** Each slot carries a `GradingHint` (e.g. `teal_orange`, `warm_film`, `cool_night`) derived from vibe × section type — surfaced in the storyboard detail panel as a micro-caption.
+- **Grading hints.** Each slot carries a `GradingHint` derived from vibe × section type — surfaced in the storyboard detail panel as a micro-caption.
 - **Selection-reason metadata.** Human-readable reasons populate `selectionReason` ("hook signature", "hook return", "anticipation hold", etc.) for the Why Selected card.
 
 ### Clip-Shortage Preflight
 
-`SequencerPreflight` (returned by `SequencerService.preflight(settings:assets:beatmap:)`) reports `requiredClipCount`, `availableClipCount`, `estimatedShortfall`, `estimatedShortfallSeconds`. If `hasShortfall`, `WorkspaceViewModel` stores it on `clipShortfall` and sets `pendingShortfallAck` so `StoryboardView` can render a warning banner. The user either adds more photos, confirms "Build Anyway", or dismisses.
+`SequencerPreflight` (returned by `SequencerService.preflight(settings:assets:beatmap:)`) reports `requiredClipCount`, `availableClipCount`, `estimatedShortfall`, `estimatedShortfallSeconds`. If `hasShortfall`, `WorkspaceViewModel` stores it on `clipShortfall` and sets `pendingShortfallAck` so the workspace can render a warning banner. The user either adds more photos, confirms "Build Anyway", or dismisses.
 
 ### Design System
 
-`MSDesignSystem.swift` defines spacing/radius/typography tokens as nested enums (`MS.Spacing.md`, `MS.Radius.lg`, etc.) and reusable SwiftUI components (`.msCard()`, `MSPrimaryButton`, `MSSecondaryButton`, `MSBadge`, `MSSkeletonBlock`, `MSGradientBackground`).
+`MSDesignSystem.swift` defines spacing/radius/typography tokens as nested enums (`MS.Spacing.md`, `MS.Radius.lg`, etc.), reusable SwiftUI components (`.msCard()`, `MSPrimaryButton`, `MSSecondaryButton`, `MSBadge`, `MSSkeletonBlock`, `MSGradientBackground`), and shared display mappings (`ProjectStatus.displayColor/.displayName`, `SectionType.displayColor`).
 
 ### Mock-First Development
 
-`MockDataProvider` seeds sample projects, assets, events, songs, beatmaps (including `mockBeatmapWithHooks`), and motion prompts. Services fall back to mock output when permissions are denied or network-gated features are disabled, so development in the simulator or without API keys remains productive.
+`MockDataProvider` seeds mock assets, albums, beatmaps (including `mockBeatmapWithHooks`), and a completed processing status. Services fall back to mock output when Photos permission is denied, so development without library access stays productive.
 
 ## Known Integration Gaps
 
-- **MusicKit**: `MusicSuggestionService` still uses a hardcoded mock catalog. Real MusicKit integration is a follow-up.
-- **Foundation Models image input**: resolved — `SceneCaptionService` now routes actual image pixels through `LocalVLMService` (MLX + Qwen2-VL-2B-Instruct-4bit) instead of the text-only `LanguageModelSession` path.
-- **AVFoundation deprecations**: resolved — the render pipeline uses the macOS 26 `*.Configuration` types throughout, including `addOpacityRamp`/`addTransformRamp` for transitions and Ken Burns motion.
+- **Music suggestions/MusicKit**: removed — users import their own song file.
+- **Grading hints** are display-only; `VideoRenderService` does not apply color grading yet.
