@@ -84,6 +84,12 @@ struct MediaAsset: MediaAssetProtocol, Codable {
     var visualEmbedding: [Float]?        // Vision FeaturePrint (free, on-device) for match-cut continuity
     var motionEnergy: Float?             // 0 still … 1 high-action/jumping — matched against audio energy
     var motionSamples: [Float]?          // motion energy over time (videos); sample m covers (m+0.5)·duration/count
+    var analysisVersion: Int?
+    var isUtility: Bool?
+    var faceCount: Int?
+    var focusPoint: FocusPoint?
+    var mood: String?
+    var highlightScore: Float?
     var isSelected: Bool = false
 
     // Derived
@@ -183,7 +189,8 @@ extension MediaAsset {
         case qualityScore, emotionScore, noveltyScore, clipStartTime
         case shotType, colorTemperature, faceAreaFraction
         case sceneLabels, sceneCaption, semanticSummary
-        case semanticEmbedding, visualEmbedding, motionEnergy, motionSamples, isSelected
+        case semanticEmbedding, visualEmbedding, motionEnergy, motionSamples
+        case analysisVersion, isUtility, faceCount, focusPoint, mood, highlightScore, isSelected
     }
 
     private static func embeddingData(_ v: [Float]?) -> Data? {
@@ -226,6 +233,12 @@ extension MediaAsset {
         visualEmbedding = try Self.decodeEmbedding(c, .visualEmbedding)
         motionEnergy = try c.decodeIfPresent(Float.self, forKey: .motionEnergy)
         motionSamples = try c.decodeIfPresent([Float].self, forKey: .motionSamples)
+        analysisVersion = try c.decodeIfPresent(Int.self, forKey: .analysisVersion)
+        isUtility = try c.decodeIfPresent(Bool.self, forKey: .isUtility)
+        faceCount = try c.decodeIfPresent(Int.self, forKey: .faceCount)
+        focusPoint = try c.decodeIfPresent(FocusPoint.self, forKey: .focusPoint)
+        mood = try c.decodeIfPresent(String.self, forKey: .mood)
+        highlightScore = try c.decodeIfPresent(Float.self, forKey: .highlightScore)
         isSelected = try c.decodeIfPresent(Bool.self, forKey: .isSelected) ?? false
     }
 
@@ -256,6 +269,12 @@ extension MediaAsset {
         try c.encodeIfPresent(Self.embeddingData(visualEmbedding), forKey: .visualEmbedding)
         try c.encodeIfPresent(motionEnergy, forKey: .motionEnergy)
         try c.encodeIfPresent(motionSamples, forKey: .motionSamples)
+        try c.encodeIfPresent(analysisVersion, forKey: .analysisVersion)
+        try c.encodeIfPresent(isUtility, forKey: .isUtility)
+        try c.encodeIfPresent(faceCount, forKey: .faceCount)
+        try c.encodeIfPresent(focusPoint, forKey: .focusPoint)
+        try c.encodeIfPresent(mood, forKey: .mood)
+        try c.encodeIfPresent(highlightScore, forKey: .highlightScore)
         try c.encode(isSelected, forKey: .isSelected)
     }
 }
@@ -265,6 +284,11 @@ extension MediaAsset {
 struct AssetLocation: Codable, Hashable {
     let latitude: Double
     let longitude: Double
+}
+
+struct FocusPoint: Codable, Hashable {
+    let x: Double
+    let y: Double
 }
 
 // MARK: - Album

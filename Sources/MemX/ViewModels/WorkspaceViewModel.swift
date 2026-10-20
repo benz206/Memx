@@ -384,7 +384,7 @@ final class WorkspaceViewModel {
 
     func scorePhotos() async {
         guard !assets.isEmpty, !isProcessing else { return }
-        if assets.allSatisfy({ $0.analysisScore != nil }) {
+        if allAssetsScored {
             photosScoredSuccessfully = true
             processingStatus.phase = .scoringPhotos
             processingStatus.progress = max(processingStatus.progress, 0.85)
@@ -765,6 +765,13 @@ final class WorkspaceViewModel {
             merged.colorTemperature = analyzed.colorTemperature
             merged.faceAreaFraction = analyzed.faceAreaFraction
             merged.clipStartTime = analyzed.clipStartTime
+            merged.motionSamples = analyzed.motionSamples
+            merged.analysisVersion = analyzed.analysisVersion
+            merged.isUtility = analyzed.isUtility
+            merged.faceCount = analyzed.faceCount
+            merged.focusPoint = analyzed.focusPoint
+            merged.mood = analyzed.mood
+            merged.highlightScore = analyzed.highlightScore
             return merged
         }
 
@@ -913,7 +920,11 @@ final class WorkspaceViewModel {
     var hasSong: Bool { songTrack != nil }
     var hasBeatmap: Bool { beatmap != nil }
     var hasScoredAssets: Bool { assets.contains { $0.analysisScore != nil } }
-    var allAssetsScored: Bool { !assets.isEmpty && assets.allSatisfy { $0.analysisScore != nil } }
+    var allAssetsScored: Bool {
+        !assets.isEmpty && assets.allSatisfy {
+            $0.analysisScore != nil && $0.analysisVersion == VisualSignals.analysisVersion
+        }
+    }
     var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
 }

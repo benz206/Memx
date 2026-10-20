@@ -53,6 +53,18 @@ struct VisualAnalysis {
     var clipStartTime: TimeInterval?
     var faces: Int
     var motionEnergy: Float
+    var isUtility: Bool
+    var focusPoint: FocusPoint?
+}
+
+struct VisionReadout {
+    var aesthetic: Float?
+    var aestheticsSaysUtility = false
+    var identifiers: [String] = []
+    var faceCount = 0
+    var largestFaceArea = 0.0
+    var bestFaceQuality: Float?
+    var focusPoint: FocusPoint?
 }
 
 // MARK: - PhotoScoringService
@@ -96,11 +108,12 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             let motionSamples: [Float]?
         }
 
+        let pending = assets.indices.filter { assets[$0].analysisVersion != VisualSignals.analysisVersion }
         var results = [IndexedResult?](repeating: nil, count: assets.count)
         var completed = 0
 
         try await withThrowingTaskGroup(of: IndexedResult.self) { group in
-            var nextIndex = 0
+            var nextSlot = 0
 
             func launch(_ index: Int) {
                 let asset = assets[index]
@@ -111,7 +124,9 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                         : await self.photoImage(for: asset)
                     let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
                     let motionSamples = asset.isVideo ? await self.motionSeries(for: asset) : nil
-                    var analysis = self.localAnalysis(for: asset)
+                    var readout: VisionReadout? = nil
+                    if let image { readout = await Self.visionReadout(for: image) }
+                    var analysis = self.localAnalysis(for: asset, vision: readout, motionSamples: motionSamples)
                     if let image, let warmth = Self.colorTemperature(for: image) {
                         analysis.colorTemperature = warmth
                     }
@@ -120,20 +135,20 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 }
             }
 
-            while nextIndex < min(maxConcurrent, assets.count) {
-                launch(nextIndex)
-                nextIndex += 1
+            while nextSlot < min(maxConcurrent, pending.count) {
+                launch(pending[nextSlot])
+                nextSlot += 1
             }
 
             while let result = try await group.next() {
                 results[result.index] = result
                 completed += 1
-                let progress = Double(completed) / Double(max(assets.count, 1))
-                onProgress(0.05 + progress * 0.90, "Analyzed \(completed)/\(assets.count) on-device...")
+                let progress = Double(completed) / Double(max(pending.count, 1))
+                onProgress(0.05 + progress * 0.90, "Analyzed \(completed)/\(pending.count) on-device...")
 
-                if nextIndex < assets.count {
-                    launch(nextIndex)
-                    nextIndex += 1
+                if nextSlot < pending.count {
+                    launch(pending[nextSlot])
+                    nextSlot += 1
                 }
             }
         }
@@ -141,16 +156,11 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         onProgress(0.96, "Ranking storyboard candidates...")
 
         var scoredAssets = assets
-        var faceCounts = [Int](repeating: 0, count: assets.count)
 
         for result in results.compactMap({ $0 }) {
             let a = result.analysis
-            let overall = a.qualityScore * 0.34 + a.emotionScore * 0.36 + a.noveltyScore * 0.30
             scoredAssets[result.index].qualityScore = a.qualityScore
             scoredAssets[result.index].emotionScore = a.emotionScore
-            scoredAssets[result.index].noveltyScore = a.noveltyScore
-            scoredAssets[result.index].analysisScore = overall
-            scoredAssets[result.index].eventLabel = a.eventLabel
             scoredAssets[result.index].sceneLabels = a.sceneLabels.isEmpty ? nil : a.sceneLabels
             scoredAssets[result.index].sceneCaption = a.sceneCaption.isEmpty ? nil : a.sceneCaption
             scoredAssets[result.index].semanticSummary = a.semanticSummary.isEmpty ? nil : a.semanticSummary
@@ -161,16 +171,15 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[result.index].motionEnergy = a.motionEnergy
             scoredAssets[result.index].visualEmbedding = result.visualEmbedding
             scoredAssets[result.index].motionSamples = result.motionSamples
-            if let samples = result.motionSamples, !samples.isEmpty {
-                // Measured motion beats the metadata heuristic when we have it.
-                let mean = samples.reduce(0, +) / Float(samples.count)
-                let peak = samples.max() ?? mean
-                scoredAssets[result.index].motionEnergy = min(1, mean * 0.6 + peak * 0.4)
-            }
-            faceCounts[result.index] = a.faces
+            scoredAssets[result.index].isUtility = a.isUtility
+            scoredAssets[result.index].faceCount = a.faces
+            scoredAssets[result.index].focusPoint = a.focusPoint
+            scoredAssets[result.index].analysisVersion = VisualSignals.analysisVersion
         }
 
-        let candidates: [ClipCandidate] = scoredAssets.enumerated().compactMap { index, asset in
+        Self.applyPoolSignals(to: &scoredAssets)
+
+        let candidates: [ClipCandidate] = scoredAssets.compactMap { asset in
             guard let score = asset.analysisScore else { return nil }
             return ClipCandidate(
                 assetID: asset.id,
@@ -178,7 +187,7 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 qualityScore: asset.qualityScore ?? 0.65,
                 emotionScore: asset.emotionScore ?? 0.55,
                 noveltyScore: asset.noveltyScore ?? 0.50,
-                faces: faceCounts[index],
+                faces: asset.faceCount ?? 0,
                 isIncluded: score > 0.35
             )
         }
@@ -187,6 +196,57 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         scoringLog("■ on-device scorePhotos DONE — \(included)/\(candidates.count) candidates included")
         onProgress(1.0, "Visual analysis complete")
         return PhotoScoringResult(scoredAssets: scoredAssets, candidates: candidates)
+    }
+
+    static func applyPoolSignals(to assets: inout [MediaAsset]) {
+        let novelty = VisualSignals.noveltyScores(assets.map(\.visualEmbedding))
+        let events = VisualSignals.eventLabels(dates: assets.map(\.creationDate),
+                                               locations: assets.map(\.location))
+        for i in assets.indices {
+            guard assets[i].analysisVersion == VisualSignals.analysisVersion else { continue }
+            let n = novelty[i] ?? (assets[i].isVideo ? 0.64 : 0.5)
+            assets[i].noveltyScore = n
+            assets[i].eventLabel = events[i] ?? "memory moment"
+            assets[i].analysisScore = (assets[i].isUtility ?? false)
+                ? 0.1
+                : VisualSignals.overallScore(quality: assets[i].qualityScore ?? 0.6,
+                                             emotion: assets[i].emotionScore ?? 0.5,
+                                             novelty: n)
+        }
+    }
+
+    static func visionReadout(for image: CGImage) async -> VisionReadout {
+        var readout = VisionReadout()
+
+        if let aesthetics = try? await CalculateImageAestheticsScoresRequest().perform(on: image) {
+            readout.aesthetic = aesthetics.overallScore
+            readout.aestheticsSaysUtility = aesthetics.isUtility
+        }
+
+        if let classes = try? await ClassifyImageRequest().perform(on: image) {
+            readout.identifiers = classes
+                .filter { $0.confidence >= 0.1 && $0.hasMinimumRecall(0.01, forPrecision: 0.9) }
+                .sorted { $0.confidence > $1.confidence }
+                .map(\.identifier)
+        }
+
+        let faces = (try? await DetectFaceCaptureQualityRequest().perform(on: image)) ?? []
+        readout.faceCount = faces.count
+        if !faces.isEmpty {
+            readout.largestFaceArea = faces
+                .map { Double($0.boundingBox.width * $0.boundingBox.height) }
+                .max() ?? 0
+            readout.bestFaceQuality = faces.compactMap { $0.captureQuality?.score }.max()
+            let union = faces.map(\.boundingBox.cgRect).reduce(CGRect.null) { $0.union($1) }
+            readout.focusPoint = FocusPoint(x: Double(union.midX), y: Double(1 - union.midY))
+        } else if let saliency = try? await GenerateAttentionBasedSaliencyImageRequest().perform(on: image),
+                  let main = saliency.salientObjects.max(by: {
+                      $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height
+                  }) {
+            let box = main.boundingBox.cgRect
+            readout.focusPoint = FocusPoint(x: Double(box.midX), y: Double(1 - box.midY))
+        }
+        return readout
     }
 
     // MARK: - Visual Embedding (Vision FeaturePrint, on-device)
@@ -366,42 +426,41 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
 
     // MARK: - Local Analysis
 
-    /// Metadata-derived scoring. Leaves `sceneCaption` and `semanticSummary`
-    /// empty so the UI doesn't render identical boilerplate strings across
-    /// every clip. Basic structural labels and a per-asset score still get
-    /// filled in.
-    private func localAnalysis(for asset: MediaAsset) -> VisualAnalysis {
-        let labels = fallbackLabels(for: asset)
-        let isPortrait = asset.aspectRatio < 0.85
-        let shot: ShotType = isPortrait ? .medium : .wide
+    func localAnalysis(for asset: MediaAsset, vision: VisionReadout?,
+                       motionSamples: [Float]?) -> VisualAnalysis {
+        let v = vision ?? VisionReadout()
+        let isUtility = VisualSignals.isUtility(identifiers: v.identifiers,
+                                                aestheticsSaysUtility: v.aestheticsSaysUtility)
 
-        // Small per-asset jitter so confidence scores aren't all identical
-        // — keeps the storyboard from showing a wall of "60% Low" badges.
-        let h = abs(asset.id.hashValue)
-        let jitter = Double((h % 14) - 7) / 100.0  // -0.07 ... +0.07
+        var motion = asset.isVideo ? Float(0.55) : VisualSignals.photoMotionEnergy(faceCount: v.faceCount, identifiers: v.identifiers)
+        if let samples = motionSamples, !samples.isEmpty {
+            // Measured motion beats the metadata heuristic when we have it.
+            let mean = samples.reduce(0, +) / Float(samples.count)
+            let peak = samples.max() ?? mean
+            motion = min(1, mean * 0.6 + peak * 0.4)
+        }
 
         return VisualAnalysis(
-            qualityScore: Float(min(0.95, max(0.45, (asset.isFavorite ? 0.78 : 0.64) + jitter))),
-            emotionScore: Float(min(0.95, max(0.40, (asset.isFavorite ? 0.72 : 0.55) + jitter * 0.8))),
-            noveltyScore: Float(min(0.90, max(0.35, (asset.isVideo ? 0.64 : 0.50) + jitter * 1.2))),
-            eventLabel: asset.creationDate.map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) } ?? "memory moment",
-            sceneLabels: labels,
+            qualityScore: VisualSignals.qualityScore(aesthetic: v.aesthetic, isUtility: isUtility,
+                                                     bestFaceQuality: v.bestFaceQuality,
+                                                     isFavorite: asset.isFavorite),
+            emotionScore: VisualSignals.emotionScore(faceCount: v.faceCount, identifiers: v.identifiers,
+                                                     isFavorite: asset.isFavorite),
+            noveltyScore: asset.isVideo ? 0.64 : 0.5,
+            eventLabel: nil,
+            sceneLabels: VisualSignals.displayLabels(v.identifiers),
             sceneCaption: "",
             semanticSummary: "",
-            shotType: shot,
+            shotType: VisualSignals.shotType(faceCount: v.faceCount, largestFaceArea: v.largestFaceArea,
+                                             identifiers: v.identifiers, isVideo: asset.isVideo,
+                                             motionEnergy: motion),
             colorTemperature: 0.5,
-            faceAreaFraction: nil,
+            faceAreaFraction: v.faceCount > 0 ? v.largestFaceArea : nil,
             clipStartTime: asset.isVideo ? min(max(asset.duration * 0.20, 0), max(asset.duration - 3, 0)) : nil,
-            faces: 0,
-            motionEnergy: Float(min(0.9, max(0.1, (asset.isVideo ? 0.55 : 0.32) + jitter)))
+            faces: v.faceCount,
+            motionEnergy: motion,
+            isUtility: isUtility,
+            focusPoint: v.focusPoint
         )
-    }
-
-    private func fallbackLabels(for asset: MediaAsset) -> [String] {
-        var labels: [String] = [asset.isVideo ? "video" : "photo"]
-        if asset.isFavorite { labels.append("favorite") }
-        if asset.aspectRatio > 1.4 { labels.append("wide") }
-        if asset.aspectRatio < 0.85 { labels.append("portrait") }
-        return labels
     }
 }
