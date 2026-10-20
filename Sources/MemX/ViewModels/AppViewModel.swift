@@ -34,8 +34,9 @@ final class AppViewModel {
     var photosPermissionStatus = PhotosLibraryService.shared.authorizationStatus()
 
     init() {
-        loadProjects()
-        cleanUpStaleProjectData()
+        if loadProjects() {
+            cleanUpStaleProjectData()
+        }
         Task.detached {
             PhotosLibraryService.shared.cleanupTemporaryFiles()
         }
@@ -156,11 +157,15 @@ final class AppViewModel {
         logger.debug("persisted \(self.projects.count) projects")
     }
 
-    private func loadProjects() {
+    private func loadProjects() -> Bool {
         migrateFromUserDefaultsIfNeeded()
-        let loaded = ProjectStore.shared.load()
+        guard let loaded = ProjectStore.shared.load() else {
+            logger.error("project list unreadable — skipping stale-file cleanup")
+            return false
+        }
         projects = loaded
         logger.info("loaded \(self.projects.count) projects from disk")
+        return true
     }
 
     private func migrateFromUserDefaultsIfNeeded() {

@@ -1,21 +1,37 @@
 import Foundation
+import OSLog
+
+private let logger = Logger(subsystem: "com.memx.app", category: "store")
 
 final class ProjectStore {
     static let shared = ProjectStore()
 
     private let fileURL: URL
 
-    private init() {
+    private convenience init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let memxDir = appSupport.appendingPathComponent("MemX", isDirectory: true)
-        fileURL = memxDir.appendingPathComponent("projects.json")
+        self.init(fileURL: memxDir.appendingPathComponent("projects.json"))
     }
 
-    func load() -> [Project] {
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
+    func load() -> [Project]? {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([Project].self, from: data)) ?? []
+        do {
+            return try decoder.decode([Project].self, from: data)
+        } catch {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let backup = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("projects.unreadable-\(stamp).json")
+            try? FileManager.default.copyItem(at: fileURL, to: backup)
+            logger.error("projects.json could not be decoded (\(error.localizedDescription, privacy: .public)); backed up to \(backup.lastPathComponent, privacy: .public)")
+            return nil
+        }
     }
 
     func save(_ projects: [Project]) {
