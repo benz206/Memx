@@ -14,6 +14,7 @@ struct Project: Identifiable, Codable, Hashable {
     var songTrack: SongTrack?
     var montagePlan: MontagePlan?
     var exportedVideoURL: URL?
+    var beatmap: Beatmap?
 
     init(
         id: UUID = UUID(),
@@ -32,7 +33,7 @@ struct Project: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, updatedAt, assetIDs, analyzedAssets, settings, status, songTrack, montagePlan, exportedVideoURL
+        case id, title, createdAt, updatedAt, assetIDs, analyzedAssets, settings, status, songTrack, montagePlan, exportedVideoURL, beatmap
     }
 
     init(from decoder: Decoder) throws {
@@ -48,6 +49,7 @@ struct Project: Identifiable, Codable, Hashable {
         songTrack = try c.decodeIfPresent(SongTrack.self, forKey: .songTrack)
         montagePlan = try c.decodeIfPresent(MontagePlan.self, forKey: .montagePlan)
         exportedVideoURL = try c.decodeIfPresent(URL.self, forKey: .exportedVideoURL)
+        beatmap = try c.decodeIfPresent(Beatmap.self, forKey: .beatmap)
     }
 }
 

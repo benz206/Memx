@@ -135,4 +135,20 @@ final class ProjectModelTests: XCTestCase {
         XCTAssertEqual(decoded.aspectRatio, settings.aspectRatio)
         XCTAssertEqual(decoded.renderQuality, settings.renderQuality)
     }
+
+    func testProjectPersistsBeatmap() throws {
+        var project = Project(title: "Song")
+        project.beatmap = MockDataProvider.mockBeatmap()
+        let decoded = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        XCTAssertEqual(decoded.beatmap?.bpm, project.beatmap?.bpm)
+        XCTAssertEqual(decoded.beatmap?.beats.count, project.beatmap?.beats.count)
+    }
+
+    func testProjectWithoutBeatmapStillDecodes() throws {
+        let data = try JSONEncoder().encode(Project(title: "Legacy"))
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "beatmap")
+        let decoded = try JSONDecoder().decode(Project.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(decoded.beatmap)
+    }
 }

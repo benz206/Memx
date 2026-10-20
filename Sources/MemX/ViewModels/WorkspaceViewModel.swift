@@ -143,6 +143,7 @@ final class WorkspaceViewModel {
         self.renderService = renderService
         self.processingStatus = ProcessingStatus(projectID: project.id)
         self.songTrack = project.songTrack
+        self.beatmap = project.beatmap
 
         if let url = project.exportedVideoURL, FileManager.default.fileExists(atPath: url.path) {
             self.renderedVideoURL = url
@@ -362,6 +363,7 @@ final class WorkspaceViewModel {
                 }
             }
             beatmap = result
+            project.beatmap = result
             logger.info("Audio analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), duration=\(result.durationSeconds, format: .fixed(precision: 1))s, sections=\(result.sections.count)")
 
             if var t = songTrack {
@@ -710,6 +712,7 @@ final class WorkspaceViewModel {
     private func invalidateGeneratedOutputs(clearBeatmap: Bool = false) {
         if clearBeatmap {
             beatmap = nil
+            project.beatmap = nil
         }
 
         montagePlan = nil
