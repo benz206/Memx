@@ -53,7 +53,7 @@ enum ShotUnderstandingService {
         do {
             let response = try await session.respond(
                 generating: ShotLog.self,
-                options: GenerationOptions(sampling: .greedy)
+                options: GenerationOptions(samplingMode: .greedy)
             ) {
                 "Log this shot. Detector hints (may be wrong): \(hints). Faces detected: \(faceCount)."
                 Attachment(image)
