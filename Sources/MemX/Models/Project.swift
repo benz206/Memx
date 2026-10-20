@@ -216,6 +216,13 @@ enum ScoringDensity: String, Codable, CaseIterable, Hashable {
         }
     }
 
+    var usesShotUnderstanding: Bool {
+        switch self {
+        case .verySparse, .sparse: return false
+        case .balanced, .dense, .veryDense: return true
+        }
+    }
+
     var icon: String {
         switch self {
         case .verySparse: return "hare.fill"

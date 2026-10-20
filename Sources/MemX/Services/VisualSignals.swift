@@ -76,8 +76,10 @@ enum VisualSignals {
         return clamp(m)
     }
 
-    static func overallScore(quality: Float, emotion: Float, novelty: Float) -> Float {
-        quality * 0.45 + emotion * 0.35 + novelty * 0.20
+    static func overallScore(quality: Float, emotion: Float, novelty: Float,
+                             highlight: Float? = nil) -> Float {
+        guard let highlight else { return quality * 0.45 + emotion * 0.35 + novelty * 0.20 }
+        return quality * 0.40 + emotion * 0.25 + novelty * 0.15 + highlight * 0.20
     }
 
     static func shotType(faceCount: Int, largestFaceArea: Double, identifiers: [String],

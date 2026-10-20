@@ -21,33 +21,33 @@ final class SemanticEmbeddingService: SemanticEnrichmentServiceProtocol {
 
         var enriched = assets
         onProgress(0.35, "Embedding visual semantics...")
+        let sentence = NLEmbedding.sentenceEmbedding(for: .english)
         for i in enriched.indices {
             guard !Task.isCancelled else { return enriched }
-            enriched[i].semanticEmbedding = localEmbedding(for: semanticInput(for: enriched[i]))
+            enriched[i].semanticEmbedding = localEmbedding(for: semanticInput(for: enriched[i]), using: sentence)
         }
 
         onProgress(1.0, "Semantic enrichment complete")
         return enriched
     }
 
-    private func semanticInput(for asset: MediaAsset) -> String {
+    func semanticInput(for asset: MediaAsset) -> String {
         [
             asset.sceneCaption,
+            asset.semanticSummary,
             asset.sceneLabels?.joined(separator: ", "),
-            asset.eventLabel,
-            asset.shotType?.rawValue,
-            asset.isVideo ? "video" : "photo"
+            asset.shotType.map { "\($0.rawValue) shot" }
         ]
         .compactMap { $0 }
         .filter { !$0.isEmpty }
         .joined(separator: ". ")
     }
 
-    private func localEmbedding(for text: String) -> [Float] {
+    func localEmbedding(for text: String, using sentence: NLEmbedding?) -> [Float] {
         // Apple's on-device sentence embedding (free, ~512-dim, real semantic
         // geometry). The hash bag-of-words below only covers the edge case
         // where the embedding model asset isn't available on this Mac.
-        if let sentence = NLEmbedding.sentenceEmbedding(for: .english),
+        if let sentence,
            !text.isEmpty,
            let vec = sentence.vector(for: String(text.prefix(300)).lowercased()) {
             return normalized(vec.map(Float.init))

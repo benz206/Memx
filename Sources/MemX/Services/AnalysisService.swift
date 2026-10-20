@@ -55,6 +55,8 @@ struct VisualAnalysis {
     var motionEnergy: Float
     var isUtility: Bool
     var focusPoint: FocusPoint?
+    var mood: String? = nil
+    var highlight: Float? = nil
 }
 
 struct VisionReadout {
@@ -98,7 +100,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
         }
 
         let maxConcurrent = Self.concurrencyLimit(for: density)
-        scoringLog("▶︎ on-device scorePhotos START — \(assets.count) assets, density=\(density.rawValue), concurrency=\(maxConcurrent)")
+        let understands = density.usesShotUnderstanding && ShotUnderstandingService.isAvailable
+        scoringLog("▶︎ on-device scorePhotos START — \(assets.count) assets, density=\(density.rawValue), concurrency=\(maxConcurrent), understanding=\(understands)")
         onProgress(0.03, "Preparing \(assets.count) assets for on-device analysis...")
 
         struct IndexedResult {
@@ -125,8 +128,18 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                     let embedding = image.flatMap { Self.featurePrintEmbedding(for: $0) }
                     let motionSamples = asset.isVideo ? await self.motionSeries(for: asset) : nil
                     var readout: VisionReadout? = nil
-                    if let image { readout = await Self.visionReadout(for: image) }
-                    var analysis = self.localAnalysis(for: asset, vision: readout, motionSamples: motionSamples)
+                    var understanding: ShotUnderstanding? = nil
+                    if let image {
+                        let r = await Self.visionReadout(for: image)
+                        readout = r
+                        if understands, !VisualSignals.isUtility(identifiers: r.identifiers,
+                                                                 aestheticsSaysUtility: r.aestheticsSaysUtility) {
+                            understanding = await ShotUnderstandingService.understand(
+                                image, labels: VisualSignals.displayLabels(r.identifiers), faceCount: r.faceCount)
+                        }
+                    }
+                    var analysis = self.localAnalysis(for: asset, vision: readout, motionSamples: motionSamples,
+                                                      understanding: understanding)
                     if let image, let warmth = Self.colorTemperature(for: image) {
                         analysis.colorTemperature = warmth
                     }
@@ -174,6 +187,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             scoredAssets[result.index].isUtility = a.isUtility
             scoredAssets[result.index].faceCount = a.faces
             scoredAssets[result.index].focusPoint = a.focusPoint
+            scoredAssets[result.index].mood = a.mood
+            scoredAssets[result.index].highlightScore = a.highlight
             scoredAssets[result.index].analysisVersion = VisualSignals.analysisVersion
         }
 
@@ -211,7 +226,8 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
                 ? 0.1
                 : VisualSignals.overallScore(quality: assets[i].qualityScore ?? 0.6,
                                              emotion: assets[i].emotionScore ?? 0.5,
-                                             novelty: n)
+                                             novelty: n,
+                                             highlight: assets[i].highlightScore)
         }
     }
 
@@ -427,12 +443,19 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
     // MARK: - Local Analysis
 
     func localAnalysis(for asset: MediaAsset, vision: VisionReadout?,
-                       motionSamples: [Float]?) -> VisualAnalysis {
+                       motionSamples: [Float]?,
+                       understanding: ShotUnderstanding? = nil) -> VisualAnalysis {
         let v = vision ?? VisionReadout()
         let isUtility = VisualSignals.isUtility(identifiers: v.identifiers,
                                                 aestheticsSaysUtility: v.aestheticsSaysUtility)
 
         var motion = asset.isVideo ? Float(0.55) : VisualSignals.photoMotionEnergy(faceCount: v.faceCount, identifiers: v.identifiers)
+        var emotion = VisualSignals.emotionScore(faceCount: v.faceCount, identifiers: v.identifiers,
+                                                 isFavorite: asset.isFavorite)
+        if let u = understanding {
+            emotion = emotion * 0.5 + u.emotion * 0.5
+            motion = motion * 0.4 + u.energy * 0.6
+        }
         if let samples = motionSamples, !samples.isEmpty {
             // Measured motion beats the metadata heuristic when we have it.
             let mean = samples.reduce(0, +) / Float(samples.count)
@@ -444,13 +467,12 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             qualityScore: VisualSignals.qualityScore(aesthetic: v.aesthetic, isUtility: isUtility,
                                                      bestFaceQuality: v.bestFaceQuality,
                                                      isFavorite: asset.isFavorite),
-            emotionScore: VisualSignals.emotionScore(faceCount: v.faceCount, identifiers: v.identifiers,
-                                                     isFavorite: asset.isFavorite),
+            emotionScore: emotion,
             noveltyScore: asset.isVideo ? 0.64 : 0.5,
             eventLabel: nil,
             sceneLabels: VisualSignals.displayLabels(v.identifiers),
-            sceneCaption: "",
-            semanticSummary: "",
+            sceneCaption: understanding?.caption ?? "",
+            semanticSummary: understanding?.summary ?? "",
             shotType: VisualSignals.shotType(faceCount: v.faceCount, largestFaceArea: v.largestFaceArea,
                                              identifiers: v.identifiers, isVideo: asset.isVideo,
                                              motionEnergy: motion),
@@ -460,7 +482,9 @@ final class PhotoScoringService: PhotoScoringServiceProtocol {
             faces: v.faceCount,
             motionEnergy: motion,
             isUtility: isUtility,
-            focusPoint: v.focusPoint
+            focusPoint: v.focusPoint,
+            mood: understanding?.mood,
+            highlight: understanding?.highlight
         )
     }
 }
