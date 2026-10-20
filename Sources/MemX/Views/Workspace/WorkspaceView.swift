@@ -98,8 +98,12 @@ struct WorkspaceView: View {
         let state = workspaceVM.stageState(for: tab)
 
         HStack(spacing: MS.Spacing.sm) {
-            Label(tab.rawValue, systemImage: tab.icon)
-                .font(MS.Font.body)
+            Label {
+                Text(tab.rawValue)
+                    .font(MS.Font.body)
+            } icon: {
+                Image(systemName: tab.icon)
+            }
             Spacer(minLength: 0)
             stepIcon(for: tab)
         }
@@ -111,67 +115,72 @@ struct WorkspaceView: View {
     private func stepIcon(for tab: WorkspaceTab) -> some View {
         switch workspaceVM.stageState(for: tab) {
         case .complete:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.green)
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(MSColor.success)
         case .running:
             ProgressView()
                 .controlSize(.mini)
         case .blocked:
             Image(systemName: "lock.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 9))
+                .foregroundStyle(MSColor.inkFaint)
         case .current, .available:
-            EmptyView()
+            Text("\(tab.stepNumber)")
+                .font(MS.Font.mono)
+                .foregroundStyle(MSColor.inkFaint)
         }
     }
 
     private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.xs) {
-            MSDivider()
-            VStack(alignment: .leading, spacing: 6) {
-                if let song = workspaceVM.songTrack {
-                    MSStatRow(label: "Song", value: song.displayTitle, icon: "music.note")
-                    if let bpm = song.bpm {
-                        MSStatRow(label: "BPM", value: "\(Int(bpm))", icon: "waveform")
-                    }
-                } else {
-                    MSStatRow(label: "Song", value: "None", icon: "music.note")
+        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Project").msEyebrow()
+                    .padding(.bottom, 1)
+                MSStatRow(label: "Song", value: workspaceVM.songTrack?.displayTitle ?? "None")
+                if let bpm = workspaceVM.songTrack?.bpm {
+                    MSStatRow(label: "Tempo", value: "\(Int(bpm)) BPM")
                 }
-                MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)", icon: "photo")
-                MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)", icon: "video")
-                MSStatRow(label: "Status", value: workspaceVM.project.status.displayName, icon: "info.circle")
+                MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)")
+                MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)")
+            }
 
-                if workspaceVM.hasSong && !workspaceVM.assets.isEmpty {
-                    MSDivider()
+            if workspaceVM.hasSong && !workspaceVM.assets.isEmpty {
+                Group {
                     if workspaceVM.isProcessing {
                         // While processing, show only Cancel — cleaner than a
                         // loading primary + cancel stacked together.
                         if workspaceVM.isCancellable {
-                            MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
-                                workspaceVM.cancelPipeline()
+                            Button { workspaceVM.cancelPipeline() } label: {
+                                MSButtonLabel(title: "Cancel", icon: "xmark").frame(maxWidth: .infinity)
                             }
+                            .buttonStyle(.ms(.danger))
                         }
                     } else if workspaceVM.hasPlan {
-                        MSSecondaryButton("Re-run Pipeline", icon: "arrow.clockwise") {
-                            Task { await workspaceVM.runPipeline() }
+                        Button { Task { await workspaceVM.runPipeline() } } label: {
+                            MSButtonLabel(title: "Re-run Pipeline", icon: "arrow.clockwise").frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.ms(.secondary))
                         .help("Run Pipeline (⌘R)")
                     } else {
-                        MSPrimaryButton(
-                            "Run Pipeline",
-                            icon: "sparkles",
-                            isLoading: false
-                        ) {
-                            Task { await workspaceVM.runPipeline() }
+                        Button { Task { await workspaceVM.runPipeline() } } label: {
+                            MSButtonLabel(title: "Run Pipeline", icon: "sparkles").frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.ms(.primary))
                         .disabled(!workspaceVM.canRunPipeline)
                         .help("Run Pipeline (⌘R)")
                     }
                 }
+                .padding(.top, MS.Spacing.xs)
             }
-            .padding(MS.Spacing.sm)
         }
+        .padding(12)
+        .background(MSColor.surface, in: RoundedRectangle(cornerRadius: MS.Radius.md + 2, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MS.Radius.md + 2, style: .continuous)
+                .strokeBorder(MSColor.line, lineWidth: 1)
+        )
+        .padding(MS.Spacing.sm)
     }
 
     // MARK: - Detail
@@ -186,15 +195,15 @@ struct WorkspaceView: View {
 
             if workspaceVM.isRestoringAssets {
                 HStack(spacing: MS.Spacing.sm) {
-                    ProgressView().controlSize(.small)
+                    ProgressView().controlSize(.mini)
                     Text("Loading media…")
                         .font(MS.Font.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MSColor.inkMuted)
                     Spacer()
                 }
                 .padding(.horizontal, MS.Spacing.md)
-                .padding(.vertical, MS.Spacing.sm)
-                .background(.regularMaterial)
+                .frame(height: 32)
+                .background(MSColor.surface)
                 .overlay(alignment: .bottom) { MSDivider() }
             }
 
@@ -224,44 +233,41 @@ struct WorkspaceView: View {
                     StoryboardView()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(MSColor.canvas)
         .environment(workspaceVM)
     }
 
     private var stageOverviewBar: some View {
-        HStack(alignment: .center, spacing: MS.Spacing.md) {
+        HStack(alignment: .center, spacing: MS.Spacing.sm) {
+            Text("Step \(workspaceVM.selectedTab.stepNumber) of \(WorkspaceTab.allCases.count)")
+                .font(MS.Font.mono)
+                .foregroundStyle(MSColor.inkFaint)
             Text(workspaceVM.stageDetail(for: workspaceVM.selectedTab))
                 .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MSColor.inkMuted)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Spacer(minLength: MS.Spacing.md)
 
             if let previous = workspaceVM.previousStage(before: workspaceVM.selectedTab) {
-                Button {
+                MSIconButton(icon: "chevron.left", help: "Previous stage (⇧⌘[)") {
                     workspaceVM.goToStage(previous)
-                } label: {
-                    Image(systemName: "chevron.left")
                 }
-                .buttonStyle(.borderless)
-                .help("Previous stage (⇧⌘[)")
             }
 
             if let next = workspaceVM.nextStage(after: workspaceVM.selectedTab) {
-                Button {
+                MSIconButton(icon: "chevron.right", help: "Next stage (⇧⌘])") {
                     workspaceVM.goToStage(next)
-                } label: {
-                    Image(systemName: "chevron.right")
                 }
-                .buttonStyle(.borderless)
                 .disabled(!workspaceVM.canOpenStage(next))
-                .help("Next stage (⇧⌘])")
             }
         }
         .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, 6)
-        .background(.bar)
+        .frame(height: 36)
+        .background(MSColor.surface)
         .overlay(alignment: .bottom) { MSDivider() }
     }
 
@@ -272,34 +278,30 @@ struct WorkspaceView: View {
         message: String,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: icon).foregroundStyle(.orange)
+        HStack(spacing: MS.Spacing.sm + 2) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(MSColor.warning)
             Text(message)
                 .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MSColor.ink)
+                .lineLimit(2)
             Spacer()
             trailing()
         }
         .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.orange.opacity(0.08))
-        .overlay(alignment: .bottom) { MSDivider() }
+        .padding(.vertical, 9)
+        .background(MSColor.warning.opacity(0.08))
+        .overlay(alignment: .bottom) { MSColor.warning.opacity(0.2).frame(height: 1) }
     }
 
     private func bannerLinkButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .font(MS.Font.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
+            .buttonStyle(.ms(.secondary, size: .small))
     }
 
     private func bannerDismissButton(action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
+        MSIconButton(icon: "xmark", help: "Dismiss", action: action)
     }
 
     private func stageNavigationBanner(_ message: String) -> some View {
@@ -399,7 +401,8 @@ struct WorkspaceView: View {
             MSBadge(
                 text: workspaceVM.project.status.displayName,
                 color: workspaceVM.project.status.displayColor,
-                size: .small
+                size: .small,
+                showsDot: true
             )
         }
     }

@@ -7,7 +7,7 @@ import Photos
 struct AssetThumbnailView: View {
     let asset: MediaAsset
     var size: CGFloat = 120
-    var cornerRadius: CGFloat = MS.Radius.sm
+    var cornerRadius: CGFloat = MS.Radius.md
     var isSelected: Bool = false
     var showOverlay: Bool = true
 
@@ -68,10 +68,10 @@ struct AssetThumbnailView: View {
     @ViewBuilder
     private var fallbackIcon: some View {
         ZStack {
-            Color.secondary.opacity(0.1)
+            MSColor.surface2
             Image(systemName: asset.mediaType.icon)
-                .font(.system(size: size * 0.3))
-                .foregroundStyle(.secondary)
+                .font(.system(size: size * 0.22))
+                .foregroundStyle(MSColor.inkFaint)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
@@ -80,15 +80,12 @@ struct AssetThumbnailView: View {
     private var selectionOverlay: some View {
         if isSelected {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(Color.accentColor, lineWidth: 2.5)
+                .strokeBorder(Color.accentColor, lineWidth: 2)
                 .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.12))
-                )
-                .overlay(
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 18, weight: .semibold))
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
                         .background(Color.accentColor, in: Circle())
                         .padding(6),
                     alignment: .topTrailing
@@ -114,22 +111,18 @@ struct AssetGridCell: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 6) {
                 AssetThumbnailView(
                     asset: asset,
                     size: size,
                     isSelected: isSelected
                 )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(asset.filename ?? asset.id.prefix(8).description)
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(asset.creationDate.map { formatDate($0) } ?? "—")
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.secondary)
-                }
+                Text(asset.creationDate.map { formatDate($0) } ?? "—")
+                    .font(MS.Font.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(isSelected ? MSColor.inkBright : MSColor.inkMuted)
+                    .padding(.horizontal, 2)
             }
         }
         .buttonStyle(.plain)

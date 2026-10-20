@@ -17,8 +17,17 @@ struct SongImportView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: MS.Spacing.lg) {
-                header
+            VStack(alignment: .leading, spacing: MS.Spacing.lg) {
+                MSPageHeader(
+                    title: "Song",
+                    subtitle: "Every cut, hold, and transition is timed to this track."
+                ) {
+                    if workspaceVM.hasSong {
+                        MSSecondaryButton("Replace Song", icon: "arrow.triangle.2.circlepath") {
+                            showFilePicker = true
+                        }
+                    }
+                }
 
                 if let song = workspaceVM.songTrack {
                     songCard(song)
@@ -27,16 +36,17 @@ struct SongImportView: View {
                 }
 
                 if workspaceVM.hasBeatmap, let beatmap = workspaceVM.beatmap {
-                    beatmapCard(beatmap)
+                    beatmapStats(beatmap)
+                    structureCard(beatmap)
                 }
 
                 settingsCard
 
                 if workspaceVM.hasSong {
-                    continueCard
+                    continueRow
                 }
             }
-            .padding(MS.Spacing.xl)
+            .msPage(maxWidth: 880)
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -52,64 +62,43 @@ struct SongImportView: View {
                 break
             }
         }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Song")
-                    .font(MS.Font.title)
-                Text("Every cut, hold, and transition is timed to this track.")
-                    .font(MS.Font.body)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        .sheet(isPresented: $showSettings) {
+            SettingsSheet()
+                .environment(workspaceVM)
         }
     }
 
     // MARK: - Drop Zone
 
     private var dropZone: some View {
-        VStack(spacing: MS.Spacing.lg) {
-            ZStack {
-                RoundedRectangle(cornerRadius: MS.Radius.lg, style: .continuous)
-                    .strokeBorder(
-                        isTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
-                        style: StrokeStyle(lineWidth: 2, dash: [8, 5])
-                    )
-                    .background(
-                        isTargeted ? Color.accentColor.opacity(0.06) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: MS.Radius.lg, style: .continuous)
-                    )
-                    .animation(.easeOut(duration: 0.2), value: isTargeted)
-
-                VStack(spacing: MS.Spacing.md) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.accentColor.opacity(0.1))
-                            .frame(width: 56, height: 56)
-                        Image(systemName: "music.note")
-                            .font(.system(size: 24))
-                            .foregroundStyle(Color.accentColor)
-                    }
-
-                    VStack(spacing: 6) {
-                        Text("Drop a song here")
-                            .font(MS.Font.heading)
-                        Text("Supports MP3, M4A, WAV, AAC, AIFF")
-                            .font(MS.Font.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    MSSecondaryButton("Choose File", icon: "folder") {
-                        showFilePicker = true
-                    }
-                }
-                .padding(MS.Spacing.xxl)
+        VStack(spacing: 10) {
+            Image(systemName: "music.note")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(isTargeted ? MSColor.inkBright : MSColor.inkMuted)
+                .frame(width: 40, height: 40)
+                .background(MSColor.surface2, in: RoundedRectangle(cornerRadius: MS.Radius.md + 2, style: .continuous))
+            Text("Drop a song here")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(MSColor.inkBright)
+            Text("MP3, M4A, WAV, AAC or AIFF")
+                .font(MS.Font.caption)
+                .foregroundStyle(MSColor.inkMuted)
+            MSSecondaryButton("Choose File…", icon: "folder") {
+                showFilePicker = true
             }
-            .frame(minHeight: 220)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, minHeight: 240)
+        .background(
+            (isTargeted ? MSColor.surface2 : MSColor.surface),
+            in: RoundedRectangle(cornerRadius: MS.Radius.lg, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: MS.Radius.lg, style: .continuous)
+                .strokeBorder(isTargeted ? MSColor.inkMuted : MSColor.lineStrong,
+                              style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+        )
+        .animation(.easeOut(duration: 0.15), value: isTargeted)
             .onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
                 guard let provider = providers.first else { return false }
                 _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.audio.identifier) { url, _ in
@@ -123,57 +112,57 @@ struct SongImportView: View {
                 }
                 return true
             }
-        }
-        .msCard()
     }
 
     // MARK: - Song Card (after import)
 
     private func songCard(_ song: SongTrack) -> some View {
-        HStack(spacing: MS.Spacing.md) {
-            ZStack {
-                RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .frame(width: 48, height: 48)
-                Image(systemName: song.fileFormatIcon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(Color.accentColor)
-            }
+        HStack(spacing: 12) {
+            Image(systemName: song.fileFormatIcon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(MSColor.inkMuted)
+                .frame(width: 40, height: 40)
+                .background(MSColor.surface2, in: RoundedRectangle(cornerRadius: MS.Radius.md + 2, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(song.displayTitle)
-                    .font(MS.Font.heading)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(MSColor.inkBright)
                     .lineLimit(1)
                 Text(song.displayArtist)
                     .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: MS.Spacing.sm) {
-                    if song.durationSeconds > 0 {
-                        MSBadge(text: song.durationString, size: .small)
-                    }
-                    if let bpm = song.bpm {
-                        MSBadge(text: "\(Int(bpm)) BPM", color: .purple, size: .small)
-                    }
-                    MSBadge(text: song.fileFormat.uppercased(), size: .small)
-                }
+                    .foregroundStyle(MSColor.inkMuted)
             }
 
             Spacer()
 
-            MSSecondaryButton("Change", icon: "arrow.triangle.2.circlepath") {
-                showFilePicker = true
+            HStack(spacing: 6) {
+                if song.durationSeconds > 0 {
+                    MSBadge(text: song.durationString, size: .small)
+                }
+                MSBadge(text: song.fileFormat.uppercased(), size: .small)
             }
         }
-        .msCard()
+        .msCard(padding: 14)
     }
 
     // MARK: - Beatmap Card
 
-    private func beatmapCard(_ beatmap: Beatmap) -> some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.md) {
-            MSSectionHeader(title: "Beatmap", subtitle: "\(beatmap.beats.count) beats · \(beatmap.sections.count) sections · \(beatmap.drops.count) drops")
+    private func beatmapStats(_ beatmap: Beatmap) -> some View {
+        MSStatStrip(stats: [
+            MSStat(label: "Tempo", value: "\(Int(beatmap.bpm.rounded()))", sub: "BPM"),
+            MSStat(label: "Length", value: Self.clock(beatmap.durationSeconds), sub: "\(beatmap.beats.count) beats"),
+            MSStat(label: "Sections", value: "\(beatmap.sections.count)",
+                   sub: "\(beatmap.sections.filter { $0.type == .chorus || $0.type == .drop }.count) chorus / drop"),
+            MSStat(label: "Hooks", value: "\(beatmap.hooks.count)", sub: "repeating moments"),
+            MSStat(label: "Drops", value: "\(beatmap.drops.count)", sub: "\(beatmap.vocalPeaks.count) vocal peaks"),
+        ])
+    }
 
-            // Section strips
+    private func structureCard(_ beatmap: Beatmap) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MSSectionHeader(title: "Structure", subtitle: "Sections detected from energy and onsets.")
+
             GeometryReader { geo in
                 HStack(spacing: 2) {
                     ForEach(beatmap.sections) { section in
@@ -181,31 +170,30 @@ struct SongImportView: View {
                     }
                 }
             }
-            .frame(height: 32)
+            .frame(height: 28)
 
-            // Section legend
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: MS.Spacing.sm) {
-                    ForEach(beatmap.sections) { section in
-                        HStack(spacing: 4) {
-                            Image(systemName: section.type.icon)
-                                .font(.system(size: 9))
-                            Text(section.type.rawValue)
-                                .font(MS.Font.micro)
-                        }
-                        .foregroundStyle(section.type.displayColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(section.type.displayColor.opacity(0.1), in: Capsule())
+            HStack {
+                Text("0:00")
+                Spacer()
+                Text(Self.clock(beatmap.durationSeconds / 2))
+                Spacer()
+                Text(Self.clock(beatmap.durationSeconds))
+            }
+            .font(MS.Font.mono)
+            .foregroundStyle(MSColor.inkFaint)
+
+            let types = beatmap.sections.map(\.type).reduce(into: [SectionType]()) { seen, t in
+                if !seen.contains(t) { seen.append(t) }
+            }
+            HStack(spacing: 14) {
+                ForEach(types, id: \.self) { type in
+                    HStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 2).fill(type.displayColor).frame(width: 8, height: 8)
+                        Text(type.rawValue)
+                            .font(MS.Font.caption)
+                            .foregroundStyle(MSColor.inkMuted)
                     }
                 }
-            }
-
-            // Stats row
-            HStack(spacing: MS.Spacing.lg) {
-                statChip(icon: "bolt.fill", label: "Drops", value: "\(beatmap.drops.count)", color: .red)
-                statChip(icon: "waveform", label: "Beats", value: "\(beatmap.beats.count)", color: .blue)
-                statChip(icon: "mic.fill", label: "Vocal peaks", value: "\(beatmap.vocalPeaks.count)", color: .purple)
             }
         }
         .msCard()
@@ -213,81 +201,76 @@ struct SongImportView: View {
 
     private func sectionStrip(_ section: BeatSection, totalDuration: Double, width: CGFloat) -> some View {
         let ratio = CGFloat(section.duration / totalDuration)
-        return RoundedRectangle(cornerRadius: 4, style: .continuous)
-            .fill(section.type.displayColor.opacity(0.6 + section.energyAvg * 0.4))
-            .frame(width: max(4, width * ratio - 2), height: 32)
-            .help("\(section.type.rawValue) (\(Int(section.start))s–\(Int(section.end))s)")
+        return RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(section.type.displayColor.opacity(0.35 + section.energyAvg * 0.5))
+            .frame(width: max(4, width * ratio - 2), height: 28)
+            .help("\(section.type.rawValue) (\(Self.clock(section.start))–\(Self.clock(section.end)))")
     }
 
-    private func statChip(icon: String, label: String, value: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 10)).foregroundStyle(color)
-            Text("\(value) \(label)").font(MS.Font.micro).foregroundStyle(.secondary)
-        }
+    private static func clock(_ seconds: Double) -> String {
+        let s = Int(seconds.rounded())
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: - Settings Card
 
     private var settingsCard: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.md) {
-            MSSectionHeader(title: "Montage Settings")
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: MS.Spacing.sm) {
-                settingRow(title: "Vibe", value: workspaceVM.project.settings.vibe.rawValue, icon: workspaceVM.project.settings.vibe.icon)
-                settingRow(title: "Focus", value: workspaceVM.project.settings.focus.rawValue, icon: workspaceVM.project.settings.focus.icon)
-                settingRow(title: "Aspect Ratio", value: workspaceVM.project.settings.aspectRatio.rawValue, icon: "aspectratio.fill")
-                settingRow(title: "Render", value: workspaceVM.project.settings.renderQuality.rawValue, icon: workspaceVM.project.settings.renderQuality.icon)
+        let settings = workspaceVM.project.settings
+        return VStack(alignment: .leading, spacing: 0) {
+            MSPanelHeader(title: "Montage Settings") {
+                MSSecondaryButton("Edit", icon: "slider.horizontal.3", size: .small) {
+                    showSettings = true
+                }
             }
 
-            MSSecondaryButton("Edit Settings", icon: "slider.horizontal.3") {
-                showSettings = true
+            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    settingRow(title: "Vibe", value: settings.vibe.rawValue, icon: settings.vibe.icon)
+                    settingRow(title: "Focus", value: settings.focus.rawValue, icon: settings.focus.icon)
+                }
+                MSDivider().gridCellUnsizedAxes(.horizontal)
+                GridRow {
+                    settingRow(title: "Aspect Ratio", value: settings.aspectRatio.rawValue, icon: "aspectratio")
+                    settingRow(title: "Render", value: settings.renderQuality.rawValue, icon: settings.renderQuality.icon)
+                }
             }
         }
-        .msCard()
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet()
-                .environment(workspaceVM)
-        }
+        .msCard(padding: 0)
     }
 
     // MARK: - Continue Card
 
-    private var continueCard: some View {
-        HStack {
-            Text("Song imported. Next: pick your photos.")
-                .font(MS.Font.body)
-                .foregroundStyle(.secondary)
-
+    private var continueRow: some View {
+        HStack(spacing: MS.Spacing.sm) {
             Spacer()
-
+            Text("Next: pick your photos")
+                .font(MS.Font.caption)
+                .foregroundStyle(MSColor.inkMuted)
             MSPrimaryButton("Continue", icon: "arrow.right") {
                 workspaceVM.goToStage(.photos)
             }
             .keyboardShortcut(.defaultAction)
         }
-        .msCard()
     }
 
     // MARK: - Helpers
 
     private func settingRow(title: String, value: String, icon: String) -> some View {
-        HStack(spacing: MS.Spacing.sm) {
+        HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(MS.Font.micro)
-                    .foregroundStyle(.tertiary)
-                Text(value)
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.primary)
-            }
+                .font(.system(size: 12))
+                .foregroundStyle(MSColor.inkFaint)
+                .frame(width: 18)
+            Text(title)
+                .font(MS.Font.caption)
+                .foregroundStyle(MSColor.inkMuted)
             Spacer()
+            Text(value)
+                .font(MS.Font.body.weight(.medium))
+                .foregroundStyle(MSColor.inkBright)
         }
-        .padding(MS.Spacing.sm)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous))
+        .padding(.horizontal, MS.Spacing.md)
+        .frame(height: 40)
     }
 }
 
@@ -370,7 +353,7 @@ struct SettingsSheet: View {
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.ms(.primary))
                     .keyboardShortcut(.defaultAction)
             }
             .padding(MS.Spacing.md)

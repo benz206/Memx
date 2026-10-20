@@ -28,16 +28,9 @@ struct ConfidenceBadge: View {
         }
         var color: Color {
             switch self {
-            case .high:   return .green
-            case .medium: return .orange
-            case .low:    return .red
-            }
-        }
-        var icon: String {
-            switch self {
-            case .high:   return "checkmark.seal.fill"
-            case .medium: return "minus.circle.fill"
-            case .low:    return "exclamationmark.triangle.fill"
+            case .high:   return MSColor.success
+            case .medium: return MSColor.warning
+            case .low:    return MSColor.danger
             }
         }
     }
@@ -45,22 +38,12 @@ struct ConfidenceBadge: View {
     var body: some View {
         switch style {
         case .pill:
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(tier.color)
-                    .frame(width: 6, height: 6)
-                Text("\(Int(score * 100))% \(tier.label)")
-                    .font(MS.Font.micro)
-                    .foregroundStyle(tier.color)
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tier.color.opacity(0.1), in: Capsule())
+            MSBadge(text: "\(Int(score * 100))% \(tier.label)", color: tier.color, size: .small, showsDot: true)
 
         case .icon:
-            Image(systemName: tier.icon)
-                .font(.system(size: 12))
-                .foregroundStyle(tier.color)
+            Text("\(Int(score * 100))")
+                .font(MS.Font.mono)
+                .foregroundStyle(tier == .low ? tier.color : MSColor.inkFaint)
                 .help("\(Int(score * 100))% confidence")
         }
     }
@@ -75,31 +58,37 @@ struct EmptyStateView: View {
     var action: (title: String, handler: () -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: MS.Spacing.md) {
-            ZStack {
-                Circle()
-                    .fill(.quaternary)
-                    .frame(width: 72, height: 72)
-                Image(systemName: icon)
-                    .font(.system(size: 28))
-                    .foregroundStyle(.tertiary)
-            }
-            VStack(spacing: 6) {
-                Text(title)
-                    .font(MS.Font.heading)
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(MS.Font.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 280)
-            }
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(MSColor.inkMuted)
+                .frame(width: 40, height: 40)
+                .background(MSColor.surface2, in: RoundedRectangle(cornerRadius: MS.Radius.md + 2, style: .continuous))
+                .padding(.bottom, 2)
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(MSColor.inkBright)
+            Text(subtitle)
+                .font(MS.Font.body)
+                .foregroundStyle(MSColor.inkMuted)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .frame(maxWidth: 340)
             if let action {
                 MSPrimaryButton(action.title, action: action.handler)
-                    .padding(.top, 4)
+                    .padding(.top, 6)
             }
         }
-        .padding(MS.Spacing.xxl)
+        .padding(.horizontal, MS.Spacing.lg)
+        .padding(.vertical, 40)
+        .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: MS.Radius.lg, style: .continuous)
+                .strokeBorder(MSColor.lineStrong, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                .frame(maxWidth: 480)
+        )
+        .padding(MS.Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

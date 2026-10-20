@@ -1,262 +1,133 @@
 import SwiftUI
 
 // MARK: - PipelineRunView
-//
-// Full-screen "Run Pipeline" stage. Takes over the workspace detail area
-// when the user kicks off the full pipeline. Shows phase rail on the left,
-// live progress + activity log on the right.
 
 struct PipelineRunView: View {
     @Environment(WorkspaceViewModel.self) private var workspaceVM
 
     var body: some View {
-        HStack(spacing: 0) {
-            phaseRail
-                .frame(width: 280)
-                .background(.regularMaterial)
+        ScrollView {
+            VStack(alignment: .leading, spacing: MS.Spacing.lg) {
+                MSPageHeader(
+                    title: "Analysis",
+                    subtitle: "Beat detection, on-device photo understanding, and sequencing."
+                ) {
+                    actionRow
+                }
 
-            MSVerticalDivider()
-                .frame(maxHeight: .infinity)
+                MSStatStrip(stats: stats)
 
-            activityPane
+                progressPanel
+
+                if let err = workspaceVM.processingStatus.error {
+                    MSCallout(tone: .danger, title: "Pipeline failed", message: err)
+                } else if !workspaceVM.isProcessing && workspaceVM.processingStatus.isComplete {
+                    MSCallout(tone: .success, title: "Storyboard ready",
+                              message: "\(workspaceVM.montagePlan?.sequence.count ?? 0) clips assembled and cut to the beat.")
+                } else if !workspaceVM.isProcessing && workspaceVM.montagePlan == nil {
+                    MSCallout(message: workspaceVM.cancelledNotice ?? "Pipeline stopped before completion. Press Run Pipeline to retry.")
+                }
+
+                activityLog
+            }
+            .msPage(maxWidth: 880)
         }
     }
 
-    // MARK: - Phase Rail
-
-    private var phaseRail: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Pipeline")
-                    .font(MS.Font.heading)
-                Text("Processing stages")
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(MS.Spacing.md)
-
-            MSDivider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    let phases: [ProcessingPhase] = [.analyzingAudio, .scoringPhotos, .sequencing, .complete]
-                    ForEach(Array(phases.enumerated()), id: \.element) { idx, phase in
-                        ProcessingPhaseRow(
-                            phase: phase,
-                            isActive: workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing,
-                            isComplete: phaseIsComplete(phase)
-                        )
-                        if idx < phases.count - 1 {
-                            Rectangle()
-                                .fill(.separator)
-                                .frame(width: 1, height: 14)
-                                .padding(.leading, 27)
-                        }
-                    }
-                }
-                .padding(MS.Spacing.md)
-            }
-
-            MSDivider()
-
-            stats
-                .padding(MS.Spacing.md)
-
-            Spacer(minLength: 0)
+    private var stats: [MSStat] {
+        var result = [MSStat]()
+        if let bm = workspaceVM.beatmap {
+            result.append(MSStat(label: "Tempo", value: "\(Int(bm.bpm.rounded()))", sub: "BPM"))
+            result.append(MSStat(label: "Beats", value: "\(bm.beats.count)",
+                                 sub: bm.hooks.isEmpty ? "no hooks" : "\(bm.hooks.count) hooks"))
+        } else {
+            result.append(MSStat(label: "Tempo", value: "—", sub: "not analyzed"))
         }
-    }
-
-    private var stats: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.xs) {
-            Text("Run Stats")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
-            if let song = workspaceVM.songTrack {
-                MSStatRow(label: "Song", value: song.displayTitle, icon: "music.note")
-            }
-            if let bm = workspaceVM.beatmap {
-                MSStatRow(label: "BPM", value: "\(Int(bm.bpm))", icon: "metronome")
-                MSStatRow(label: "Beats", value: "\(bm.beats.count)", icon: "waveform.path.ecg")
-                if !bm.hooks.isEmpty {
-                    MSStatRow(label: "Hooks", value: "\(bm.hooks.count)", icon: "arrow.triangle.2.circlepath")
-                }
-            }
-            MSStatRow(label: "Photos", value: "\(workspaceVM.photoCount)", icon: "photo")
-            MSStatRow(label: "Videos", value: "\(workspaceVM.videoCount)", icon: "video")
-            if workspaceVM.hasScoredAssets {
-                MSStatRow(label: "Scored", value: "\(scoredAssetCount)/\(workspaceVM.totalAssetCount)", icon: "star.fill")
-            }
-            if let plan = workspaceVM.montagePlan {
-                MSStatRow(label: "Clips", value: "\(plan.sequence.count)", icon: "film.stack")
-            }
-        }
+        result.append(MSStat(label: "Analyzed", value: "\(scoredAssetCount)/\(workspaceVM.totalAssetCount)",
+                             sub: "\(workspaceVM.photoCount) photos · \(workspaceVM.videoCount) videos"))
+        result.append(MSStat(label: "Clips", value: workspaceVM.montagePlan.map { "\($0.sequence.count)" } ?? "—",
+                             sub: workspaceVM.montagePlan == nil ? "not built" : "in storyboard"))
+        return result
     }
 
     private var scoredAssetCount: Int {
         workspaceVM.assets.filter { $0.analysisScore != nil }.count
     }
 
-    // MARK: - Activity Pane
+    // MARK: - Progress
 
-    private var activityPane: some View {
-        VStack(spacing: 0) {
-            header
-            MSDivider()
-            ScrollView {
-                VStack(spacing: MS.Spacing.lg) {
-                    heroProgress
-                    if let err = workspaceVM.processingStatus.error {
-                        errorBanner(err)
-                    } else if !workspaceVM.isProcessing && workspaceVM.processingStatus.isComplete {
-                        successBanner
-                    } else if !workspaceVM.isProcessing && workspaceVM.montagePlan == nil {
-                        idleNotice
-                    }
-                    activityLog
-                    actionRow
+    private var progressPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                let phases: [ProcessingPhase] = [.analyzingAudio, .scoringPhotos, .sequencing]
+                ForEach(Array(phases.enumerated()), id: \.element) { idx, phase in
+                    if idx > 0 { MSVerticalDivider() }
+                    ProcessingPhaseRow(
+                        phase: phase,
+                        isActive: workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing,
+                        isComplete: phaseIsComplete(phase)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, MS.Spacing.md)
+                    .padding(.vertical, 12)
                 }
-                .padding(MS.Spacing.lg)
             }
-        }
-    }
+            .fixedSize(horizontal: false, vertical: true)
 
-    private var header: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Text("Analysis")
-                .font(MS.Font.heading)
-            Spacer()
-            phaseBadge
-        }
-        .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.bar)
-    }
+            MSDivider()
 
-    private var phaseBadge: some View {
-        let phase = workspaceVM.processingStatus.phase
-        let label: String = {
-            if workspaceVM.processingStatus.error != nil { return "Error" }
-            if workspaceVM.processingStatus.isComplete { return "Complete" }
-            return phase.rawValue
-        }()
-        let color: Color = {
-            if workspaceVM.processingStatus.error != nil { return .red }
-            if workspaceVM.processingStatus.isComplete { return .green }
-            if workspaceVM.isProcessing { return .orange }
-            return .secondary
-        }()
-        return MSBadge(text: label, color: color, size: .small)
-    }
-
-    private var heroProgress: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(workspaceVM.processingStatus.message.isEmpty
-                     ? workspaceVM.processingStatus.phase.description
-                     : workspaceVM.processingStatus.message)
-                    .font(MS.Font.title)
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Spacer()
-                Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
-                    .font(MS.Font.heading)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-
-            ProgressView(value: workspaceVM.processingStatus.progress)
-                .progressViewStyle(.linear)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(workspaceVM.processingStatus.message.isEmpty
+                         ? workspaceVM.processingStatus.phase.description
+                         : workspaceVM.processingStatus.message)
+                        .font(MS.Font.body.weight(.medium))
+                        .foregroundStyle(MSColor.inkBright)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
+                        .font(MS.Font.mono)
+                        .foregroundStyle(MSColor.inkMuted)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(MSColor.surface2)
+                        Capsule()
+                            .fill(workspaceVM.processingStatus.error != nil ? MSColor.danger : Color.accentColor)
+                            .frame(width: max(0, geo.size.width * workspaceVM.processingStatus.progress))
+                    }
+                }
+                .frame(height: 6)
                 .animation(.easeOut(duration: 0.25), value: workspaceVM.processingStatus.progress)
-
-            HStack(spacing: 4) {
-                phaseSegment(phase: .analyzingAudio)
-                phaseSegment(phase: .scoringPhotos)
-                phaseSegment(phase: .sequencing)
             }
-            .frame(height: 4)
+            .padding(MS.Spacing.md)
         }
-        .padding(MS.Spacing.md)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: MS.Radius.md, style: .continuous))
+        .msCard(padding: 0)
     }
 
-    private func phaseSegment(phase: ProcessingPhase) -> some View {
-        let isActive = workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing
-        let isComplete = phaseIsComplete(phase)
-        let color: Color = isComplete ? .green : (isActive ? .orange : Color.secondary.opacity(0.25))
-        return Capsule().fill(color)
-    }
-
-    private var idleNotice: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "pause.circle")
-                .foregroundStyle(.secondary)
-            Text(workspaceVM.cancelledNotice ?? "Pipeline stopped before completion. Press Run Pipeline to retry.")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(MS.Spacing.sm)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-    }
-
-    private var successBanner: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundStyle(.green)
-            Text("Storyboard ready — \(workspaceVM.montagePlan?.sequence.count ?? 0) clips assembled.")
-                .font(MS.Font.caption)
-                .foregroundStyle(.primary)
-            Spacer()
-        }
-        .padding(MS.Spacing.sm)
-        .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-    }
-
-    private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: MS.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-            Text(message)
-                .font(MS.Font.caption)
-                .foregroundStyle(.primary)
-            Spacer()
-        }
-        .padding(MS.Spacing.sm)
-        .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
-    }
+    // MARK: - Activity
 
     private var activityLog: some View {
-        VStack(alignment: .leading, spacing: MS.Spacing.sm) {
-            HStack {
-                Text("Activity")
-                    .font(MS.Font.heading)
-                Spacer()
-                Text("\(workspaceVM.pipelineLog.count) entries")
-                    .font(MS.Font.micro)
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            MSPanelHeader(title: "Activity", count: workspaceVM.pipelineLog.count)
+
             if workspaceVM.pipelineLog.isEmpty {
-                HStack {
-                    Text("No activity yet.")
-                        .font(MS.Font.caption)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                }
-                .padding(MS.Spacing.md)
-                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+                Text("No activity yet.")
+                    .font(MS.Font.caption)
+                    .foregroundStyle(MSColor.inkFaint)
+                    .frame(maxWidth: .infinity, minHeight: 72)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 4) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(workspaceVM.pipelineLog) { entry in
                                 logRow(entry)
                                     .id(entry.id)
                             }
                         }
-                        .padding(MS.Spacing.sm)
+                        .padding(.vertical, 6)
                     }
-                    .frame(maxHeight: 280)
-                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+                    .frame(maxHeight: 300)
                     .onChange(of: workspaceVM.pipelineLog.count) { _, _ in
                         if let last = workspaceVM.pipelineLog.last {
                             withAnimation(.easeOut(duration: 0.15)) {
@@ -267,29 +138,28 @@ struct PipelineRunView: View {
                 }
             }
         }
+        .msCard(padding: 0)
     }
 
     private func logRow(_ entry: PipelineLogEntry) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: MS.Spacing.sm) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(Self.timeFormatter.string(from: entry.timestamp))
-                .font(MS.Font.micro)
-                .foregroundStyle(.tertiary)
-                .frame(width: 56, alignment: .leading)
+                .foregroundStyle(MSColor.inkFaint)
             Text("\(Int(entry.progress * 100))%")
-                .font(MS.Font.micro)
-                .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .trailing)
-                .monospacedDigit()
-            Image(systemName: entry.phase.icon)
-                .font(.system(size: 9))
-                .foregroundStyle(phaseColor(entry.phase))
-                .frame(width: 12)
+                .foregroundStyle(MSColor.inkFaint)
+                .frame(width: 34, alignment: .trailing)
+            Circle()
+                .fill(phaseColor(entry.phase))
+                .frame(width: 6, height: 6)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
             Text(entry.message)
-                .font(MS.Font.caption)
-                .foregroundStyle(.primary)
+                .foregroundStyle(MSColor.ink)
                 .lineLimit(2)
             Spacer(minLength: 0)
         }
+        .font(MS.Font.mono)
+        .padding(.horizontal, MS.Spacing.md)
+        .padding(.vertical, 3)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -303,8 +173,8 @@ struct PipelineRunView: View {
         case .analyzingAudio:    return .blue
         case .scoringPhotos:     return .orange
         case .sequencing:        return .purple
-        case .complete:          return .green
-        case .idle:              return .secondary
+        case .complete:          return MSColor.success
+        case .idle:              return MSColor.inkFaint
         }
     }
 
@@ -312,29 +182,26 @@ struct PipelineRunView: View {
 
     @ViewBuilder
     private var actionRow: some View {
-        HStack(spacing: MS.Spacing.sm) {
-            if workspaceVM.isCancellable {
-                MSSecondaryButton("Cancel Pipeline", icon: "xmark", isDestructive: true) {
-                    workspaceVM.cancelPipeline()
-                }
-                .help("Stop (⌘.)")
-            } else if workspaceVM.montagePlan != nil {
-                MSPrimaryButton("View Storyboard", icon: "film.stack.fill") {
-                    workspaceVM.goToStage(.storyboard)
-                }
-                .help("Storyboard (⌘4)")
-                MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
-                    Task { await workspaceVM.runPipeline() }
-                }
-                .help("Run Pipeline (⌘R)")
-            } else {
-                MSPrimaryButton("Run Pipeline", icon: "sparkles") {
-                    Task { await workspaceVM.runPipeline() }
-                }
-                .disabled(!workspaceVM.canRunPipeline)
-                .help("Run Pipeline (⌘R)")
+        if workspaceVM.isCancellable {
+            MSSecondaryButton("Cancel", icon: "xmark", isDestructive: true) {
+                workspaceVM.cancelPipeline()
             }
-            Spacer()
+            .help("Stop (⌘.)")
+        } else if workspaceVM.montagePlan != nil {
+            MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
+                Task { await workspaceVM.runPipeline() }
+            }
+            .help("Run Pipeline (⌘R)")
+            MSPrimaryButton("View Storyboard", icon: "arrow.right") {
+                workspaceVM.goToStage(.storyboard)
+            }
+            .help("Storyboard (⌘4)")
+        } else {
+            MSPrimaryButton("Run Pipeline", icon: "sparkles") {
+                Task { await workspaceVM.runPipeline() }
+            }
+            .disabled(!workspaceVM.canRunPipeline)
+            .help("Run Pipeline (⌘R)")
         }
     }
 
@@ -362,42 +229,36 @@ struct ProcessingPhaseRow: View {
     let isComplete: Bool
 
     var body: some View {
-        HStack(spacing: MS.Spacing.sm) {
+        HStack(spacing: 10) {
             ZStack {
                 Circle()
                     .fill(circleColor)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 22, height: 22)
                 if isActive {
-                    ProgressView().controlSize(.small).tint(.white)
+                    ProgressView().controlSize(.mini)
                 } else {
                     Image(systemName: isComplete ? "checkmark" : phase.icon)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isComplete || isActive ? .white : .secondary)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(isComplete ? MSColor.success : MSColor.inkFaint)
                 }
             }
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(phase.rawValue)
-                    .font(MS.Font.caption)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .foregroundStyle(isActive ? .primary : (isComplete ? .secondary : .tertiary))
-                if isActive {
-                    Text(phase.description)
-                        .font(MS.Font.micro)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+                    .font(MS.Font.caption.weight(.medium))
+                    .foregroundStyle(isActive || isComplete ? MSColor.inkBright : MSColor.inkMuted)
+                Text(isActive ? "Running" : (isComplete ? "Done" : "Waiting"))
+                    .font(MS.Font.micro.weight(.regular))
+                    .foregroundStyle(isActive ? Color.accentColor : MSColor.inkFaint)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, MS.Spacing.sm)
         .animation(.easeInOut(duration: 0.2), value: isActive)
     }
 
     private var circleColor: Color {
-        if isActive   { return .accentColor }
-        if isComplete { return .green }
-        return Color.secondary.opacity(0.2)
+        if isActive   { return Color.accentColor.opacity(0.14) }
+        if isComplete { return MSColor.success.opacity(0.14) }
+        return MSColor.surface2
     }
 }

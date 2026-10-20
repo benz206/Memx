@@ -47,9 +47,8 @@ struct ImportView: View {
 
     private var albumSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Albums")
-                .font(MS.Font.caption)
-                .foregroundStyle(.secondary)
+            Text("Library")
+                .msEyebrow()
                 .padding(.horizontal, MS.Spacing.md)
                 .padding(.top, MS.Spacing.md)
                 .padding(.bottom, MS.Spacing.xs)
@@ -83,8 +82,10 @@ struct ImportView: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
-        .frame(width: 200)
+        .frame(width: 220)
+        .background(MSColor.canvasDeep)
     }
 
     private func selectAlbum(_ album: MSAlbum?) {
@@ -93,25 +94,25 @@ struct ImportView: View {
     }
 
     private func albumRow(label: String, icon: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        HStack(spacing: MS.Spacing.sm) {
+        HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .foregroundStyle(isSelected ? Color.accentColor : MSColor.inkFaint)
                 .frame(width: 16)
             Text(label)
-                .font(MS.Font.body)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .font(MS.Font.body.weight(isSelected ? .medium : .regular))
+                .foregroundStyle(isSelected ? MSColor.inkBright : MSColor.inkMuted)
                 .lineLimit(1)
             Spacer()
             Text("\(count)")
-                .font(MS.Font.micro)
-                .foregroundStyle(.secondary)
+                .font(MS.Font.mono)
+                .foregroundStyle(MSColor.inkFaint)
         }
-        .padding(.horizontal, MS.Spacing.sm)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
         .background(
-            isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
-            in: RoundedRectangle(cornerRadius: MS.Radius.xs, style: .continuous)
+            isSelected ? MSColor.surface2 : Color.clear,
+            in: RoundedRectangle(cornerRadius: MS.Radius.md, style: .continuous)
         )
         .contentShape(Rectangle())
         .onTapGesture { action() }
@@ -128,11 +129,11 @@ struct ImportView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                TextField("Search", text: $importVM.searchText)
+                    .foregroundStyle(MSColor.inkFaint)
+                TextField("Search media", text: $importVM.searchText)
                     .textFieldStyle(.plain)
                     .font(MS.Font.body)
-                    .frame(width: 160)
+                    .frame(width: 180)
                 if !importVM.searchText.isEmpty {
                     Button {
                         importVM.searchText = ""
@@ -144,12 +145,12 @@ struct ImportView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, MS.Spacing.sm)
-            .padding(.vertical, 4)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous))
+            .padding(.horizontal, 9)
+            .frame(height: MS.Height.controlSmall)
+            .background(MSColor.canvas, in: RoundedRectangle(cornerRadius: MS.Radius.md, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: MS.Radius.sm, style: .continuous)
-                    .strokeBorder(.separator.opacity(0.6), lineWidth: 1)
+                RoundedRectangle(cornerRadius: MS.Radius.md, style: .continuous)
+                    .strokeBorder(MSColor.lineStrong.opacity(0.75), lineWidth: 1)
             )
 
             // Filter
@@ -176,24 +177,25 @@ struct ImportView: View {
 
             Spacer()
 
+            Button("Select All") { importVM.selectAll() }
+                .buttonStyle(.ms(.ghost, size: .small))
+                .help("Select All Assets (⇧⌘A)")
             if importVM.hasSelection {
-                Text("\(importVM.selectionCount) selected")
-                    .font(MS.Font.caption)
-                    .foregroundStyle(.secondary)
-                MSSecondaryButton("Select All") { importVM.selectAll() }
-                    .help("Select All Assets (⇧⌘A)")
-                MSSecondaryButton("Deselect") { importVM.deselectAll() }
+                Button("Deselect") { importVM.deselectAll() }
+                    .buttonStyle(.ms(.ghost, size: .small))
                     .help("Deselect All Assets (⇧⌘D)")
             }
 
+            Rectangle().fill(MSColor.line).frame(width: 1, height: 18)
+
             // Import from Photos picker
-            MSSecondaryButton("Open Photos", icon: "photo.stack") {
+            MSSecondaryButton("Open Photos", icon: "photo.stack", size: .small) {
                 showPhotoPicker = true
             }
         }
         .padding(.horizontal, MS.Spacing.md)
-        .padding(.vertical, MS.Spacing.sm)
-        .background(.bar)
+        .frame(height: MS.Height.bar)
+        .background(MSColor.surface)
     }
 
     // MARK: - Main Content
@@ -246,6 +248,7 @@ struct ImportView: View {
             }
             .padding(MS.Spacing.md)
         }
+        .background(MSColor.canvas)
     }
 
     // MARK: - Skeleton Loading Grid
@@ -273,25 +276,24 @@ struct ImportView: View {
     private var importBar: some View {
         Group {
             if importVM.hasSelection {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(importVM.selectionCount) asset\(importVM.selectionCount == 1 ? "" : "s") selected")
-                            .font(MS.Font.heading)
-                        let photos = importVM.selectedAssets.filter { $0.mediaType == .photo || $0.mediaType == .livePhoto }.count
-                        let videos = importVM.selectedAssets.filter { $0.mediaType == .video }.count
-                        Text("\(photos) photo\(photos != 1 ? "s" : ""), \(videos) video\(videos != 1 ? "s" : "")")
-                            .font(MS.Font.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                HStack(spacing: MS.Spacing.sm) {
+                    Text("\(importVM.selectionCount) selected")
+                        .font(MS.Font.body.weight(.medium))
+                        .foregroundStyle(MSColor.inkBright)
+                        .monospacedDigit()
+                    let photos = importVM.selectedAssets.filter { $0.mediaType == .photo || $0.mediaType == .livePhoto }.count
+                    let videos = importVM.selectedAssets.filter { $0.mediaType == .video }.count
+                    MSBadge(text: "\(photos) photo\(photos != 1 ? "s" : "")", size: .small)
+                    MSBadge(text: "\(videos) video\(videos != 1 ? "s" : "")", size: .small)
                     Spacer()
-                    MSPrimaryButton("Add to Project", icon: "arrow.right.circle.fill") {
+                    MSPrimaryButton("Add to Project", icon: "arrow.right") {
                         workspaceVM.addAssets(importVM.selectedAssets)
                         workspaceVM.goToStage(.analysis)
                     }
                 }
-                .padding(.horizontal, MS.Spacing.lg)
-                .padding(.vertical, MS.Spacing.md)
-                .background(.bar)
+                .padding(.horizontal, MS.Spacing.md)
+                .frame(height: 52)
+                .background(MSColor.surface)
                 .overlay(alignment: .top) { MSDivider() }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
