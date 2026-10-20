@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Photos
 import CoreGraphics
+import CoreImage
 import AppKit
 import OSLog
 
@@ -90,13 +91,15 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                                 url = try await self.exportPhotoClip(
                                     assetID: item.assetID,
                                     duration: CMTime(seconds: neededDuration, preferredTimescale: self.timescale),
-                                    renderSize: renderSize)
+                                    renderSize: renderSize,
+                                    focus: assetMap[item.assetID]?.focusPoint)
                             }
                         } else {
                             url = try await self.exportPhotoClip(
                                 assetID: item.assetID,
                                 duration: CMTime(seconds: neededDuration, preferredTimescale: self.timescale),
-                                renderSize: renderSize)
+                                renderSize: renderSize,
+                                focus: assetMap[item.assetID]?.focusPoint)
                         }
                         return (i, url)
                     }
@@ -195,7 +198,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
                 plan: segPlan,
                 item: item,
                 track: track,
-                baseTransform: aspectFitTransform(
+                baseTransform: framingTransform(
                     naturalSize: naturalSize,
                     preferredTransform: srcTransform,
                     into: renderSize),
@@ -595,6 +598,23 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             .concatenating(CGAffineTransform(translationX: tx, y: ty))
     }
 
+    private func framingTransform(
+        naturalSize: CGSize,
+        preferredTransform: CGAffineTransform,
+        into renderSize: CGSize
+    ) -> CGAffineTransform {
+        let transformed = naturalSize.applying(preferredTransform)
+        let display = CGSize(width: max(1, abs(transformed.width)), height: max(1, abs(transformed.height)))
+        guard RenderTimeline.shouldFill(image: display, canvas: renderSize) else {
+            return aspectFitTransform(naturalSize: naturalSize, preferredTransform: preferredTransform, into: renderSize)
+        }
+        let rect = RenderTimeline.fillRect(image: display, canvas: renderSize, focus: nil)
+        let scale = rect.width / display.width
+        return preferredTransform
+            .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+            .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+    }
+
     // MARK: - Photo → Video Clip
     // Static two-frame clip; all motion (Ken Burns, punch-ins) is applied via
     // transform ramps in the composition, so the compositor interpolates it
@@ -604,7 +624,8 @@ final class VideoRenderService: VideoRenderServiceProtocol {
     private func exportPhotoClip(
         assetID: String,
         duration: CMTime,
-        renderSize: CGSize
+        renderSize: CGSize,
+        focus: FocusPoint?
     ) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("memx-\(UUID().uuidString).mp4")
@@ -638,7 +659,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         }
         writer.startSession(atSourceTime: .zero)
 
-        let pixelBuffer = try createPixelBuffer(from: image, renderSize: clipSize)
+        let pixelBuffer = try createPixelBuffer(from: image, renderSize: clipSize, focus: focus)
 
         while !input.isReadyForMoreMediaData {
             try? await Task.sleep(nanoseconds: 5_000_000)
@@ -673,7 +694,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
 
     // MARK: - Pixel Buffer
 
-    private func createPixelBuffer(from cgImage: CGImage, renderSize: CGSize) throws -> CVPixelBuffer {
+    private func createPixelBuffer(from cgImage: CGImage, renderSize: CGSize, focus: FocusPoint?) throws -> CVPixelBuffer {
         var pixelBuffer: CVPixelBuffer?
         let attrs = [
             kCVPixelBufferCGImageCompatibilityKey: true,
@@ -705,14 +726,32 @@ final class VideoRenderService: VideoRenderServiceProtocol {
         ctx.setFillColor(CGColor(gray: 0, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: Int(renderSize.width), height: Int(renderSize.height)))
 
-        let iw = CGFloat(cgImage.width), ih = CGFloat(cgImage.height)
-        let scale = min(renderSize.width / iw, renderSize.height / ih)
-        let drawW = iw * scale, drawH = ih * scale
-        let drawX = (renderSize.width - drawW) / 2
-        let drawY = (renderSize.height - drawH) / 2
-        ctx.draw(cgImage, in: CGRect(x: drawX, y: drawY, width: drawW, height: drawH))
+        let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
+        ctx.interpolationQuality = .high
+        if RenderTimeline.shouldFill(image: imageSize, canvas: renderSize) {
+            ctx.draw(cgImage, in: RenderTimeline.fillRect(image: imageSize, canvas: renderSize, focus: focus))
+        } else {
+            if let backdrop = blurredBackdrop(cgImage) {
+                ctx.draw(backdrop, in: RenderTimeline.fillRect(image: imageSize, canvas: renderSize, focus: focus))
+                ctx.setFillColor(CGColor(gray: 0, alpha: 0.35))
+                ctx.fill(CGRect(origin: .zero, size: renderSize))
+            }
+            ctx.draw(cgImage, in: RenderTimeline.fitRect(image: imageSize, canvas: renderSize))
+        }
 
         return buffer
+    }
+
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    private func blurredBackdrop(_ image: CGImage) -> CGImage? {
+        let source = CIImage(cgImage: image)
+        let scale = 320 / max(source.extent.width, source.extent.height, 1)
+        let small = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let blurred = small.clampedToExtent()
+            .applyingGaussianBlur(sigma: 10)
+            .cropped(to: small.extent)
+        return Self.ciContext.createCGImage(blurred, from: small.extent)
     }
 
     // MARK: - Image Helpers
@@ -728,7 +767,7 @@ final class VideoRenderService: VideoRenderServiceProtocol {
             PHImageManager.default().requestImage(
                 for: phAsset,
                 targetSize: CGSize(width: Int(renderSize.width), height: Int(renderSize.height)),
-                contentMode: .aspectFit,
+                contentMode: .aspectFill,
                 options: options
             ) { image, _ in
                 continuation.resume(returning: image?.cgImage(forProposedRect: nil, context: nil, hints: nil))

@@ -416,4 +416,36 @@ final class RenderTimelineTests: XCTestCase {
             RenderTimeline.whipDirection(boundaryIndex: 2),
             RenderTimeline.whipDirection(boundaryIndex: 3))
     }
+
+    func testCloseAspectRatiosFillAndFarOnesFit() {
+        let canvas = CGSize(width: 1920, height: 1080)
+        XCTAssertTrue(RenderTimeline.shouldFill(image: CGSize(width: 3000, height: 2000), canvas: canvas))
+        XCTAssertTrue(RenderTimeline.shouldFill(image: CGSize(width: 4032, height: 3024), canvas: canvas))
+        XCTAssertFalse(RenderTimeline.shouldFill(image: CGSize(width: 1080, height: 1920), canvas: canvas))
+        XCTAssertFalse(RenderTimeline.shouldFill(image: CGSize(width: 1000, height: 1000), canvas: canvas))
+    }
+
+    func testFillRectCoversCanvasAndCentersFocus() {
+        let canvas = CGSize(width: 1600, height: 900)
+        let image = CGSize(width: 1200, height: 900)
+        let centered = RenderTimeline.fillRect(image: image, canvas: canvas, focus: nil)
+        XCTAssertEqual(centered.width, 1600, accuracy: 0.5)
+        XCTAssertEqual(centered.height, 1200, accuracy: 0.5)
+        XCTAssertEqual(centered.midY, 450, accuracy: 0.5)
+
+        let topFace = RenderTimeline.fillRect(image: image, canvas: canvas, focus: FocusPoint(x: 0.5, y: 0.3))
+        XCTAssertLessThan(topFace.minY, centered.minY, "a face near the top should pull the crop up")
+        XCTAssertGreaterThanOrEqual(topFace.minY, canvas.height - topFace.height - 0.5)
+        XCTAssertLessThanOrEqual(topFace.minY, 0)
+
+        let edge = RenderTimeline.fillRect(image: image, canvas: canvas, focus: FocusPoint(x: 0.5, y: 0.0))
+        XCTAssertEqual(edge.maxY, canvas.height, accuracy: 0.5, "crop clamps at the image edge")
+    }
+
+    func testFitRectLetterboxesInsideCanvas() {
+        let rect = RenderTimeline.fitRect(image: CGSize(width: 1080, height: 1920),
+                                          canvas: CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(rect.height, 1080, accuracy: 0.5)
+        XCTAssertEqual(rect.midX, 960, accuracy: 0.5)
+    }
 }

@@ -398,4 +398,33 @@ enum RenderTimeline {
     static func whipDirection(boundaryIndex: Int) -> Double {
         boundaryIndex % 2 == 0 ? -1.0 : 1.0
     }
+
+    static let fillMinKeptFraction = 0.74
+
+    static func keptFraction(image: CGSize, canvas: CGSize) -> Double {
+        guard image.width > 0, image.height > 0, canvas.width > 0, canvas.height > 0 else { return 1 }
+        let a = Double(image.width / image.height)
+        let b = Double(canvas.width / canvas.height)
+        return min(a, b) / max(a, b)
+    }
+
+    static func shouldFill(image: CGSize, canvas: CGSize) -> Bool {
+        keptFraction(image: image, canvas: canvas) >= fillMinKeptFraction
+    }
+
+    static func fillRect(image: CGSize, canvas: CGSize, focus: FocusPoint?) -> CGRect {
+        let scale = max(canvas.width / max(image.width, 1), canvas.height / max(image.height, 1))
+        let w = image.width * scale, h = image.height * scale
+        let fx = CGFloat(focus?.x ?? 0.5)
+        let fyFromBottom = 1 - CGFloat(focus?.y ?? 0.5)
+        let x = min(0, max(canvas.width - w, canvas.width / 2 - fx * w))
+        let y = min(0, max(canvas.height - h, canvas.height / 2 - fyFromBottom * h))
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    static func fitRect(image: CGSize, canvas: CGSize) -> CGRect {
+        let scale = min(canvas.width / max(image.width, 1), canvas.height / max(image.height, 1))
+        let w = image.width * scale, h = image.height * scale
+        return CGRect(x: (canvas.width - w) / 2, y: (canvas.height - h) / 2, width: w, height: h)
+    }
 }
