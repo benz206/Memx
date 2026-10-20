@@ -1,4 +1,6 @@
+import Accelerate
 import Foundation
+import NaturalLanguage
 import OSLog
 
 private let logger = Logger(subsystem: "com.memx.app", category: "sequencer")
@@ -80,8 +82,14 @@ final class SequencerService: SequencerServiceProtocol {
         // of per (slot × asset) inside scoring.
         let semanticTexts = Dictionary(pool.map { ($0.id, semanticText(for: $0)) },
                                        uniquingKeysWith: { first, _ in first })
-        let chronoPositions = chronologyPositions(for: pool)
+        let context = PoolContext(
+            semanticTexts: semanticTexts,
+            chronoPositions: chronologyPositions(for: pool),
+            intentFits: intentFitScores(pool: pool, settings: settings,
+                                        sectionTypes: Set(timeSlots.map(\.section.type))),
+            duplicateGroup: Self.duplicateGroups(for: pool))
         var usedKeys      = Set<String>()
+        var usedGroups    = Set<Int>()
         var sequence      = [MontageSequenceItem]()
         let totalDuration = beatmap.durationSeconds
         var position      = 0
@@ -101,9 +109,9 @@ final class SequencerService: SequencerServiceProtocol {
         let reserved = reservePriorityAssets(
             slots: timeSlots, pool: pool, sectionFirstIDs: sectionFirstIDs,
             arcIntensities: arcIntensities, settings: settings,
-            semanticTexts: semanticTexts, chronoPositions: chronoPositions,
-            totalDuration: totalDuration)
+            context: context, totalDuration: totalDuration)
         usedKeys.formUnion(reserved.values.map { clipKey($0) })
+        usedGroups.formUnion(reserved.values.compactMap { context.duplicateGroup[$0.id] })
 
         for (slotIndex, slot) in timeSlots.enumerated() {
             guard slot.startTime < totalDuration else { break }
@@ -132,15 +140,16 @@ final class SequencerService: SequencerServiceProtocol {
             } else if let claimed = reserved[slot.id] {
                 asset = claimed
             } else if let picked = selectAsset(for: slot, from: pool, used: usedKeys,
+                                               usedGroups: usedGroups,
                                                prev: prevAsset, arcIntensity: arcIntensity,
-                                               settings: settings, semanticTexts: semanticTexts,
-                                               chronoPositions: chronoPositions,
+                                               settings: settings, context: context,
                                                slotProgress: slot.startTime / max(totalDuration, 0.01)) {
                 asset = picked
             } else {
                 continue
             }
             usedKeys.insert(clipKey(asset))
+            if let group = context.duplicateGroup[asset.id] { usedGroups.insert(group) }
 
             // Record the first-occurrence asset for later hook repeats to reuse.
             if let key = slot.hookClusterKey,
@@ -333,6 +342,13 @@ final class SequencerService: SequencerServiceProtocol {
             self.hookSignatureIndex = hookSignatureIndex
             self.isAnticipationHold = isAnticipationHold
         }
+    }
+
+    private struct PoolContext {
+        let semanticTexts: [String: String]
+        let chronoPositions: [String: Double]
+        let intentFits: [SectionType: [String: Double]]
+        let duplicateGroup: [String: Int]
     }
 
     // MARK: - CutPattern
@@ -1217,8 +1233,7 @@ final class SequencerService: SequencerServiceProtocol {
     private func reservePriorityAssets(
         slots: [TimeSlot], pool: [MediaAsset], sectionFirstIDs: Set<UUID>,
         arcIntensities: [UUID: Double], settings: MontageSettings,
-        semanticTexts: [String: String], chronoPositions: [String: Double],
-        totalDuration: Double
+        context: PoolContext, totalDuration: Double
     ) -> [UUID: MediaAsset] {
         var priorities = [(tier: Int, slot: TimeSlot)]()
         for slot in slots {
@@ -1239,18 +1254,19 @@ final class SequencerService: SequencerServiceProtocol {
 
         var reserved = [UUID: MediaAsset]()
         var used = Set<String>()
+        var usedGroups = Set<Int>()
         for entry in priorities.sorted(by: {
             $0.tier == $1.tier ? $0.slot.startTime < $1.slot.startTime : $0.tier < $1.tier
         }) {
             let arc = arcIntensities[entry.slot.section.id] ?? 0.9
             guard let picked = selectAsset(
-                for: entry.slot, from: pool, used: used, prev: nil,
-                arcIntensity: arc, settings: settings, semanticTexts: semanticTexts,
-                chronoPositions: chronoPositions,
+                for: entry.slot, from: pool, used: used, usedGroups: usedGroups, prev: nil,
+                arcIntensity: arc, settings: settings, context: context,
                 slotProgress: entry.slot.startTime / max(totalDuration, 0.01)
             ) else { continue }
             reserved[entry.slot.id] = picked
             used.insert(clipKey(picked))
+            if let group = context.duplicateGroup[picked.id] { usedGroups.insert(group) }
         }
         return reserved
     }
@@ -1338,8 +1354,8 @@ final class SequencerService: SequencerServiceProtocol {
 
     private func scoreAsset(_ a: MediaAsset, for slot: TimeSlot,
                              prev: MediaAsset?, arcIntensity: Double,
-                             keywords: [String], semanticTexts: [String: String],
-                             chronoPositions: [String: Double], slotProgress: Double) -> Double {
+                             keywords: [String], context: PoolContext,
+                             usedGroups: Set<Int>, slotProgress: Double) -> Double {
         let isHero      = slot.section.type == .chorus || slot.section.type == .drop
         let target      = targetEnergy(for: slot, arcIntensity: arcIntensity)
         let energy      = visualEnergy(a)
@@ -1366,36 +1382,47 @@ final class SequencerService: SequencerServiceProtocol {
 
         let isHeroOrPre = isHero || slot.section.type == .preChorus
         let peakFit: Double = (isHeroOrPre && (a.emotionScore ?? 0) > 0.7) ? 0.15 : 0.0
-        let semanticFit = semanticFit(a, keywords: keywords, text: semanticTexts[a.id] ?? "")
+        let keywordFit = semanticFit(a, keywords: keywords, text: context.semanticTexts[a.id] ?? "")
+        let semanticFit = context.intentFits[slot.section.type]?[a.id]
+            .map { keywordFit * 0.5 + $0 * 0.5 } ?? keywordFit
         let continuityFit = continuityFit(a, prev: prev, slot: slot)
         // Soft chronology: prefer assets whose position in the capture-date
         // timeline matches the slot's position in the song. Strong enough to
         // order similar assets, weak enough for energy/semantic fit to
         // override locally.
-        let chronologyFit = chronoPositions[a.id].map { 1.0 - abs($0 - slotProgress) } ?? 0.5
+        let chronologyFit = context.chronoPositions[a.id].map { 1.0 - abs($0 - slotProgress) } ?? 0.5
+        let qualityFit = Double(a.qualityScore ?? 0.6)
+        let heroMoment = (isHero || slot.isAnticipationHold)
+            ? 0.25 * Double(a.highlightScore ?? a.emotionScore ?? 0.5)
+            : 0.0
+        let duplicatePenalty = context.duplicateGroup[a.id].map { usedGroups.contains($0) ? 0.35 : 0.0 } ?? 0.0
 
-        return 0.24 * energyFit
-             + 0.20 * semanticFit
-             + 0.10 * durationFit
-             + 0.10 * warmthFit
-             + 0.11 * continuityFit
+        return 0.22 * energyFit
+             + 0.18 * semanticFit
+             + 0.08 * durationFit
+             + 0.07 * warmthFit
+             + 0.10 * continuityFit
              + 0.05 * noveltyVsPrev
              + 0.04 * facesFit
              + 0.03 * peakFit
-             + 0.13 * chronologyFit
+             + 0.11 * chronologyFit
+             + 0.12 * qualityFit
              + heroBonus
+             + heroMoment
+             - duplicatePenalty
     }
 
     private func selectAsset(for slot: TimeSlot, from pool: [MediaAsset],
-                              used: Set<String>, prev: MediaAsset?, arcIntensity: Double,
-                              settings: MontageSettings, semanticTexts: [String: String],
-                              chronoPositions: [String: Double], slotProgress: Double) -> MediaAsset? {
+                              used: Set<String>, usedGroups: Set<Int>,
+                              prev: MediaAsset?, arcIntensity: Double,
+                              settings: MontageSettings, context: PoolContext,
+                              slotProgress: Double) -> MediaAsset? {
         let isHero = slot.section.type == .chorus || slot.section.type == .drop
         let unused = pool.filter { !used.contains(clipKey($0)) }
 
         if !unused.isEmpty {
             let keywords = semanticKeywords(for: slot, settings: settings)
-            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, keywords: keywords, semanticTexts: semanticTexts, chronoPositions: chronoPositions, slotProgress: slotProgress)) }
+            let scored = unused.map { ($0, scoreAsset($0, for: slot, prev: prev, arcIntensity: arcIntensity, keywords: keywords, context: context, usedGroups: usedGroups, slotProgress: slotProgress)) }
             if let (best, score) = scored.max(by: { $0.1 < $1.1 }), score > 0.35 {
                 return best
             }
@@ -1403,6 +1430,79 @@ final class SequencerService: SequencerServiceProtocol {
         }
 
         return isHero ? pool.first : pool.last
+    }
+
+    static let duplicateSimilarity: Float = 0.88
+
+    static func duplicateGroups(for pool: [MediaAsset]) -> [String: Int] {
+        let indexed = pool.enumerated().compactMap { i, a in a.visualEmbedding.map { (i, $0) } }
+        var parent = Array(0..<pool.count)
+        func root(_ x: Int) -> Int {
+            var x = x
+            while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+        }
+        for (ai, (i, a)) in indexed.enumerated() {
+            for (j, b) in indexed[(ai + 1)...] where a.count == b.count {
+                if vDSP.dot(a, b) >= duplicateSimilarity {
+                    parent[root(j)] = root(i)
+                }
+            }
+        }
+        var groups = [String: Int]()
+        for (i, _) in indexed { groups[pool[i].id] = root(i) }
+        return groups
+    }
+
+    private func intentFitScores(pool: [MediaAsset], settings: MontageSettings,
+                                 sectionTypes: Set<SectionType>) -> [SectionType: [String: Double]] {
+        guard pool.contains(where: { $0.semanticEmbedding != nil }),
+              let sentence = NLEmbedding.sentenceEmbedding(for: .english) else { return [:] }
+        var result = [SectionType: [String: Double]]()
+        for type in sectionTypes {
+            let intent = SemanticEmbeddingService.shared.localEmbedding(
+                for: intentSentence(for: type, settings: settings), using: sentence)
+            var sims = [String: Double]()
+            for asset in pool {
+                guard let e = asset.semanticEmbedding, let sim = VisualSignals.cosine(intent, e) else { continue }
+                sims[asset.id] = Double(sim)
+            }
+            guard let lo = sims.values.min(), let hi = sims.values.max(), hi - lo > 0.02 else { continue }
+            result[type] = sims.mapValues { ($0 - lo) / (hi - lo) }
+        }
+        return result
+    }
+
+    func intentSentence(for type: SectionType, settings: MontageSettings) -> String {
+        let moment: String
+        switch type {
+        case .intro:     moment = "a quiet establishing opening shot"
+        case .verse:     moment = "an everyday story moment"
+        case .preChorus: moment = "a rising moment of anticipation"
+        case .chorus:    moment = "a joyful peak moment with people celebrating together"
+        case .drop:      moment = "an explosive high-energy action moment"
+        case .buildup:   moment = "a moment of building tension"
+        case .bridge:    moment = "a reflective quiet moment"
+        case .breakdown: moment = "a calm still moment"
+        case .outro:     moment = "a warm closing goodbye moment"
+        }
+        let vibe: String
+        switch settings.vibe {
+        case .nostalgic: vibe = "warm and nostalgic"
+        case .cinematic: vibe = "dramatic and cinematic"
+        case .hype:      vibe = "energetic and loud"
+        case .wholesome: vibe = "happy and wholesome"
+        case .funny:     vibe = "playful and funny"
+        case .travel:    vibe = "a beautiful travel scene"
+        }
+        let focus: String
+        switch settings.focus {
+        case .family:     focus = " with family and children"
+        case .friends:    focus = " with friends"
+        case .scenery:    focus = " of landscape and scenery"
+        case .everything: focus = ""
+        }
+        return "\(moment), \(vibe)\(focus)"
     }
 
     private func semanticFit(_ asset: MediaAsset, keywords target: [String], text: String) -> Double {
@@ -1477,15 +1577,15 @@ final class SequencerService: SequencerServiceProtocol {
         switch settings.vibe {
         case .nostalgic: words += ["warm", "memory", "family", "golden", "soft", "emotional"]
         case .cinematic: words += ["wide", "dramatic", "landscape", "silhouette", "contrast", "epic"]
-        case .hype:      words += ["action", "crowd", "bright", "energy", "fast"]
-        case .wholesome: words += ["smile", "family", "friends", "joy", "hug", "warm"]
-        case .funny:     words += ["playful", "surprise", "expression", "fun", "party"]
-        case .travel:    words += ["travel", "landscape", "city", "road", "water", "mountain", "wide"]
+        case .hype:      words += ["action", "crowd", "bright", "energy", "fast", "celebration", "sport"]
+        case .wholesome: words += ["smile", "family", "friends", "joy", "hug", "warm", "people"]
+        case .funny:     words += ["playful", "surprise", "expression", "fun", "party", "celebration"]
+        case .travel:    words += ["travel", "landscape", "city", "road", "water", "mountain", "wide", "beach", "ocean"]
         }
 
         switch settings.focus {
-        case .family:     words += ["family", "child", "parent", "home", "group"]
-        case .friends:    words += ["friends", "group", "party", "laugh", "crowd"]
+        case .family:     words += ["family", "child", "parent", "home", "group", "baby", "people"]
+        case .friends:    words += ["friends", "group", "party", "laugh", "crowd", "people"]
         case .scenery:    words += ["landscape", "sky", "water", "mountain", "city", "wide"]
         case .everything: break
         }
@@ -1514,6 +1614,7 @@ final class SequencerService: SequencerServiceProtocol {
         if let q = asset.qualityScore, q > 0.8  { reasons.append("sharp & well-exposed") }
         if let e = asset.emotionScore, e > 0.75 { reasons.append("strong emotional valence") }
         if let n = asset.noveltyScore, n > 0.7  { reasons.append("visually distinct") }
+        if let h = asset.highlightScore, h > 0.75 { reasons.append("highlight moment") }
         if isHero                               { reasons.append("hero hold") }
         if isArcPeak                            { reasons.append("arc peak") }
         if slot.isAnticipationHold              { reasons.append("anticipation hold") }
