@@ -140,7 +140,7 @@ com.apple.security.device.audio-input                        true   # future mic
 
 - Visual analysis, captions, and embeddings call OpenRouter using `OPENROUTER_API_KEY` or the matching UserDefaults key.
 - Drag-dropped audio files wrap their `FileManager.copyItem` with `startAccessingSecurityScopedResource()` / `stop…`.
-- App Sandbox + Hardened Runtime are both on for the Xcode target. (The `swift run` CLI binary is unsigned and dev-only; use Xcode for signed builds.)
+- The app builds as a SwiftPM executable (`swift run MemX`, or open `Package.swift` in Xcode); it is unsigned and dev-only. `Resources/MemX.entitlements` (App Sandbox + Hardened Runtime) applies only once it is wrapped in a signed Xcode app target.
 
 ---
 
