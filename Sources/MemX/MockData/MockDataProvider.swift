@@ -155,15 +155,4 @@ enum MockDataProvider {
             MSAlbum(title: "Portraits", count: 210, type: .userAlbum),
         ]
     }
-
-    // MARK: - Processing Status
-
-    static func completedProcessingStatus(for project: Project) -> ProcessingStatus {
-        var s = ProcessingStatus(projectID: project.id)
-        s.phase = .complete
-        s.progress = 1.0
-        s.message = "Pipeline complete — storyboard ready"
-        s.completedAt = Date()
-        return s
-    }
 }

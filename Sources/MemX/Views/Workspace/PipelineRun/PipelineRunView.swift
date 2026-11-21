@@ -19,13 +19,15 @@ struct PipelineRunView: View {
 
                 progressPanel
 
-                if let err = workspaceVM.processingStatus.error {
+                if let err = workspaceVM.pipelineState.errorMessage {
                     MSCallout(tone: .danger, title: "Pipeline failed", message: err)
-                } else if !workspaceVM.isProcessing && workspaceVM.processingStatus.isComplete {
+                } else if case .completed = workspaceVM.pipelineState {
                     MSCallout(tone: .success, title: "Storyboard ready",
                               message: "\(workspaceVM.montagePlan?.sequence.count ?? 0) clips assembled and cut to the beat.")
                 } else if !workspaceVM.isProcessing && workspaceVM.montagePlan == nil {
-                    MSCallout(message: workspaceVM.cancelledNotice ?? "Pipeline stopped before completion. Press Run Pipeline to retry.")
+                    MSCallout(message: workspaceVM.pipelineState == .idle
+                              ? "Pipeline stopped before completion. Press Run Pipeline to retry."
+                              : workspaceVM.pipelineState.message)
                 }
 
                 activityLog
@@ -64,7 +66,7 @@ struct PipelineRunView: View {
                     if idx > 0 { MSVerticalDivider() }
                     ProcessingPhaseRow(
                         phase: phase,
-                        isActive: workspaceVM.processingStatus.phase == phase && workspaceVM.isProcessing,
+                        isActive: workspaceVM.pipelineState.phase == phase && workspaceVM.isProcessing,
                         isComplete: phaseIsComplete(phase)
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -78,14 +80,14 @@ struct PipelineRunView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(workspaceVM.processingStatus.message.isEmpty
-                         ? workspaceVM.processingStatus.phase.description
-                         : workspaceVM.processingStatus.message)
+                    Text(workspaceVM.pipelineState.message.isEmpty
+                         ? workspaceVM.pipelineState.phase.description
+                         : workspaceVM.pipelineState.message)
                         .font(MS.Font.body.weight(.medium))
                         .foregroundStyle(MSColor.inkBright)
                         .lineLimit(1)
                     Spacer()
-                    Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
+                    Text("\(Int(workspaceVM.pipelineState.progress * 100))%")
                         .font(MS.Font.mono)
                         .foregroundStyle(MSColor.inkMuted)
                 }
@@ -93,12 +95,12 @@ struct PipelineRunView: View {
                     ZStack(alignment: .leading) {
                         Capsule().fill(MSColor.surface2)
                         Capsule()
-                            .fill(workspaceVM.processingStatus.error != nil ? MSColor.danger : Color.accentColor)
-                            .frame(width: max(0, geo.size.width * workspaceVM.processingStatus.progress))
+                            .fill(workspaceVM.pipelineState.errorMessage != nil ? MSColor.danger : Color.accentColor)
+                            .frame(width: max(0, geo.size.width * workspaceVM.pipelineState.progress))
                     }
                 }
                 .frame(height: 6)
-                .animation(.easeOut(duration: 0.25), value: workspaceVM.processingStatus.progress)
+                .animation(.easeOut(duration: 0.25), value: workspaceVM.pipelineState.progress)
             }
             .padding(MS.Spacing.md)
         }
@@ -208,8 +210,8 @@ struct PipelineRunView: View {
     // MARK: - Phase completion logic
 
     private func phaseIsComplete(_ phase: ProcessingPhase) -> Bool {
-        if workspaceVM.processingStatus.isComplete { return true }
-        let currentIndex = workspaceVM.processingStatus.phase.index
+        if workspaceVM.pipelineState.phase == .complete { return true }
+        let currentIndex = workspaceVM.pipelineState.phase.index
         if phase.index < currentIndex { return true }
         switch phase {
         case .analyzingAudio:  return workspaceVM.hasBeatmap

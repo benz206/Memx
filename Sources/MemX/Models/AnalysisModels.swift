@@ -1,30 +1,5 @@
 import Foundation
 
-// MARK: - ProcessingStatus
-
-struct ProcessingStatus: Identifiable, Hashable {
-    let id: UUID
-    var projectID: UUID
-    var phase: ProcessingPhase
-    var progress: Double        // 0.0 – 1.0
-    var message: String
-    var startedAt: Date
-    var completedAt: Date?
-    var error: String?
-
-    var isComplete: Bool { phase == .complete }
-    var isFailed: Bool { error != nil }
-
-    init(projectID: UUID) {
-        self.id = UUID()
-        self.projectID = projectID
-        self.phase = .idle
-        self.progress = 0
-        self.message = "Ready"
-        self.startedAt = Date()
-    }
-}
-
 // MARK: - ProcessingPhase
 
 enum ProcessingPhase: String, CaseIterable, Hashable {
@@ -45,6 +20,13 @@ enum ProcessingPhase: String, CaseIterable, Hashable {
     }
 
     var index: Int { ProcessingPhase.allCases.firstIndex(of: self) ?? 0 }
+
+    var isWorkPhase: Bool {
+        switch self {
+        case .analyzingAudio, .scoringPhotos, .sequencing: return true
+        case .idle, .complete:                             return false
+        }
+    }
 
     var description: String {
         switch self {

@@ -31,7 +31,7 @@ struct StoryboardView: View {
     private var generatingView: some View {
         VStack(spacing: 12) {
             ProgressView().controlSize(.small)
-            Text(workspaceVM.processingStatus.message)
+            Text(workspaceVM.pipelineState.message)
                 .font(MS.Font.body.weight(.medium))
                 .foregroundStyle(MSColor.inkBright)
                 .multilineTextAlignment(.center)
@@ -39,12 +39,12 @@ struct StoryboardView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(MSColor.surface2)
                     Capsule().fill(Color.accentColor)
-                        .frame(width: max(0, geo.size.width * workspaceVM.processingStatus.progress))
+                        .frame(width: max(0, geo.size.width * workspaceVM.pipelineState.progress))
                 }
             }
             .frame(width: 320, height: 6)
-            .animation(.easeOut(duration: 0.25), value: workspaceVM.processingStatus.progress)
-            Text("\(Int(workspaceVM.processingStatus.progress * 100))%")
+            .animation(.easeOut(duration: 0.25), value: workspaceVM.pipelineState.progress)
+            Text("\(Int(workspaceVM.pipelineState.progress * 100))%")
                 .font(MS.Font.mono)
                 .foregroundStyle(MSColor.inkFaint)
             if workspaceVM.isCancellable {

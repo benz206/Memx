@@ -3,52 +3,6 @@ import XCTest
 
 final class ProcessingStatusTests: XCTestCase {
 
-    private let projectID = UUID()
-
-    // MARK: - ProcessingStatus computed properties
-
-    func testIsCompleteReturnsFalseInitially() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertFalse(status.isComplete)
-    }
-
-    func testIsCompleteTrueWhenPhaseIsComplete() {
-        var status = ProcessingStatus(projectID: projectID)
-        status.phase = .complete
-        XCTAssertTrue(status.isComplete)
-    }
-
-    func testIsFailedReturnsFalseInitially() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertFalse(status.isFailed)
-    }
-
-    func testIsFailedTrueWhenErrorIsSet() {
-        var status = ProcessingStatus(projectID: projectID)
-        status.error = "Something went wrong"
-        XCTAssertTrue(status.isFailed)
-    }
-
-    func testInitialPhaseIsIdle() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertEqual(status.phase, .idle)
-    }
-
-    func testInitialProgressIsZero() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertEqual(status.progress, 0, accuracy: 0.001)
-    }
-
-    func testInitialMessageIsReady() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertEqual(status.message, "Ready")
-    }
-
-    func testCompletedAtIsNilInitially() {
-        let status = ProcessingStatus(projectID: projectID)
-        XCTAssertNil(status.completedAt)
-    }
-
     // MARK: - ProcessingPhase
 
     func testProcessingPhaseIndexOrdering() {

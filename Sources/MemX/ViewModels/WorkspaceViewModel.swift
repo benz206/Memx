@@ -81,18 +81,15 @@ final class WorkspaceViewModel {
     var assetsFullyRestored: Bool = true
 
     // MARK: Processing
-    var processingStatus: ProcessingStatus
-    var isProcessing: Bool = false
+    var pipelineState: PipelineState = .idle
     var pipelineLog: [PipelineLogEntry] = []
 
     // MARK: Storyboard
     var montagePlan: MontagePlan?
-    var isGeneratingPlan: Bool = false
     var selectedSequenceItem: MontageSequenceItem? = nil
 
     // MARK: Clip shortage
-    var clipShortfall: SequencerPreflight? = nil
-    var pendingShortfallAck: Bool = false
+    var shortfallGate: ShortfallGate = .clear
 
     // MARK: Title editing
     var isEditingTitle: Bool = false
@@ -106,12 +103,8 @@ final class WorkspaceViewModel {
     var renderLog: [RenderLogEntry] = []
 
     // MARK: Cancellation
-    var cancelledNotice: String? = nil
     private var pipelineTask: Task<Void, Never>?
     private var renderTask: Task<Void, Never>?
-
-    // MARK: Dedup scoring
-    private var photosScoredSuccessfully: Bool = false
 
     // MARK: Import
     /// The photos-stage view model, registered while ImportView is on screen
@@ -142,7 +135,6 @@ final class WorkspaceViewModel {
         self.semanticService = semanticService
         self.sequencerService = sequencerService
         self.renderService = renderService
-        self.processingStatus = ProcessingStatus(projectID: project.id)
         self.songTrack = project.songTrack
         self.beatmap = project.beatmap
 
@@ -152,10 +144,9 @@ final class WorkspaceViewModel {
 
         if let plan = project.montagePlan {
             self.montagePlan = plan
-            self.processingStatus = MockDataProvider.completedProcessingStatus(for: project)
+            self.pipelineState = .completed(at: project.updatedAt)
             self.selectedTab = .storyboard
         }
-        self.photosScoredSuccessfully = self.allAssetsScored
         appVM.activeWorkspaceVM = self
     }
 
@@ -261,7 +252,7 @@ final class WorkspaceViewModel {
                 return "Choose photos and videos before running analysis."
             }
             if isProcessing {
-                return processingStatus.message
+                return pipelineState.message
             }
             if hasPlan {
                 return "Analysis is complete. Review the storyboard or re-run the pipeline after changes."
@@ -298,7 +289,7 @@ final class WorkspaceViewModel {
     var nextStepMessage: String {
         if !hasSong { return "Import a song to start the project." }
         if assets.isEmpty { return "Choose photos and videos for the edit." }
-        if isProcessing { return processingStatus.message }
+        if isProcessing { return pipelineState.message }
         if !hasPlan { return "Run analysis to build the storyboard." }
         return "Review the storyboard and render the final video."
     }
@@ -313,6 +304,7 @@ final class WorkspaceViewModel {
     // MARK: - Song Import
 
     func importSong(from url: URL) async {
+        guard !isProcessing, !isRendering else { return }
         let filename = url.deletingPathExtension().lastPathComponent
         let format = url.pathExtension.lowercased()
 
@@ -335,202 +327,19 @@ final class WorkspaceViewModel {
         goToStage(.photos)
     }
 
-    // MARK: - Pipeline Phases
+    // MARK: - Pipeline
 
     func analyzeAudio(track: SongTrack) async {
-        guard !isProcessing else { return }
-        isProcessing = true
-        processingStatus.phase = .analyzingAudio
-        processingStatus.progress = 0
-        processingStatus.message = "Analyzing \(track.title)..."
-        processingStatus.error = nil
-        logger.info("Audio analysis started: \(track.fileURL.lastPathComponent)")
-
-        do {
-            let result = try await beatmapService.analyzeSong(at: track.fileURL) { [weak self] prog, msg in
-                guard let self else { return }
-                Task { @MainActor in
-                    let scaled = prog * 0.20
-                    self.processingStatus.progress = scaled
-                    self.processingStatus.message = msg
-                    self.appendPipelineLog(phase: .analyzingAudio, progress: scaled, message: msg)
-                }
-            }
-            beatmap = result
-            project.beatmap = result
-            logger.info("Audio analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), duration=\(result.durationSeconds, format: .fixed(precision: 1))s, sections=\(result.sections.count)")
-
-            if var t = songTrack {
-                t.bpm = result.bpm
-                t.fileURL = track.fileURL.absoluteURL
-                songTrack = t
-                project.songTrack = t
-                appVM.updateProject(project)
-            }
-
-        } catch {
-            logger.error("Audio analysis failed: \(error.localizedDescription)")
-            processingStatus.error = error.localizedDescription
+        guard !isProcessing, !isRendering else { return }
+        send(.start(.analyzingAudio, progress: 0, message: "Analyzing \(track.title)..."))
+        await runPipelineTask { vm in
+            try await vm.analyzeAudioStep(track: track)
+            vm.send(.finishStep)
         }
-
-        isProcessing = false
-    }
-
-    func scorePhotos() async {
-        guard !assets.isEmpty, !isProcessing else { return }
-        if allAssetsScored {
-            photosScoredSuccessfully = true
-            processingStatus.phase = .scoringPhotos
-            processingStatus.progress = max(processingStatus.progress, 0.85)
-            processingStatus.message = "Visual analysis already complete"
-            appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
-            return
-        }
-        isProcessing = true
-        processingStatus.phase = .scoringPhotos
-        processingStatus.progress = max(processingStatus.progress, 0.20)
-        processingStatus.message = "Analyzing \(assets.count) assets on-device..."
-        processingStatus.error = nil
-        appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
-        let density = project.settings.scoringDensity
-        logger.info("Photo scoring started: \(self.assets.count) assets, density=\(density.rawValue, privacy: .public)")
-
-        do {
-            try Task.checkCancellation()
-
-            let result = try await scoringService.scorePhotos(
-                for: project,
-                assets: assets,
-                density: density
-            ) { [weak self] prog, msg in
-                guard let self else { return }
-                Task { @MainActor in
-                    let scaled = 0.20 + prog * 0.50
-                    self.processingStatus.progress = scaled
-                    self.processingStatus.message = msg
-                    self.appendPipelineLog(phase: .scoringPhotos, progress: scaled, message: msg)
-                }
-            }
-
-            let scoreMap = Dictionary(uniqueKeysWithValues: result.scoredAssets.map { ($0.id, $0) })
-            assets = assets.map { scoreMap[$0.id] ?? $0 }
-            let semanticAssets = await semanticService.enrichAssets(assets) { [weak self] prog, msg in
-                guard let self else { return }
-                Task { @MainActor in
-                    let scaled = 0.70 + prog * 0.15
-                    self.processingStatus.progress = scaled
-                    self.processingStatus.message = msg
-                    self.appendPipelineLog(phase: .scoringPhotos, progress: scaled, message: msg)
-                }
-            }
-            assets = semanticAssets
-            project.analyzedAssets = assets
-            appVM.updateProject(project)
-            let included = result.candidates.filter(\.isIncluded).count
-            logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
-            photosScoredSuccessfully = true
-
-        } catch is CancellationError {
-            logger.info("Photo scoring cancelled")
-            cancelledNotice = "Pipeline cancelled"
-            isProcessing = false
-            return
-        } catch {
-            logger.error("Photo scoring failed: \(error.localizedDescription)")
-            processingStatus.error = error.localizedDescription
-        }
-
-        isProcessing = false
-    }
-
-    func buildSequence() async {
-        guard !assets.isEmpty, !isProcessing else { return }
-        guard let bm = beatmap else {
-            logger.warning("buildSequence: beatmap unavailable — re-analyzing song")
-            if let track = songTrack {
-                await analyzeAudio(track: track)
-            }
-            guard let bm2 = beatmap else {
-                processingStatus.error = "Song analysis is required before building the storyboard. Re-import the song."
-                return
-            }
-            if !checkShortfall(bm: bm2) { return }
-            await buildSequenceCore(bm: bm2)
-            return
-        }
-        if !checkShortfall(bm: bm) { return }
-        await buildSequenceCore(bm: bm)
-    }
-
-    /// Returns true if building should proceed; false if the user needs to
-    /// acknowledge a clip shortfall first.
-    private func checkShortfall(bm: Beatmap) -> Bool {
-        let preflight = sequencerService.preflight(
-            settings: project.settings,
-            assets: assets,
-            beatmap: bm
-        )
-        if preflight.hasShortfall && !pendingShortfallAck {
-            logger.info("buildSequence: shortfall detected (\(preflight.estimatedShortfall) clips, \(preflight.estimatedShortfallSeconds, format: .fixed(precision: 1))s) — awaiting user ack")
-            clipShortfall = preflight
-            return false
-        }
-        clipShortfall = nil
-        return true
-    }
-
-    func acknowledgeShortfallAndBuild() async {
-        pendingShortfallAck = true
-        clipShortfall = nil
-        await buildSequence()
-        pendingShortfallAck = false
-    }
-
-    func dismissShortfall() {
-        clipShortfall = nil
-    }
-
-    private func buildSequenceCore(bm: Beatmap) async {
-        isProcessing = true
-        isGeneratingPlan = true
-        processingStatus.phase = .sequencing
-        processingStatus.progress = max(processingStatus.progress, 0.85)
-        processingStatus.message = "Building sequence..."
-        processingStatus.error = nil
-        appendPipelineLog(phase: .sequencing, progress: processingStatus.progress, message: processingStatus.message)
-        logger.info("Sequence building started: \(self.assets.count) assets, \(bm.sections.count) sections")
-
-        let plan = await sequencerService.buildSequence(
-            title: project.title,
-            settings: project.settings,
-            assets: assets,
-            beatmap: bm
-        ) { [weak self] prog, msg in
-            Task { @MainActor in
-                guard let self else { return }
-                let scaled = 0.85 + prog * 0.15
-                self.processingStatus.progress = scaled
-                self.processingStatus.message = msg
-                self.appendPipelineLog(phase: .sequencing, progress: scaled, message: msg)
-            }
-        }
-
-        logger.info("Sequence built: \(plan.sequence.count) clips, duration=\(plan.totalDuration, format: .fixed(precision: 1))s")
-        montagePlan = plan
-        project.montagePlan = plan
-        processingStatus.phase = .complete
-        processingStatus.progress = 1.0
-        processingStatus.message = "Pipeline complete — storyboard ready"
-        processingStatus.completedAt = Date()
-        appVM.updateProject(project)
-        goToStage(.storyboard)
-        clipShortfall = nil
-        isProcessing = false
-        isGeneratingPlan = false
     }
 
     func runPipeline() async {
-        guard !isProcessing else { return }
+        guard !isProcessing, !isRendering else { return }
         guard hasSong else {
             stageNavigationNotice = blockedReason(for: .analysis)
             selectedTab = .song
@@ -541,59 +350,203 @@ final class WorkspaceViewModel {
             selectedTab = .photos
             return
         }
+        pipelineLog.removeAll()
+        goToStage(.analysis)
+        await run()
+    }
 
-        logger.info("Full pipeline started: \(self.assets.count) assets")
+    func buildSequence() async {
+        await run()
+    }
+
+    func acknowledgeShortfallAndBuild() async {
+        guard sendGate(.acknowledge) else { return }
+        if !isProcessing { await buildSequence() }
+    }
+
+    func dismissShortfall() {
+        guard sendGate(.dismiss) else { return }
+        if case .awaitingShortfallAck = pipelineState { send(.reset) }
+    }
+
+    private func run() async {
+        guard !isProcessing, !isRendering, let track = songTrack, !assets.isEmpty else { return }
+        logger.info("Pipeline started: \(self.assets.count) assets")
+        selectedSequenceItem = nil
 
         // Keep completed stages and only fill missing work. This lets users
         // jump between tabs without repaying earlier analysis work.
-        selectedSequenceItem = nil
-        clipShortfall = nil
-        pendingShortfallAck = false
-        processingStatus = ProcessingStatus(projectID: project.id)
-        photosScoredSuccessfully = allAssetsScored
-        pipelineLog.removeAll()
-        goToStage(.analysis)
-        appendPipelineLog(phase: .idle, progress: 0, message: "Starting pipeline — \(assets.count) assets")
+        let firstPhase: ProcessingPhase = beatmap == nil ? .analyzingAudio
+            : allAssetsScored ? .sequencing : .scoringPhotos
+        send(.start(firstPhase, progress: 0, message: "Starting pipeline — \(assets.count) assets"))
+        appendPipelineLog(phase: .idle, progress: 0, message: pipelineState.message)
 
         // Preflight early if we already have a beatmap — surface shortfall banner
         // right away instead of waiting for buildSequence.
         if let bm = beatmap {
-            let preflight = sequencerService.preflight(
-                settings: project.settings,
-                assets: assets,
-                beatmap: bm
-            )
-            if preflight.hasShortfall {
-                clipShortfall = preflight
-            }
+            sendGate(.evaluate(preflight(bm)))
         }
 
-        let task = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try Task.checkCancellation()
-                if !self.allAssetsScored {
-                    await self.scorePhotos()
-                }
-                try Task.checkCancellation()
-                await self.buildSequence()
-                logger.info("Full pipeline finished")
-            } catch is CancellationError {
-                self.isProcessing = false
-                self.cancelledNotice = "Pipeline cancelled"
-                self.appendPipelineLog(phase: self.processingStatus.phase, progress: self.processingStatus.progress, message: "Pipeline cancelled")
-            } catch {}
+        await runPipelineTask { vm in
+            let bm: Beatmap
+            if let existing = vm.beatmap {
+                bm = existing
+            } else {
+                bm = try await vm.analyzeAudioStep(track: track)
+            }
+            if vm.allAssetsScored {
+                vm.report(.scoringPhotos, progress: 0.85, message: "Visual analysis already complete")
+            } else {
+                try await vm.scoreStep()
+            }
+            try await vm.sequenceStep(beatmap: bm)
         }
-        pipelineTask = task
-        await task.value
-        pipelineTask = nil
 
         // Land on the storyboard once we're truly done — but only if we
         // actually produced a plan. On cancel/error, stay on the Analysis
         // tab so the user can read the last status and re-run.
-        if montagePlan != nil && processingStatus.error == nil {
+        if case .completed = pipelineState {
             goToStage(.storyboard)
         }
+    }
+
+    private func runPipelineTask(_ work: @escaping @MainActor (WorkspaceViewModel) async throws -> Void) async {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await work(self)
+            } catch is CancellationError {
+                logger.info("Pipeline cancelled at \(self.pipelineState.phase.rawValue, privacy: .public)")
+                self.send(.cancel)
+                self.appendPipelineLog(phase: self.pipelineState.phase, progress: self.pipelineState.progress, message: self.pipelineState.message)
+            } catch {
+                logger.error("Pipeline failed at \(self.pipelineState.phase.rawValue, privacy: .public): \(error.localizedDescription)")
+                self.send(.fail(error.localizedDescription))
+                self.appendPipelineLog(phase: self.pipelineState.phase, progress: self.pipelineState.progress, message: "Error: \(error.localizedDescription)")
+            }
+        }
+        pipelineTask = task
+        await task.value
+        pipelineTask = nil
+    }
+
+    @discardableResult
+    private func analyzeAudioStep(track: SongTrack) async throws -> Beatmap {
+        report(.analyzingAudio, progress: 0, message: "Analyzing \(track.title)...")
+        logger.info("Audio analysis started: \(track.fileURL.lastPathComponent)")
+
+        let result = try await beatmapService.analyzeSong(at: track.fileURL) { [weak self] prog, msg in
+            Task { @MainActor in
+                self?.report(.analyzingAudio, progress: prog * 0.20, message: msg)
+            }
+        }
+        beatmap = result
+        project.beatmap = result
+        logger.info("Audio analysis complete: BPM=\(result.bpm, format: .fixed(precision: 1)), duration=\(result.durationSeconds, format: .fixed(precision: 1))s, sections=\(result.sections.count)")
+
+        if var t = songTrack {
+            t.bpm = result.bpm
+            t.fileURL = track.fileURL.absoluteURL
+            songTrack = t
+            project.songTrack = t
+            appVM.updateProject(project)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func scoreStep() async throws {
+        report(.scoringPhotos, progress: 0.20, message: "Analyzing \(assets.count) assets on-device...")
+        let density = project.settings.scoringDensity
+        logger.info("Photo scoring started: \(self.assets.count) assets, density=\(density.rawValue, privacy: .public)")
+
+        let result = try await scoringService.scorePhotos(
+            for: project,
+            assets: assets,
+            density: density
+        ) { [weak self] prog, msg in
+            Task { @MainActor in
+                self?.report(.scoringPhotos, progress: 0.20 + prog * 0.50, message: msg)
+            }
+        }
+
+        let scoreMap = Dictionary(uniqueKeysWithValues: result.scoredAssets.map { ($0.id, $0) })
+        assets = assets.map { scoreMap[$0.id] ?? $0 }
+        let semanticAssets = await semanticService.enrichAssets(assets) { [weak self] prog, msg in
+            Task { @MainActor in
+                self?.report(.scoringPhotos, progress: 0.70 + prog * 0.15, message: msg)
+            }
+        }
+        assets = semanticAssets
+        project.analyzedAssets = assets
+        appVM.updateProject(project)
+        let included = result.candidates.filter(\.isIncluded).count
+        logger.info("Photo scoring complete: \(included)/\(result.candidates.count) candidates selected")
+        try Task.checkCancellation()
+    }
+
+    private func sequenceStep(beatmap bm: Beatmap) async throws {
+        let preflight = preflight(bm)
+        sendGate(.evaluate(preflight))
+        if shortfallGate.blocksBuild {
+            logger.info("buildSequence: shortfall detected (\(preflight.estimatedShortfall) clips, \(preflight.estimatedShortfallSeconds, format: .fixed(precision: 1))s) — awaiting user ack")
+            send(.awaitShortfallAck)
+            appendPipelineLog(phase: .sequencing, progress: pipelineState.progress, message: pipelineState.message)
+            return
+        }
+
+        report(.sequencing, progress: 0.85, message: "Building sequence...")
+        logger.info("Sequence building started: \(self.assets.count) assets, \(bm.sections.count) sections")
+
+        let plan = await sequencerService.buildSequence(
+            title: project.title,
+            settings: project.settings,
+            assets: assets,
+            beatmap: bm
+        ) { [weak self] prog, msg in
+            Task { @MainActor in
+                self?.report(.sequencing, progress: 0.85 + prog * 0.15, message: msg)
+            }
+        }
+        try Task.checkCancellation()
+
+        logger.info("Sequence built: \(plan.sequence.count) clips, duration=\(plan.totalDuration, format: .fixed(precision: 1))s")
+        montagePlan = plan
+        project.montagePlan = plan
+        appVM.updateProject(project)
+        send(.complete(at: Date()))
+        appendPipelineLog(phase: .complete, progress: 1, message: pipelineState.message)
+    }
+
+    private func preflight(_ bm: Beatmap) -> SequencerPreflight {
+        sequencerService.preflight(settings: project.settings, assets: assets, beatmap: bm)
+    }
+
+    // MARK: - State Transitions
+
+    @discardableResult
+    private func send(_ event: PipelineEvent) -> Bool {
+        guard let next = pipelineState.next(on: event) else {
+            logger.debug("Pipeline ignored \(String(describing: event), privacy: .public) in \(String(describing: self.pipelineState), privacy: .public)")
+            return false
+        }
+        pipelineState = next
+        return true
+    }
+
+    @discardableResult
+    private func sendGate(_ event: ShortfallGateEvent) -> Bool {
+        guard let next = shortfallGate.next(on: event) else {
+            logger.debug("Shortfall gate ignored \(String(describing: event), privacy: .public) in \(String(describing: self.shortfallGate), privacy: .public)")
+            return false
+        }
+        shortfallGate = next
+        return true
+    }
+
+    private func report(_ phase: ProcessingPhase, progress: Double, message: String) {
+        guard send(.progress(phase, progress: progress, message: message)) else { return }
+        appendPipelineLog(phase: phase, progress: progress, message: message)
     }
 
     // MARK: - Pipeline Log
@@ -659,7 +612,6 @@ final class WorkspaceViewModel {
             } catch is CancellationError {
                 logger.info("Render cancelled")
                 self.appendRenderLog(progress: self.renderProgress, message: "Render cancelled")
-                self.cancelledNotice = "Render cancelled"
             } catch {
                 logger.error("Render failed: \(error.localizedDescription)")
                 self.appendRenderLog(progress: self.renderProgress, message: "Error: \(error.localizedDescription)")
@@ -705,13 +657,9 @@ final class WorkspaceViewModel {
         project.montagePlan = nil
         renderedVideoURL = nil
         project.exportedVideoURL = nil
-        clipShortfall = nil
-        pendingShortfallAck = false
+        sendGate(.reset)
         renderError = nil
-
-        if !isProcessing {
-            processingStatus = ProcessingStatus(projectID: project.id)
-        }
+        send(.reset)
 
         if selectedTab == .storyboard {
             if hasSong && !assets.isEmpty {
@@ -759,7 +707,6 @@ final class WorkspaceViewModel {
             return merged
         }
 
-        photosScoredSuccessfully = allAssetsScored
         assetsFullyRestored = resolved.count == project.assetIDs.count
         isRestoringAssets = false
     }
@@ -773,7 +720,6 @@ final class WorkspaceViewModel {
         project.assetIDs = assets.map(\.id)
         project.analyzedAssets = assets
         project.updatedAt = Date()
-        photosScoredSuccessfully = false
         invalidateGeneratedOutputs()
         appVM.updateProject(project)
     }
@@ -784,7 +730,6 @@ final class WorkspaceViewModel {
         assets.removeAll { $0.id == asset.id }
         project.assetIDs.removeAll { $0 == asset.id }
         project.analyzedAssets = assets
-        photosScoredSuccessfully = false
         invalidateGeneratedOutputs()
         appVM.updateProject(project)
     }
@@ -905,7 +850,10 @@ final class WorkspaceViewModel {
             $0.analysisScore != nil && $0.analysisVersion == VisualSignals.analysisVersion
         }
     }
-    var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing }
+    var isProcessing: Bool { pipelineState.isRunning }
+    var isGeneratingPlan: Bool { isProcessing && pipelineState.phase == .sequencing }
+    var clipShortfall: SequencerPreflight? { shortfallGate.warning }
+    var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing && !isRendering }
     var hasPlan: Bool { montagePlan != nil }
     var displayStatus: ProjectStatus { isProcessing ? .analyzing : project.status }
 }
