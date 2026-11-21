@@ -46,8 +46,9 @@ Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
 - **`AppViewModel`** — global project list, navigation state (`projects → workspace(Project)`; the app launches straight into the projects list), projects-list selection (`selectedProjectID`) and New Project sheet flag (both targeted by menu commands), Photos permission, on-disk persistence via `ProjectStore` (injectable; stale Songs/Exports cleanup is rooted at the store's directory, so tests pass a scratch store).
 - **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, montage plan, render state, clip-shortage preflight, cancellation, pipeline log. Holds a weak `activeImportVM` so Edit-menu commands can reach the photos grid.
+- **`ImportViewModel`** — import tab: album browsing, asset selection, filtering/sorting, PhotosPicker integration.
 
-Both view models are `@MainActor`, so every state transition is serialized.
+`AppViewModel` and `WorkspaceViewModel` are `@MainActor`, so every state transition is serialized.
 
 ### Explicit State Machines
 
@@ -58,7 +59,6 @@ Long-running workspace state lives in enums with a pure `next(on: Event) -> Stat
 - **`RenderState`** (`Models/RenderState.swift`) — `idle / rendering(progress, message) / finished(URL) / failed / cancelled`. `isRendering`, `renderProgress`, `renderProgressMessage`, `renderedVideoURL`, `renderError` are projections.
 - **`AssetRestoreState`** — `idle / restoring / restored(missingCount:)`.
 - **Pipeline and render are mutually exclusive**: neither starts (nor does song import) while the other runs.
-- **`ImportViewModel`** — import tab: album browsing, asset selection, filtering/sorting, PhotosPicker integration.
 
 ### Menu Commands & Keyboard Shortcuts
 
