@@ -126,7 +126,7 @@ struct StoryboardContentView: View {
                 MSIconButton(icon: "arrow.clockwise", help: "Re-sequence") {
                     Task { await workspaceVM.buildSequence() }
                 }
-                .disabled(workspaceVM.isProcessing || workspaceVM.isGeneratingPlan)
+                .disabled(workspaceVM.isProcessing || workspaceVM.isRendering)
             }
 
             List(selection: $selectedItemID) {
@@ -395,7 +395,7 @@ struct StoryboardContentView: View {
                         Task { await workspaceVM.renderVideo() }
                     }
                 }
-                .disabled(workspaceVM.isRendering || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
+                .disabled(workspaceVM.isRendering || workspaceVM.isProcessing || workspaceVM.montagePlan == nil || workspaceVM.assets.isEmpty)
                 .help("Export Video (⇧⌘E)")
             }
 

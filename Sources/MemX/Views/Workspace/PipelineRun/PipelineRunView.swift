@@ -193,6 +193,7 @@ struct PipelineRunView: View {
             MSSecondaryButton("Re-run", icon: "arrow.clockwise") {
                 Task { await workspaceVM.runPipeline() }
             }
+            .disabled(workspaceVM.isRendering)
             .help("Run Pipeline (⌘R)")
             MSPrimaryButton("View Storyboard", icon: "arrow.right") {
                 workspaceVM.goToStage(.storyboard)

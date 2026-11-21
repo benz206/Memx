@@ -161,6 +161,7 @@ struct WorkspaceView: View {
                             MSButtonLabel(title: "Re-run Pipeline", icon: "arrow.clockwise").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.ms(.secondary))
+                        .disabled(workspaceVM.isRendering)
                         .help("Run Pipeline (⌘R)")
                     } else {
                         Button { Task { await workspaceVM.runPipeline() } } label: {

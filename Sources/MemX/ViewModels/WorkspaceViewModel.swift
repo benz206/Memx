@@ -95,11 +95,7 @@ final class WorkspaceViewModel {
     var isEditingTitle: Bool = false
 
     // MARK: Render
-    var isRendering: Bool = false
-    var renderProgress: Double = 0
-    var renderProgressMessage: String = ""
-    var renderedVideoURL: URL? = nil
-    var renderError: String? = nil
+    var renderState: RenderState = .idle
     var renderLog: [RenderLogEntry] = []
 
     // MARK: Cancellation
@@ -139,7 +135,7 @@ final class WorkspaceViewModel {
         self.beatmap = project.beatmap
 
         if let url = project.exportedVideoURL, FileManager.default.fileExists(atPath: url.path) {
-            self.renderedVideoURL = url
+            self.renderState = .finished(url)
         }
 
         if let plan = project.montagePlan {
@@ -562,28 +558,24 @@ final class WorkspaceViewModel {
     // MARK: - Video Render
 
     func renderVideo() async {
-        guard let plan = montagePlan, !assets.isEmpty, !isRendering else { return }
+        guard let plan = montagePlan, !assets.isEmpty, !isRendering, !isProcessing else { return }
         guard let song = songTrack else { return }
-        guard FileManager.default.fileExists(atPath: song.fileURL.path) else {
-            renderError = "Song file not found. Please re-import the audio file."
-            return
-        }
+        guard sendRender(.start("Starting render…")) else { return }
 
         // Clear any prior render on disk before starting a new one — avoids
         // leaving both old and new files around if the re-render is cancelled.
-        if let existing = renderedVideoURL {
+        if let existing = project.exportedVideoURL {
             try? FileManager.default.removeItem(at: existing)
         }
-        renderedVideoURL = nil
         project.exportedVideoURL = nil
         appVM.updateProject(project)
 
-        isRendering = true
-        renderProgress = 0
-        renderProgressMessage = "Starting render…"
-        renderError = nil
         renderLog = []
         appendRenderLog(progress: 0, message: "Starting render — \(plan.sequence.count) clips, song volume \(Int(plan.settings.songVolume * 100))%")
+        guard FileManager.default.fileExists(atPath: song.fileURL.path) else {
+            sendRender(.fail("Song file not found. Please re-import the audio file."))
+            return
+        }
         logger.info("Render started: \(plan.sequence.count) clips, song=\(song.fileURL.lastPathComponent)")
 
         let task = Task { [weak self] in
@@ -598,31 +590,43 @@ final class WorkspaceViewModel {
                     beatmap: self.beatmap
                 ) { [weak self] (prog: Double, msg: String) in
                     Task { @MainActor in
-                        self?.renderProgress = prog
-                        self?.renderProgressMessage = msg
-                        self?.appendRenderLog(progress: prog, message: msg)
+                        self?.reportRender(progress: prog, message: msg)
                     }
                 }
                 let persistentURL = self.persistExport(from: tempURL)
-                self.renderedVideoURL = persistentURL
                 self.project.exportedVideoURL = persistentURL
                 self.appVM.updateProject(self.project)
+                self.sendRender(.finish(persistentURL))
                 self.appendRenderLog(progress: 1.0, message: "Saved to \(persistentURL.lastPathComponent)")
                 logger.info("Render complete: \(persistentURL.lastPathComponent)")
             } catch is CancellationError {
                 logger.info("Render cancelled")
                 self.appendRenderLog(progress: self.renderProgress, message: "Render cancelled")
+                self.sendRender(.cancel)
             } catch {
                 logger.error("Render failed: \(error.localizedDescription)")
                 self.appendRenderLog(progress: self.renderProgress, message: "Error: \(error.localizedDescription)")
-                self.renderError = error.localizedDescription
+                self.sendRender(.fail(error.localizedDescription))
             }
-
-            self.isRendering = false
         }
         renderTask = task
         await task.value
         renderTask = nil
+    }
+
+    @discardableResult
+    private func sendRender(_ event: RenderEvent) -> Bool {
+        guard let next = renderState.next(on: event) else {
+            logger.debug("Render ignored \(String(describing: event), privacy: .public) in \(String(describing: self.renderState), privacy: .public)")
+            return false
+        }
+        renderState = next
+        return true
+    }
+
+    private func reportRender(progress: Double, message: String) {
+        guard sendRender(.progress(progress, message)) else { return }
+        appendRenderLog(progress: progress, message: message)
     }
 
     // MARK: - Render Log
@@ -655,10 +659,9 @@ final class WorkspaceViewModel {
         montagePlan = nil
         selectedSequenceItem = nil
         project.montagePlan = nil
-        renderedVideoURL = nil
         project.exportedVideoURL = nil
         sendGate(.reset)
-        renderError = nil
+        sendRender(.reset)
         send(.reset)
 
         if selectedTab == .storyboard {
@@ -791,7 +794,7 @@ final class WorkspaceViewModel {
         if let url = renderedVideoURL {
             try? FileManager.default.removeItem(at: url)
         }
-        renderedVideoURL = nil
+        sendRender(.reset)
         project.exportedVideoURL = nil
         appVM.updateProject(project)
     }
@@ -851,6 +854,11 @@ final class WorkspaceViewModel {
         }
     }
     var isProcessing: Bool { pipelineState.isRunning }
+    var isRendering: Bool { renderState.isRendering }
+    var renderProgress: Double { renderState.progress }
+    var renderProgressMessage: String { renderState.message }
+    var renderedVideoURL: URL? { renderState.videoURL }
+    var renderError: String? { renderState.errorMessage }
     var isGeneratingPlan: Bool { isProcessing && pipelineState.phase == .sequencing }
     var clipShortfall: SequencerPreflight? { shortfallGate.warning }
     var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing && !isRendering }

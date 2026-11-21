@@ -51,34 +51,48 @@ private final class StubSequencer: SequencerServiceProtocol {
     }
 }
 
+private final class StubRenderService: VideoRenderServiceProtocol {
+    var duringRender: (() async -> Void)?
+
+    func render(plan: MontagePlan, songURL: URL, assets: [MediaAsset], beatmap: Beatmap?,
+                onProgress: @escaping (Double, String) -> Void) async throws -> URL {
+        await duringRender?()
+        throw StubError()
+    }
+}
+
 @MainActor
 final class WorkspacePipelineTests: XCTestCase {
 
     private var dir: URL!
     private var scoring: StubScoringService!
     private var sequencer: StubSequencer!
+    private var renderer: StubRenderService!
 
     override func setUpWithError() throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("memx-vm-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         scoring = StubScoringService()
         sequencer = StubSequencer()
+        renderer = StubRenderService()
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func makeVM(withBeatmap: Bool = true) -> WorkspaceViewModel {
+    private func makeVM(withBeatmap: Bool = true, withPlan: Bool = false) -> WorkspaceViewModel {
         let appVM = AppViewModel(store: ProjectStore(fileURL: dir.appendingPathComponent("projects.json")))
         var project = Project(title: "Test")
         project.songTrack = SongTrack(title: "Song", fileURL: dir.appendingPathComponent("song.mp3"))
         if withBeatmap { project.beatmap = MockDataProvider.mockBeatmap() }
+        if withPlan { project.montagePlan = MontagePlan(title: "P", settings: project.settings, sequence: []) }
         let vm = WorkspaceViewModel(project: project, appVM: appVM,
                                     beatmapService: StubBeatmapService(),
                                     scoringService: scoring,
                                     semanticService: StubSemanticService(),
-                                    sequencerService: sequencer)
+                                    sequencerService: sequencer,
+                                    renderService: renderer)
         vm.assets = MockDataProvider.mockAssets().map { asset in
             var a = asset
             a.analysisScore = nil
@@ -167,5 +181,54 @@ final class WorkspacePipelineTests: XCTestCase {
         }
         await vm.runPipeline()
         XCTAssertEqual(vm.displayStatus, .ready)
+    }
+
+    // MARK: - Render
+
+    private func createSongFile() {
+        FileManager.default.createFile(atPath: dir.appendingPathComponent("song.mp3").path, contents: Data())
+    }
+
+    func testRenderWithMissingSongFails() async {
+        let vm = makeVM(withPlan: true)
+        await vm.renderVideo()
+        XCTAssertEqual(vm.renderError, "Song file not found. Please re-import the audio file.")
+        XCTAssertFalse(vm.isRendering)
+    }
+
+    func testRenderServiceErrorEndsInFailed() async {
+        createSongFile()
+        let vm = makeVM(withPlan: true)
+        await vm.renderVideo()
+        XCTAssertEqual(vm.renderState, .failed("scoring exploded"))
+        XCTAssertNil(vm.project.exportedVideoURL)
+    }
+
+    func testPipelineIsRefusedWhileRendering() async {
+        createSongFile()
+        let vm = makeVM(withPlan: true)
+        renderer.duringRender = { [weak vm] in
+            guard let vm else { return }
+            await vm.runPipeline()
+            await MainActor.run {
+                XCTAssertTrue(vm.isRendering)
+                XCTAssertFalse(vm.isProcessing)
+                XCTAssertFalse(vm.canRunPipeline)
+            }
+        }
+        await vm.renderVideo()
+        XCTAssertEqual(sequencer.buildCount, 0)
+    }
+
+    func testRenderIsRefusedWhilePipelineRuns() async {
+        createSongFile()
+        let vm = makeVM(withPlan: true)
+        scoring.duringScoring = { [weak vm] in
+            guard let vm else { return }
+            await vm.renderVideo()
+            await MainActor.run { XCTAssertEqual(vm.renderState, .idle) }
+        }
+        await vm.runPipeline()
+        guard case .completed = vm.pipelineState else { return XCTFail("\(vm.pipelineState)") }
     }
 }

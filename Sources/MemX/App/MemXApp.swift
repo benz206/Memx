@@ -58,7 +58,8 @@ public struct MemXApp: App {
                     Task { await vm.renderVideo() }
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(workspaceVM?.hasPlan != true || workspaceVM?.isRendering == true)
+                .disabled(workspaceVM?.hasPlan != true || workspaceVM?.isRendering == true
+                          || workspaceVM?.isProcessing == true)
 
                 Button("Stop") {
                     workspaceVM?.cancelPipeline()
