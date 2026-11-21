@@ -44,8 +44,20 @@ App (MemXApp + ContentView)
 
 Uses the `@Observable` macro (Swift 5.9+). Three ViewModels:
 
-- **`AppViewModel`** — global project list, navigation state (`projects → workspace(Project)`; the app launches straight into the projects list), projects-list selection (`selectedProjectID`) and New Project sheet flag (both targeted by menu commands), Photos permission, on-disk persistence via `ProjectStore`.
+- **`AppViewModel`** — global project list, navigation state (`projects → workspace(Project)`; the app launches straight into the projects list), projects-list selection (`selectedProjectID`) and New Project sheet flag (both targeted by menu commands), Photos permission, on-disk persistence via `ProjectStore` (injectable; stale Songs/Exports cleanup is rooted at the store's directory, so tests pass a scratch store).
 - **`WorkspaceViewModel`** — open-project state: song/beatmap, assets, montage plan, render state, clip-shortage preflight, cancellation, pipeline log. Holds a weak `activeImportVM` so Edit-menu commands can reach the photos grid.
+
+Both view models are `@MainActor`, so every state transition is serialized.
+
+### Explicit State Machines
+
+Long-running workspace state lives in enums with a pure `next(on: Event) -> State?` transition table (nil = illegal; the view-model's `send`/`sendGate`/`sendRender` logs and ignores it). Never mutate these with ad hoc flags — add an event and a table row, and unit-test it (`PipelineStateTests`, `RenderStateTests`).
+
+- **`PipelineState`** (`Models/PipelineState.swift`) — `idle / running(phase, progress, message) / awaitingShortfallAck / completed / failed(phase, …) / cancelled(phase, …)`. Phases only advance forward while running (late progress callbacks from an earlier phase are dropped); `complete` is legal only from `sequencing`; `reset` is refused while running. `isProcessing`, `isGeneratingPlan` are projections.
+- **`ShortfallGate`** (same file) — `clear / warning(SequencerPreflight) / acknowledged`. Acknowledgement survives re-evaluation until inputs change (`reset` from `invalidateGeneratedOutputs`). `clipShortfall` is a projection.
+- **`RenderState`** (`Models/RenderState.swift`) — `idle / rendering(progress, message) / finished(URL) / failed / cancelled`. `isRendering`, `renderProgress`, `renderProgressMessage`, `renderedVideoURL`, `renderError` are projections.
+- **`AssetRestoreState`** — `idle / restoring / restored(missingCount:)`.
+- **Pipeline and render are mutually exclusive**: neither starts (nor does song import) while the other runs.
 - **`ImportViewModel`** — import tab: album browsing, asset selection, filtering/sorting, PhotosPicker integration.
 
 ### Menu Commands & Keyboard Shortcuts
@@ -64,7 +76,7 @@ Defined in `MemXApp.commands`, enabled/disabled from live view-model state (via 
 
 ### Key Models
 
-- **`Project`** — root container; status flows `draft → configuring → importing → analyzing → ready → exported`. `MontageSettings` includes `scoringDensity` (decoded with `decodeIfPresent` for backward compatibility with older saved projects).
+- **`Project`** — root container; `status` is derived, not stored: no plan → `draft` (no song, no assets) / `configuring`; plan → `ready` / `exported` (has `exportedVideoURL`). `.analyzing` is live-only via `WorkspaceViewModel.displayStatus`. The derived value is still encoded under `status` so older builds can decode new files. `MontageSettings` includes `scoringDensity` (decoded with `decodeIfPresent` for backward compatibility with older saved projects).
 - **`ScoringDensity`** (`verySparse / sparse / balanced / dense / veryDense`) — controls service concurrency, and whether on-device shot understanding runs (off for the two sparse levels). `balanced` is the default.
 - **`MediaAsset`** — wraps a `PHAsset`; post-analysis fields include `qualityScore`, `emotionScore`, `noveltyScore`, `eventLabel`, `sceneLabels: [String]?`, `sceneCaption: String?`, `semanticSummary: String?`, `motionEnergy: Float?` (0 still … 1 jumping/action; matched against audio energy in the sequencer), `semanticEmbedding: [Float]?`, `visualEmbedding: [Float]?`, `analysisVersion`, `isUtility`, `faceCount`, `focusPoint`, `mood`, `highlightScore`. The two embeddings are persisted as base64 Float32 blobs via custom Codable (legacy `[Float]` JSON still decodes). `WorkspaceViewModel.restoreAssets` copies analysis fields field-by-field — add new ones there too.
 - **`Beatmap`** — BPM, duration, energy curve, `[BeatSection]` (with `onsetDensity`), `[Double]` beats, drops/vocal peaks, `phraseStarts`, `beatStrengths`, `hooks: [HookMoment]`, and `downbeatIndex` (all new fields decode legacy JSON via `decodeIfPresent`).
@@ -73,11 +85,13 @@ Defined in `MemXApp.commands`, enabled/disabled from live view-model state (via 
 
 ### Analysis Pipeline
 
-`WorkspaceViewModel.runPipeline()` orchestrates; each service reports progress via a `(Double, String)` callback that the view-model splits into a global 0.0–1.0 range:
+`WorkspaceViewModel.runPipeline()` (and the storyboard's `buildSequence()`, which shares the same runner without switching tabs) drives `PipelineState` through one cancellable task, skipping steps whose output already exists; each service reports progress via a `(Double, String)` callback that the view-model splits into a global 0.0–1.0 range:
 
-1. `analyzeAudio` → `BeatmapService`
-2. `scorePhotos` → `PhotoScoringService` (on-device, bounded concurrency), then `SemanticEmbeddingService` for semantic embeddings
-3. `buildSequence` → `SequencerService`. Preflighted first — if the plan would run out of unique clips, `clipShortfall` is populated and `pendingShortfallAck` gates the build until the user confirms (Add Photos / Build Anyway / Dismiss).
+1. Audio (0–0.20) → `BeatmapService`, only if there's no beatmap
+2. Scoring (0.20–0.85) → `PhotoScoringService` (on-device, bounded concurrency), then `SemanticEmbeddingService` for semantic embeddings, only if any asset is unscored or stale
+3. Sequencing (0.85–1.0) → `SequencerService`. Gated by `ShortfallGate` first — if the plan would run out of unique clips the run pauses in `awaitingShortfallAck` until the user confirms (Add Photos / Build Anyway / Dismiss).
+
+Any thrown error ends in `failed(phase:)` and stops the run; cancellation ends in `cancelled(phase:)`. Song import runs step 1 alone (`analyzeAudio(track:)` → `finishStep` back to `idle`).
 
 Analysis results are persisted on the project (`analyzedAssets`) so tab switches and relaunches don't repay analysis work.
 
@@ -98,7 +112,7 @@ Analysis results are persisted on the project (`analyzedAssets`) so tab switches
 
 ### Clip-Shortage Preflight
 
-`SequencerPreflight` (returned by `SequencerService.preflight(settings:assets:beatmap:)`) reports `requiredClipCount`, `availableClipCount`, `estimatedShortfall`, `estimatedShortfallSeconds`. If `hasShortfall`, `WorkspaceViewModel` stores it on `clipShortfall` and sets `pendingShortfallAck` so the workspace can render a warning banner. The user either adds more photos, confirms "Build Anyway", or dismisses.
+`SequencerPreflight` (returned by `SequencerService.preflight(settings:assets:beatmap:)`) reports `requiredClipCount`, `availableClipCount`, `estimatedShortfall`, `estimatedShortfallSeconds`. It's evaluated into `ShortfallGate` twice: early (advisory, before scoring, if a beatmap exists — scores change the eligible pool) and authoritatively right before sequencing. While the gate is `warning` the workspace renders a banner. "Build Anyway" acknowledges (and resumes the run if it's paused; mid-run it's remembered); "Dismiss" clears the warning and, if paused, returns the pipeline to `idle`.
 
 ### Design System
 
