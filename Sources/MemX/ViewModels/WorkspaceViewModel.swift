@@ -328,11 +328,6 @@ final class WorkspaceViewModel {
         songTrack = track
         project.songTrack = track
         invalidateGeneratedOutputs(clearBeatmap: true)
-
-        if project.status == .draft {
-            project.status = .configuring
-        }
-
         appVM.updateProject(project)
 
         await analyzeAudio(track: track)
@@ -349,8 +344,6 @@ final class WorkspaceViewModel {
         processingStatus.progress = 0
         processingStatus.message = "Analyzing \(track.title)..."
         processingStatus.error = nil
-        project.status = .analyzing
-        appVM.updateProject(project)
         logger.info("Audio analysis started: \(track.fileURL.lastPathComponent)")
 
         do {
@@ -378,8 +371,6 @@ final class WorkspaceViewModel {
         } catch {
             logger.error("Audio analysis failed: \(error.localizedDescription)")
             processingStatus.error = error.localizedDescription
-            project.status = .draft
-            appVM.updateProject(project)
         }
 
         isProcessing = false
@@ -403,8 +394,6 @@ final class WorkspaceViewModel {
         appendPipelineLog(phase: .scoringPhotos, progress: processingStatus.progress, message: processingStatus.message)
         let density = project.settings.scoringDensity
         logger.info("Photo scoring started: \(self.assets.count) assets, density=\(density.rawValue, privacy: .public)")
-
-        let priorStatus = project.status
 
         do {
             try Task.checkCancellation()
@@ -443,8 +432,6 @@ final class WorkspaceViewModel {
 
         } catch is CancellationError {
             logger.info("Photo scoring cancelled")
-            project.status = priorStatus
-            appVM.updateProject(project)
             cancelledNotice = "Pipeline cancelled"
             isProcessing = false
             return
@@ -531,7 +518,6 @@ final class WorkspaceViewModel {
         logger.info("Sequence built: \(plan.sequence.count) clips, duration=\(plan.totalDuration, format: .fixed(precision: 1))s")
         montagePlan = plan
         project.montagePlan = plan
-        project.status = .ready
         processingStatus.phase = .complete
         processingStatus.progress = 1.0
         processingStatus.message = "Pipeline complete — storyboard ready"
@@ -637,7 +623,6 @@ final class WorkspaceViewModel {
         }
         renderedVideoURL = nil
         project.exportedVideoURL = nil
-        if project.status == .exported { project.status = .ready }
         appVM.updateProject(project)
 
         isRendering = true
@@ -668,7 +653,6 @@ final class WorkspaceViewModel {
                 let persistentURL = self.persistExport(from: tempURL)
                 self.renderedVideoURL = persistentURL
                 self.project.exportedVideoURL = persistentURL
-                self.project.status = .exported
                 self.appVM.updateProject(self.project)
                 self.appendRenderLog(progress: 1.0, message: "Saved to \(persistentURL.lastPathComponent)")
                 logger.info("Render complete: \(persistentURL.lastPathComponent)")
@@ -727,10 +711,6 @@ final class WorkspaceViewModel {
 
         if !isProcessing {
             processingStatus = ProcessingStatus(projectID: project.id)
-        }
-
-        if project.status == .ready || project.status == .exported || project.status == .analyzing {
-            project.status = .configuring
         }
 
         if selectedTab == .storyboard {
@@ -795,9 +775,6 @@ final class WorkspaceViewModel {
         project.updatedAt = Date()
         photosScoredSuccessfully = false
         invalidateGeneratedOutputs()
-        if project.status == .draft {
-            project.status = .configuring
-        }
         appVM.updateProject(project)
     }
 
@@ -871,7 +848,6 @@ final class WorkspaceViewModel {
         }
         renderedVideoURL = nil
         project.exportedVideoURL = nil
-        if project.status == .exported { project.status = .ready }
         appVM.updateProject(project)
     }
 
@@ -931,4 +907,5 @@ final class WorkspaceViewModel {
     }
     var canRunPipeline: Bool { hasSong && !assets.isEmpty && !isProcessing }
     var hasPlan: Bool { montagePlan != nil }
+    var displayStatus: ProjectStatus { isProcessing ? .analyzing : project.status }
 }

@@ -50,10 +50,58 @@ final class ProjectModelTests: XCTestCase {
 
     func testProjectStatusRawValues() {
         XCTAssertEqual(ProjectStatus.draft.rawValue, "Draft")
-        XCTAssertEqual(ProjectStatus.importing.rawValue, "Importing")
         XCTAssertEqual(ProjectStatus.analyzing.rawValue, "Analyzing")
         XCTAssertEqual(ProjectStatus.ready.rawValue, "Ready")
         XCTAssertEqual(ProjectStatus.exported.rawValue, "Exported")
+    }
+
+    func testStatusIsConfiguringOnceASongIsSet() {
+        var project = Project(title: "Test")
+        project.songTrack = SongTrack(title: "Song", fileURL: URL(fileURLWithPath: "/tmp/s.mp3"))
+        XCTAssertEqual(project.status, .configuring)
+    }
+
+    func testStatusIsConfiguringOnceAssetsAreChosen() {
+        var project = Project(title: "Test")
+        project.assetIDs = ["a"]
+        XCTAssertEqual(project.status, .configuring)
+    }
+
+    func testStatusIsReadyWithAPlan() {
+        var project = Project(title: "Test")
+        project.montagePlan = MontagePlan(title: "P", settings: MontageSettings(), sequence: [])
+        XCTAssertEqual(project.status, .ready)
+    }
+
+    func testStatusIsExportedWithAPlanAndExport() {
+        var project = Project(title: "Test")
+        project.montagePlan = MontagePlan(title: "P", settings: MontageSettings(), sequence: [])
+        project.exportedVideoURL = URL(fileURLWithPath: "/tmp/out.mp4")
+        XCTAssertEqual(project.status, .exported)
+    }
+
+    func testStaleExportWithoutPlanIsNotExported() {
+        var project = Project(title: "Test")
+        project.assetIDs = ["a"]
+        project.exportedVideoURL = URL(fileURLWithPath: "/tmp/out.mp4")
+        XCTAssertEqual(project.status, .configuring)
+    }
+
+    func testLegacyPersistedStatusIsIgnored() throws {
+        var project = Project(title: "Legacy")
+        project.assetIDs = ["a"]
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as! [String: Any]
+        for legacy in ["Importing", "Analyzing", "Exported"] {
+            json["status"] = legacy
+            let data = try JSONSerialization.data(withJSONObject: json)
+            XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data).status, .configuring)
+        }
+    }
+
+    func testEncodedProjectStillCarriesStatusForOlderBuilds() throws {
+        let project = Project(title: "Compat")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as! [String: Any]
+        XCTAssertEqual(json["status"] as? String, "Draft")
     }
 
     // MARK: - AspectRatio
@@ -116,7 +164,7 @@ final class ProjectModelTests: XCTestCase {
 
     func testProjectCodableRoundTrip() throws {
         var project = Project(title: "Codable Test", settings: MontageSettings(vibe: .hype, focus: .friends))
-        project.status = .ready
+        project.montagePlan = MontagePlan(title: "P", settings: project.settings, sequence: [])
         let data = try JSONEncoder().encode(project)
         let decoded = try JSONDecoder().decode(Project.self, from: data)
         XCTAssertEqual(decoded.id, project.id)

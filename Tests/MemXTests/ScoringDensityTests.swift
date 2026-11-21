@@ -79,7 +79,7 @@ final class ScoringDensityTests: XCTestCase {
             title: "Density Test",
             settings: MontageSettings(scoringDensity: .veryDense)
         )
-        project.status = .ready
+        project.montagePlan = MontagePlan(title: "P", settings: project.settings, sequence: [])
         let data = try JSONEncoder().encode(project)
         let decoded = try JSONDecoder().decode(Project.self, from: data)
         XCTAssertEqual(decoded.settings.scoringDensity, .veryDense)

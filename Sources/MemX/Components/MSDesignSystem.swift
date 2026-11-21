@@ -658,7 +658,6 @@ extension ProjectStatus {
     var displayColor: Color {
         switch self {
         case .draft:        return .secondary
-        case .importing:    return MSColor.info
         case .analyzing:    return MSColor.warning
         case .configuring:  return .secondary
         case .ready:        return MSColor.success

@@ -10,7 +10,6 @@ struct Project: Identifiable, Codable, Hashable {
     var assetIDs: [String]          // PHAsset localIdentifiers
     var analyzedAssets: [MediaAsset] = []  // Persisted scored assets (restored on reopen)
     var settings: MontageSettings
-    var status: ProjectStatus
     var songTrack: SongTrack?
     var montagePlan: MontagePlan?
     var exportedVideoURL: URL?
@@ -29,7 +28,13 @@ struct Project: Identifiable, Codable, Hashable {
         self.assetIDs = []
         self.analyzedAssets = []
         self.settings = settings
-        self.status = .draft
+    }
+
+    var status: ProjectStatus {
+        guard montagePlan != nil else {
+            return songTrack == nil && assetIDs.isEmpty ? .draft : .configuring
+        }
+        return exportedVideoURL == nil ? .ready : .exported
     }
 
     enum CodingKeys: String, CodingKey {
@@ -45,11 +50,26 @@ struct Project: Identifiable, Codable, Hashable {
         assetIDs = try c.decode([String].self, forKey: .assetIDs)
         analyzedAssets = try c.decodeIfPresent([MediaAsset].self, forKey: .analyzedAssets) ?? []
         settings = try c.decode(MontageSettings.self, forKey: .settings)
-        status = try c.decode(ProjectStatus.self, forKey: .status)
         songTrack = try c.decodeIfPresent(SongTrack.self, forKey: .songTrack)
         montagePlan = try c.decodeIfPresent(MontagePlan.self, forKey: .montagePlan)
         exportedVideoURL = try c.decodeIfPresent(URL.self, forKey: .exportedVideoURL)
         beatmap = try c.decodeIfPresent(Beatmap.self, forKey: .beatmap)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encode(assetIDs, forKey: .assetIDs)
+        try c.encode(analyzedAssets, forKey: .analyzedAssets)
+        try c.encode(settings, forKey: .settings)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(songTrack, forKey: .songTrack)
+        try c.encodeIfPresent(montagePlan, forKey: .montagePlan)
+        try c.encodeIfPresent(exportedVideoURL, forKey: .exportedVideoURL)
+        try c.encodeIfPresent(beatmap, forKey: .beatmap)
     }
 }
 
@@ -58,7 +78,6 @@ struct Project: Identifiable, Codable, Hashable {
 enum ProjectStatus: String, Codable, CaseIterable {
     case draft        = "Draft"
     case configuring  = "Configuring"
-    case importing    = "Importing"
     case analyzing    = "Analyzing"
     case ready        = "Ready"
     case exported     = "Exported"
@@ -67,7 +86,6 @@ enum ProjectStatus: String, Codable, CaseIterable {
         switch self {
         case .draft:        return "doc.badge.plus"
         case .configuring:  return "slider.horizontal.3"
-        case .importing:    return "arrow.down.circle"
         case .analyzing:    return "cpu"
         case .ready:        return "checkmark.circle.fill"
         case .exported:     return "film.stack"

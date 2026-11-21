@@ -399,8 +399,8 @@ struct WorkspaceView: View {
     private var toolbarActions: some View {
         HStack(spacing: MS.Spacing.sm) {
             MSBadge(
-                text: workspaceVM.project.status.displayName,
-                color: workspaceVM.project.status.displayColor,
+                text: workspaceVM.displayStatus.displayName,
+                color: workspaceVM.displayStatus.displayColor,
                 size: .small,
                 showsDot: true
             )
