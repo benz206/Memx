@@ -60,6 +60,7 @@ enum WorkspaceStageState: Hashable {
 
 // MARK: - WorkspaceViewModel
 
+@MainActor
 @Observable
 final class WorkspaceViewModel {
 

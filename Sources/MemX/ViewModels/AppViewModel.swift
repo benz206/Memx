@@ -13,6 +13,7 @@ enum NavigationState: Hashable {
 
 // MARK: - AppViewModel
 
+@MainActor
 @Observable
 final class AppViewModel {
 
