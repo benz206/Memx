@@ -58,6 +58,12 @@ enum WorkspaceStageState: Hashable {
     case running
 }
 
+enum AssetRestoreState: Hashable {
+    case idle
+    case restoring
+    case restored(missingCount: Int)
+}
+
 // MARK: - WorkspaceViewModel
 
 @MainActor
@@ -77,8 +83,7 @@ final class WorkspaceViewModel {
 
     // MARK: Assets
     var assets: [MediaAsset] = []
-    var isRestoringAssets: Bool = false
-    var assetsFullyRestored: Bool = true
+    var assetRestore: AssetRestoreState = .idle
 
     // MARK: Processing
     var pipelineState: PipelineState = .idle
@@ -676,8 +681,8 @@ final class WorkspaceViewModel {
     }
 
     func restoreAssets() async {
-        guard assets.isEmpty, !project.assetIDs.isEmpty else { return }
-        isRestoringAssets = true
+        guard assetRestore != .restoring, assets.isEmpty, !project.assetIDs.isEmpty else { return }
+        assetRestore = .restoring
         let resolved = await PhotosLibraryService.shared.resolveAssets(for: project.assetIDs)
 
         // Merge persisted analysis data back into PHAsset-resolved structs
@@ -710,8 +715,7 @@ final class WorkspaceViewModel {
             return merged
         }
 
-        assetsFullyRestored = resolved.count == project.assetIDs.count
-        isRestoringAssets = false
+        assetRestore = .restored(missingCount: project.assetIDs.count - resolved.count)
     }
 
     func addAssets(_ newAssets: [MediaAsset]) {
@@ -852,6 +856,11 @@ final class WorkspaceViewModel {
         !assets.isEmpty && assets.allSatisfy {
             $0.analysisScore != nil && $0.analysisVersion == VisualSignals.analysisVersion
         }
+    }
+    var isRestoringAssets: Bool { assetRestore == .restoring }
+    var assetsFullyRestored: Bool {
+        if case let .restored(missingCount) = assetRestore { return missingCount == 0 }
+        return true
     }
     var isProcessing: Bool { pipelineState.isRunning }
     var isRendering: Bool { renderState.isRendering }
