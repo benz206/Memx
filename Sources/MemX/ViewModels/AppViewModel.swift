@@ -34,7 +34,10 @@ final class AppViewModel {
     // MARK: Photos Permission
     var photosPermissionStatus = PhotosLibraryService.shared.authorizationStatus()
 
-    init() {
+    private let store: ProjectStore
+
+    init(store: ProjectStore = .shared) {
+        self.store = store
         if loadProjects() {
             cleanUpStaleProjectData()
         }
@@ -106,19 +109,16 @@ final class AppViewModel {
         if let videoURL = project.exportedVideoURL {
             try? fm.removeItem(at: videoURL)
         }
-        if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let memxBase = base.appendingPathComponent("MemX")
-            let songDir = memxBase.appendingPathComponent("Songs/\(project.id.uuidString)")
-            try? fm.removeItem(at: songDir)
-            let exportFile = memxBase.appendingPathComponent("Exports/\(project.id.uuidString).mp4")
-            try? fm.removeItem(at: exportFile)
-        }
+        let memxBase = store.directory
+        let songDir = memxBase.appendingPathComponent("Songs/\(project.id.uuidString)")
+        try? fm.removeItem(at: songDir)
+        let exportFile = memxBase.appendingPathComponent("Exports/\(project.id.uuidString).mp4")
+        try? fm.removeItem(at: exportFile)
     }
 
     private func cleanUpStaleProjectData() {
         let fm = FileManager.default
-        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let memxBase = base.appendingPathComponent("MemX")
+        let memxBase = store.directory
         let validIDs = Set(projects.map { $0.id.uuidString })
 
         let songsDir = memxBase.appendingPathComponent("Songs")
@@ -154,13 +154,13 @@ final class AppViewModel {
     // MARK: - Persistence
 
     private func saveProjects() {
-        ProjectStore.shared.save(projects)
+        store.save(projects)
         logger.debug("persisted \(self.projects.count) projects")
     }
 
     private func loadProjects() -> Bool {
         migrateFromUserDefaultsIfNeeded()
-        guard let loaded = ProjectStore.shared.load() else {
+        guard let loaded = store.load() else {
             logger.error("project list unreadable — skipping stale-file cleanup")
             return false
         }
@@ -174,7 +174,7 @@ final class AppViewModel {
         guard let data = UserDefaults.standard.data(forKey: key) else { return }
         let decoder = JSONDecoder()
         if let decoded = try? decoder.decode([Project].self, from: data) {
-            ProjectStore.shared.save(decoded)
+            store.save(decoded)
             logger.info("migrated \(decoded.count) projects from UserDefaults")
         } else {
             logger.warning("UserDefaults migration: failed to decode legacy data")

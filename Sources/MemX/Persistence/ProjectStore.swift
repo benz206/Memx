@@ -18,6 +18,8 @@ final class ProjectStore {
         self.fileURL = fileURL
     }
 
+    var directory: URL { fileURL.deletingLastPathComponent() }
+
     func load() -> [Project]? {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
         let decoder = JSONDecoder()
